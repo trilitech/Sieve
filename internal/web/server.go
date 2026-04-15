@@ -361,9 +361,56 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		catalog = nil
 	}
 
+	// Build display labels for connection types. LLM connections show
+	// their provider name instead of generic "http_proxy".
+	connLabels := make(map[string]string)
+	for _, c := range conns {
+		label := c.ConnectorType
+		if label == "http_proxy" || label == "mcp_proxy" {
+			if full, err := s.connections.GetWithConfig(c.ID); err == nil {
+				if cat, ok := full.Config["category"].(string); ok {
+					switch cat {
+					case "llm":
+						label = "LLM API"
+						// Try to detect specific provider from target_url.
+						if target, ok := full.Config["target_url"].(string); ok {
+							switch {
+							case strings.Contains(target, "anthropic"):
+								label = "Anthropic"
+							case strings.Contains(target, "openai.com"):
+								label = "OpenAI"
+							case strings.Contains(target, "googleapis.com"):
+								label = "Gemini"
+							case strings.Contains(target, "bedrock"):
+								label = "Bedrock"
+							}
+						}
+					case "cloud":
+						label = "Cloud"
+						if target, ok := full.Config["target_url"].(string); ok {
+							if strings.Contains(target, "hyperstack") {
+								label = "Hyperstack"
+							} else {
+								label = "AWS"
+							}
+						}
+					}
+				}
+				if label == "http_proxy" {
+					label = "HTTP Proxy"
+				}
+			}
+		}
+		if label == "mcp_proxy" {
+			label = "MCP Proxy"
+		}
+		connLabels[c.ID] = label
+	}
+
 	data := map[string]any{
 		"Active":      active,
 		"Connections": conns,
+		"ConnLabels":  connLabels,
 		"Catalog":     catalog,
 		"ConnType":    connType,
 	}

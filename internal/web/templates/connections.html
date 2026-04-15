@@ -39,13 +39,17 @@
             <tr class="hover:bg-slate-700/30 transition-colors">
               <td class="px-6 py-4 text-sm font-mono text-white">{{.ID}}</td>
               <td class="px-6 py-4">
+                {{$label := mapGet $.ConnLabels .ID}}
                 <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
                   {{if eq .ConnectorType "google"}}bg-red-500/10 text-red-400 ring-1 ring-red-500/20
-                  {{else if eq .ConnectorType "slack"}}bg-purple-500/10 text-purple-400 ring-1 ring-purple-500/20
-                  {{else if eq .ConnectorType "aws-s3"}}bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20
-                  {{else}}bg-blue-500/10 text-blue-400 ring-1 ring-blue-500/20
+                  {{else if eq $label "Anthropic"}}bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20
+                  {{else if eq $label "OpenAI"}}bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20
+                  {{else if eq $label "Gemini"}}bg-blue-500/10 text-blue-400 ring-1 ring-blue-500/20
+                  {{else if eq $label "AWS"}}bg-orange-500/10 text-orange-400 ring-1 ring-orange-500/20
+                  {{else if eq $label "Hyperstack"}}bg-purple-500/10 text-purple-400 ring-1 ring-purple-500/20
+                  {{else}}bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/20
                   {{end}}">
-                  {{.ConnectorType}}
+                  {{$label}}
                 </span>
               </td>
               <td class="px-6 py-4 text-sm text-slate-300">{{.DisplayName}}</td>
