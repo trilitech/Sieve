@@ -50,10 +50,14 @@
 
           <div>
             <label for="llm_model" class="block text-sm font-medium text-slate-300 mb-1.5">Model</label>
-            <input type="text" id="llm_model" name="llm_model" value="{{.LLMModel}}"
-                   placeholder="claude-sonnet-4-20250514"
-                   class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2.5 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-            <p class="text-xs text-slate-400 mt-1">The model identifier to use for generation requests.</p>
+            <div class="relative">
+              <select id="llm_model_select"
+                      class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                <option value="">Loading models...</option>
+              </select>
+              <input type="hidden" id="llm_model" name="llm_model" value="{{.LLMModel}}">
+            </div>
+            <p class="text-xs text-slate-400 mt-1" id="model-hint">Select a connection first to load available models.</p>
           </div>
 
           <div>
@@ -74,6 +78,90 @@
       </div>
     </div>
   </main>
+  <script>
+    var currentModel = document.getElementById("llm_model").value;
+    var connSelect = document.getElementById("llm_connection");
+    var modelSelect = document.getElementById("llm_model_select");
+    var modelHidden = document.getElementById("llm_model");
+    var modelHint = document.getElementById("model-hint");
+
+    function fetchModels(connId) {
+      if (!connId) {
+        modelSelect.innerHTML = '<option value="">-- Select a connection first --</option>';
+        modelHint.textContent = "Select a connection first to load available models.";
+        return;
+      }
+
+      modelSelect.innerHTML = '<option value="">Loading models...</option>';
+      modelHint.textContent = "Fetching available models...";
+
+      fetch("/api/models?connection_id=" + encodeURIComponent(connId))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var models = data.models || [];
+          var html = '';
+          if (models.length === 0) {
+            html = '<option value="">No models found (type manually below)</option>';
+            // Fall back to a text input approach.
+            modelHint.textContent = "Could not load models. You can type a model name manually.";
+            modelSelect.style.display = "none";
+            var textInput = document.createElement("input");
+            textInput.type = "text";
+            textInput.id = "llm_model_text";
+            textInput.value = currentModel;
+            textInput.placeholder = "e.g. claude-sonnet-4-20250514";
+            textInput.className = "w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2.5 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent";
+            textInput.addEventListener("input", function() { modelHidden.value = this.value; });
+            modelSelect.parentNode.insertBefore(textInput, modelSelect.nextSibling);
+            return;
+          }
+
+          // Remove any previously inserted text input.
+          var oldText = document.getElementById("llm_model_text");
+          if (oldText) oldText.remove();
+          modelSelect.style.display = "";
+
+          html += '<option value="">-- Select a model --</option>';
+          models.forEach(function(m) {
+            var selected = m.id === currentModel ? " selected" : "";
+            var label = m.display_name && m.display_name !== m.id
+              ? m.display_name + " (" + m.id + ")"
+              : m.id;
+            html += '<option value="' + m.id + '"' + selected + '>' + label + '</option>';
+          });
+          // Add option for custom model.
+          if (currentModel && !models.some(function(m) { return m.id === currentModel; })) {
+            html += '<option value="' + currentModel + '" selected>' + currentModel + ' (custom)</option>';
+          }
+          modelSelect.innerHTML = html;
+          modelHidden.value = modelSelect.value;
+          modelHint.textContent = models.length + " model(s) available.";
+        })
+        .catch(function(err) {
+          modelSelect.innerHTML = '<option value="">Error loading models</option>';
+          modelHint.textContent = "Failed to load models: " + err.message;
+        });
+    }
+
+    modelSelect.addEventListener("change", function() {
+      modelHidden.value = this.value;
+    });
+
+    connSelect.addEventListener("change", function() {
+      fetchModels(this.value);
+    });
+
+    // Load models on page load if a connection is already selected.
+    if (connSelect.value) {
+      fetchModels(connSelect.value);
+    } else {
+      modelSelect.innerHTML = '<option value="">-- Select a connection first --</option>';
+      if (currentModel) {
+        modelSelect.innerHTML += '<option value="' + currentModel + '" selected>' + currentModel + '</option>';
+        modelHidden.value = currentModel;
+      }
+    }
+  </script>
 </body>
 </html>
 {{end}}

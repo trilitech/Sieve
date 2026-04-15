@@ -237,6 +237,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/generate-script", s.handleGenerateScript)
 	mux.HandleFunc("POST /api/save-script", s.handleSaveScript)
 
+	// Model discovery API
+	mux.HandleFunc("GET /api/models", s.handleListModels)
+
 	// Docs
 	mux.HandleFunc("GET /docs/{name}", s.handleDocs)
 
@@ -1212,6 +1215,98 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
+}
+
+// --- Model discovery API handler ---
+
+// handleListModels fetches available models from an LLM connection by calling
+// its /v1/models endpoint. Both Anthropic and OpenAI use this standard path.
+func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	connID := r.URL.Query().Get("connection_id")
+	if connID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"models": []any{}})
+		return
+	}
+
+	conn, err := s.connections.GetWithConfig(connID)
+	if err != nil {
+		http.Error(w, "connection not found", http.StatusNotFound)
+		return
+	}
+
+	targetURL, _ := conn.Config["target_url"].(string)
+	authHeader, _ := conn.Config["auth_header"].(string)
+	authValue, _ := conn.Config["auth_value"].(string)
+
+	if targetURL == "" || authValue == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"models": []any{}})
+		return
+	}
+
+	// Call /v1/models on the target API.
+	modelsURL := strings.TrimRight(targetURL, "/") + "/v1/models"
+	req, err := http.NewRequest("GET", modelsURL, nil)
+	if err != nil {
+		http.Error(w, "failed to create request", http.StatusInternalServerError)
+		return
+	}
+
+	if authHeader != "" {
+		req.Header.Set(authHeader, authValue)
+	}
+
+	// Anthropic requires anthropic-version header.
+	if strings.Contains(targetURL, "anthropic.com") {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+
+	// Add any extra headers from config.
+	if extra, ok := conn.Config["extra_headers"].(map[string]any); ok {
+		for k, v := range extra {
+			if vs, ok := v.(string); ok {
+				req.Header.Set(k, vs)
+			}
+		}
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"models": []any{}, "error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"models": []any{}})
+		return
+	}
+
+	// Both Anthropic and OpenAI return {"data": [...]} with model objects.
+	var models []map[string]any
+	if data, ok := body["data"].([]any); ok {
+		for _, item := range data {
+			if m, ok := item.(map[string]any); ok {
+				id, _ := m["id"].(string)
+				displayName, _ := m["display_name"].(string)
+				if displayName == "" {
+					displayName = id
+				}
+				models = append(models, map[string]any{
+					"id":           id,
+					"display_name": displayName,
+				})
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"models": models})
 }
 
 // --- Script generation API handler ---
