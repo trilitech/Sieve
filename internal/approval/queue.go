@@ -21,13 +21,14 @@
 package approval
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/murbard/Sieve/internal/database"
 )
 
@@ -79,9 +80,22 @@ func NewQueue(db *database.DB) *Queue {
 	}
 }
 
+// generateSecureID returns 32 bytes of cryptographic randomness encoded as
+// hex (64 hex chars). This gives 256 bits of entropy — far more than UUIDv4's
+// 122 bits — and makes enumeration infeasible.
+func generateSecureID() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand.Read never fails on a sane OS; panic is acceptable
+		// because we cannot safely proceed without proper entropy.
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	}
+	return hex.EncodeToString(b)
+}
+
 // Submit creates a new pending approval item and inserts it into the database.
 func (q *Queue) Submit(req *SubmitRequest) (*Item, error) {
-	id := uuid.New().String()
+	id := generateSecureID()
 
 	dataJSON, err := json.Marshal(req.RequestData)
 	if err != nil {
