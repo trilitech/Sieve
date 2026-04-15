@@ -83,20 +83,20 @@ func NewQueue(db *database.DB) *Queue {
 // generateSecureID returns 32 bytes of cryptographic randomness encoded as
 // hex (64 hex chars). This gives 256 bits of entropy — far more than UUIDv4's
 // 122 bits — and makes enumeration infeasible.
-func generateSecureID() string {
+func generateSecureID() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		// crypto/rand.Read never fails on a sane OS; panic is acceptable
-		// because we cannot safely proceed without proper entropy.
-		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+		return "", fmt.Errorf("crypto/rand failed: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 // Submit creates a new pending approval item and inserts it into the database.
 func (q *Queue) Submit(req *SubmitRequest) (*Item, error) {
-	id := generateSecureID()
-
+	id, err := generateSecureID()
+	if err != nil {
+		return nil, fmt.Errorf("generate approval ID: %w", err)
+	}
 	dataJSON, err := json.Marshal(req.RequestData)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request_data: %w", err)

@@ -232,6 +232,13 @@ func validateProxyPath(proxyPath string) (string, error) {
 		return "", fmt.Errorf("path contains dangerous encoded sequences")
 	}
 
+	// Reject literal backslashes: %5c decodes to '\', and some upstreams treat
+	// '\' as a path separator (IIS, .NET, Windows file servers). Normalising to
+	// '/' would silently change the path semantics, so we reject outright.
+	if strings.Contains(decoded, "\\") {
+		return "", fmt.Errorf("path contains backslash")
+	}
+
 	// Reject paths containing ".." segments.
 	for _, seg := range strings.Split(decoded, "/") {
 		if seg == ".." {

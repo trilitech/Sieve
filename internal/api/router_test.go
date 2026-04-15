@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -999,9 +1000,11 @@ func TestProxyResponseFiltersApplied(t *testing.T) {
 func TestProxyPathTraversalRejected(t *testing.T) {
 	serverURL, tok, setHandler := setupProxyFull(t)
 
-	reached := false
+	// Use an atomic to avoid a data race between the upstream handler goroutine
+	// (which writes) and the test goroutine (which reads after the request returns).
+	var reached atomic.Bool
 	setHandler(func(w http.ResponseWriter, r *http.Request) {
-		reached = true
+		reached.Store(true)
 		w.WriteHeader(http.StatusOK)
 	})
 
@@ -1009,11 +1012,35 @@ func TestProxyPathTraversalRejected(t *testing.T) {
 	resp := doRequest(t, "GET", serverURL+"/proxy/proxy-conn/%252e%252e%252fpasswd", tok, "")
 	defer resp.Body.Close()
 
-	if reached {
+	if reached.Load() {
 		t.Error("upstream was reached despite path traversal attempt")
 	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for path traversal, got %d", resp.StatusCode)
+	}
+}
+
+// TestProxyBackslashTraversalRejected verifies that paths containing backslashes
+// (including via %5c encoding) are rejected, preventing bypasses on upstreams
+// that treat '\' as a path separator.
+func TestProxyBackslashTraversalRejected(t *testing.T) {
+	serverURL, tok, setHandler := setupProxyFull(t)
+
+	var reached atomic.Bool
+	setHandler(func(w http.ResponseWriter, r *http.Request) {
+		reached.Store(true)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// %5c decodes to a literal backslash; reject even after a single pass.
+	resp := doRequest(t, "GET", serverURL+"/proxy/proxy-conn/..%5c..%5cpasswd", tok, "")
+	defer resp.Body.Close()
+
+	if reached.Load() {
+		t.Error("upstream was reached despite backslash traversal attempt")
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for backslash path, got %d", resp.StatusCode)
 	}
 }
 
