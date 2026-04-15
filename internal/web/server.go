@@ -183,6 +183,12 @@ func NewServer(
 		s.templates[page] = t
 	}
 
+	// Background sweep of abandoned OAuth flows. Without this, the
+	// oauthPending map would grow unboundedly (entries are normally
+	// deleted when the callback completes, but incomplete flows would
+	// never get cleaned up).
+	go s.oauthPendingCleanupLoop()
+
 	return s
 }
 
@@ -545,6 +551,28 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
+// oauthPendingCleanupLoop runs for the lifetime of the server process,
+// deleting oauthPending entries older than 10 minutes every 5 minutes.
+func (s *Server) oauthPendingCleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.sweepOAuthPending(time.Now())
+	}
+}
+
+// sweepOAuthPending removes pendingOAuth entries older than 10 minutes.
+// Extracted for testability.
+func (s *Server) sweepOAuthPending(now time.Time) {
+	s.oauthMu.Lock()
+	defer s.oauthMu.Unlock()
+	for state, pending := range s.oauthPending {
+		if now.Sub(pending.CreatedAt) > 10*time.Minute {
+			delete(s.oauthPending, state)
+		}
+	}
 }
 
 // --- Tokens handlers ---
