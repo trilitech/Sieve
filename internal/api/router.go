@@ -292,8 +292,17 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Re-validate the token after the approval wait. The token may have
-		// been revoked while waiting for human approval.
-		if _, err := rt.tokens.Validate(r.Header.Get("Authorization")[len("Bearer "):]); err != nil {
+		// been revoked while waiting for human approval. Use strings.CutPrefix
+		// to safely extract the bearer value (mirrors authMiddleware), instead
+		// of the unchecked slice [len("Bearer "):] which would return garbage
+		// or panic on a malformed header.
+		bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || bearer == "" {
+			rt.logAudit(tok, connID, operation, params, "denied(malformed_auth_during_approval)", "", time.Since(start).Milliseconds())
+			writeError(w, http.StatusUnauthorized, "malformed authorization header")
+			return
+		}
+		if _, err := rt.tokens.Validate(bearer); err != nil {
 			rt.logAudit(tok, connID, operation, params, "denied(revoked_during_approval)", "", time.Since(start).Milliseconds())
 			writeError(w, http.StatusUnauthorized, "token was revoked during approval wait")
 			return
@@ -379,7 +388,7 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// The connector must be an http_proxy type with ProxyHTTP method.
 	type httpProxier interface {
-		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string)
+		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter)
 	}
 
 	proxy, ok := conn.(httpProxier)
@@ -457,7 +466,7 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rt.logAudit(tok, connID, operation, nil, "allow", "", 0)
-	proxy.ProxyHTTP(w, r, proxyPath)
+	proxy.ProxyHTTP(w, r, proxyPath, decision.Filters)
 	rt.logAudit(tok, connID, operation, nil, "proxied", "", time.Since(start).Milliseconds())
 }
 

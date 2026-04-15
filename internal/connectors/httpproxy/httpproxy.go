@@ -29,10 +29,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/murbard/Sieve/internal/connector"
+	"github.com/murbard/Sieve/internal/policy"
 )
 
 var Meta = connector.ConnectorMeta{
@@ -93,7 +96,12 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		authHeader:   authHeader,
 		authValue:    authValue,
 		extraHeaders: extraHeaders,
-		client:       &http.Client{Timeout: 5 * time.Minute},
+		client: &http.Client{
+			Timeout: 5 * time.Minute,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}, nil
 }
 
@@ -197,13 +205,42 @@ func (p *ProxyConnector) Validate(ctx context.Context) error {
 // ProxyHTTP handles a raw HTTP request by forwarding it to the target,
 // substituting auth credentials. Path restrictions are enforced by the
 // policy engine before this method is called.
-func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, path string) {
-	url := p.targetURL + path
-	if r.URL.RawQuery != "" {
-		url += "?" + r.URL.RawQuery
+//
+// When filters is non-empty, the response body is captured and run through
+// policy.ApplyResponseFilters before being written to the client.
+func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxyPath string, filters []policy.ResponseFilter) {
+	// Validate the path to prevent path-traversal attacks.
+	// Decode percent-encoded characters, then reject any ".." segments.
+	decoded, err := url.PathUnescape(proxyPath)
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	// Reject paths containing ".." segments (e.g. /v1/..%2fadmin).
+	for _, seg := range strings.Split(decoded, "/") {
+		if seg == ".." {
+			http.Error(w, "invalid path", http.StatusBadRequest)
+			return
+		}
+	}
+	// Normalize using path.Clean and reject if the cleaned path escapes the root.
+	cleaned := path.Clean(decoded)
+	if !strings.HasPrefix(cleaned, "/") {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
 	}
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, url, r.Body)
+	// Build the target URL properly using URL parsing, not string concatenation.
+	targetBase, err := url.Parse(p.targetURL)
+	if err != nil {
+		http.Error(w, "invalid target URL configuration", http.StatusInternalServerError)
+		return
+	}
+	// Use JoinPath to safely combine the base path with the proxy path.
+	targetURL := targetBase.JoinPath(cleaned)
+	targetURL.RawQuery = r.URL.RawQuery
+
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), r.Body)
 	if err != nil {
 		http.Error(w, "failed to create proxy request", http.StatusInternalServerError)
 		return
@@ -234,14 +271,40 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, path 
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers.
+	// Fast path: when no filters are present, stream the response directly
+	// to avoid buffering the entire body (important for large/streaming responses).
+	if len(filters) == 0 {
+		for key, values := range resp.Header {
+			for _, v := range values {
+				w.Header().Add(key, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
+		return
+	}
+
+	// Slow path: buffer the response so we can apply filters.
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "failed to read proxy response", http.StatusBadGateway)
+		return
+	}
+
+	respBody, _ = policy.ApplyResponseFilters(respBody, filters)
+
+	// Copy response headers, replacing Content-Length since the body may have changed.
 	for key, values := range resp.Header {
+		if strings.EqualFold(key, "Content-Length") {
+			continue
+		}
 		for _, v := range values {
 			w.Header().Add(key, v)
 		}
 	}
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	w.Write(respBody)
 }
 
 func flattenHeaders(h http.Header) map[string]string {
