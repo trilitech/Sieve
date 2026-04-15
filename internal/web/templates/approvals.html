@@ -70,7 +70,7 @@
             <div class="grid grid-cols-3 gap-4 mb-4">
               <div>
                 <p class="text-xs font-medium text-slate-500 uppercase tracking-wider mb-1">Token</p>
-                <p class="text-sm text-white font-mono">{{truncate 16 .TokenID}}</p>
+                <p class="text-sm text-white">{{mapGet $.TokenNames .TokenID}}</p>
               </div>
               <div>
                 <p class="text-xs font-medium text-slate-500 uppercase tracking-wider mb-1">Connection</p>

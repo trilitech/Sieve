@@ -141,6 +141,41 @@ func funcMap() template.FuncMap {
 			}
 			return *t
 		},
+		"isExpired": func(t *time.Time) bool {
+			if t == nil {
+				return false
+			}
+			return time.Now().After(*t)
+		},
+		"timeUntil": func(t time.Time) string {
+			d := time.Until(t)
+			if d < 0 {
+				// Already past — show "ago" format.
+				d = -d
+				switch {
+				case d < time.Minute:
+					return "just expired"
+				case d < time.Hour:
+					return fmt.Sprintf("%dm ago", int(d.Minutes()))
+				case d < 24*time.Hour:
+					return fmt.Sprintf("%dh ago", int(d.Hours()))
+				default:
+					return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+				}
+			}
+			switch {
+			case d < time.Minute:
+				return "in <1m"
+			case d < time.Hour:
+				return fmt.Sprintf("in %dm", int(d.Minutes()))
+			case d < 24*time.Hour:
+				return fmt.Sprintf("in %dh", int(d.Hours()))
+			case d < 30*24*time.Hour:
+				return fmt.Sprintf("in %dd", int(d.Hours()/24))
+			default:
+				return fmt.Sprintf("in %dmo", int(d.Hours()/(24*30)))
+			}
+		},
 	}
 }
 
@@ -1004,9 +1039,20 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build token name lookup for display.
+	tokenNames := make(map[string]string)
+	for _, item := range items {
+		if _, ok := tokenNames[item.TokenID]; !ok {
+			if tok, err := s.tokens.Get(item.TokenID); err == nil {
+				tokenNames[item.TokenID] = tok.Name
+			}
+		}
+	}
+
 	data := map[string]any{
-		"Active":    "approvals",
-		"Approvals": items,
+		"Active":     "approvals",
+		"Approvals":  items,
+		"TokenNames": tokenNames,
 	}
 	s.render(w, "approvals", data)
 }

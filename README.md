@@ -105,7 +105,7 @@ cd sieve
 go build -o sieve ./cmd/sieve
 
 # Configure (edit ports, database path, Google credentials path)
-cp sieve.yaml.example sieve.yaml
+# sieve.yaml is included — edit as needed
 
 # Start
 ./sieve serve

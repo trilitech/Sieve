@@ -52,7 +52,7 @@
               <td class="px-6 py-3">
                 <a href="/policies/{{.ID}}/edit" class="text-indigo-400 hover:text-indigo-300 text-xs mr-3">Edit</a>
                 <form method="POST" action="/policies/{{.ID}}/delete" class="inline"
-                  onsubmit="return confirm('Delete this policy?')">
+                  onsubmit="return confirm('Delete policy \'{{.Name}}\'? Roles using it will lose access.')">
                   <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
                 </form>
               </td>
