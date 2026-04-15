@@ -855,7 +855,8 @@ func TestProxyForwardsRequest(t *testing.T) {
 	serverURL, tok, setHandler := setupProxyFull(t)
 
 	setHandler(func(w http.ResponseWriter, r *http.Request) {
-		// Verify the Sieve bearer is NOT forwarded and the real key is injected.
+		// The test client sends a Sieve Bearer token in Authorization. The proxy
+		// must strip it (not forward it to the upstream) and inject the real key.
 		if r.Header.Get("Authorization") != "" {
 			t.Errorf("upstream received Authorization header (should not)")
 		}

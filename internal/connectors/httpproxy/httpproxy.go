@@ -209,6 +209,8 @@ func (p *ProxyConnector) Validate(ctx context.Context) error {
 // it stabilizes, then rejects any remaining dangerous percent-encoded sequences
 // and checks for ".." segments. The cleaned path is returned on success.
 func validateProxyPath(proxyPath string) (string, error) {
+	// 5 passes is sufficient to fully collapse any realistic multi-layer encoding
+	// (e.g. %2525252e requires ≤5 rounds) while bounding the iteration cost.
 	const maxUnescapePasses = 5
 
 	decoded := proxyPath
@@ -227,20 +229,20 @@ func validateProxyPath(proxyPath string) (string, error) {
 	// (e.g. a deliberately capped iteration would still leave encoded traversal tokens).
 	lower := strings.ToLower(decoded)
 	if strings.Contains(lower, "%2e") || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
-		return "", fmt.Errorf("invalid path")
+		return "", fmt.Errorf("path contains dangerous encoded sequences")
 	}
 
 	// Reject paths containing ".." segments.
 	for _, seg := range strings.Split(decoded, "/") {
 		if seg == ".." {
-			return "", fmt.Errorf("invalid path")
+			return "", fmt.Errorf("path contains traversal sequences")
 		}
 	}
 
 	// Normalize using path.Clean and reject if the cleaned path escapes the root.
 	cleaned := path.Clean(decoded)
 	if !strings.HasPrefix(cleaned, "/") {
-		return "", fmt.Errorf("invalid path")
+		return "", fmt.Errorf("path escapes root directory")
 	}
 
 	return cleaned, nil
