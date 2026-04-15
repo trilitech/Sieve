@@ -456,6 +456,7 @@ func (s *Server) googleOAuthConfig(host string) (*oauth2.Config, error) {
 		"https://www.googleapis.com/auth/calendar",
 		"https://www.googleapis.com/auth/contacts",
 		"https://www.googleapis.com/auth/spreadsheets",
+		"https://www.googleapis.com/auth/documents",
 	}
 	conf, err := google.ConfigFromJSON(data, scopes...)
 	if err != nil {

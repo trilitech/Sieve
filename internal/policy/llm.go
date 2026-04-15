@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -88,8 +89,12 @@ func (l *LLMEvaluator) Evaluate(ctx context.Context, req *PolicyRequest) (*Polic
 	switch l.config.Provider {
 	case "ollama":
 		return l.evaluateOllama(ctx, prompt)
-	case "bedrock", "anthropic", "openai":
-		return nil, fmt.Errorf("llm evaluator: provider %q is not yet implemented", l.config.Provider)
+	case "anthropic":
+		return l.evaluateAnthropic(ctx, prompt)
+	case "openai":
+		return l.evaluateOpenAI(ctx, prompt)
+	case "bedrock":
+		return l.evaluateOpenAI(ctx, prompt) // Bedrock uses OpenAI-compatible API
 	default:
 		return nil, fmt.Errorf("llm evaluator: unknown provider %q", l.config.Provider)
 	}
@@ -164,6 +169,149 @@ func (l *LLMEvaluator) evaluateOllama(ctx context.Context, prompt string) (*Poli
 	}
 
 	return decision, nil
+}
+
+// evaluateAnthropic calls the Anthropic Messages API.
+func (l *LLMEvaluator) evaluateAnthropic(ctx context.Context, prompt string) (*PolicyDecision, error) {
+	timeout := l.config.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	endpoint := "https://api.anthropic.com"
+	apiKey := ""
+	if pc, ok := l.providers[l.config.Provider]; ok {
+		if pc.Endpoint != "" {
+			endpoint = pc.Endpoint
+		}
+		apiKey = os.Getenv(pc.APIKeyEnv)
+	}
+
+	model := l.config.Model
+	if model == "" {
+		if pc, ok := l.providers[l.config.Provider]; ok && pc.Model != "" {
+			model = pc.Model
+		} else {
+			model = "claude-sonnet-4-20250514"
+		}
+	}
+
+	body := map[string]any{
+		"model":      model,
+		"max_tokens": 1024,
+		"messages":   []map[string]string{{"role": "user", "content": prompt}},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/v1/messages", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return l.fallbackDecision("failed to create request: " + err.Error()), nil
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	if apiKey != "" {
+		httpReq.Header.Set("x-api-key", apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return l.fallbackDecision("anthropic request failed: " + err.Error()), nil
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return l.fallbackDecision(fmt.Sprintf("anthropic returned status %d: %s", resp.StatusCode, string(respBody))), nil
+	}
+
+	var anthropicResp struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
+		return l.fallbackDecision("failed to parse anthropic response: " + err.Error()), nil
+	}
+
+	if len(anthropicResp.Content) == 0 {
+		return l.fallbackDecision("empty response from anthropic"), nil
+	}
+
+	return extractDecisionFromText(anthropicResp.Content[0].Text)
+}
+
+// evaluateOpenAI calls the OpenAI Chat Completions API (also works for Bedrock).
+func (l *LLMEvaluator) evaluateOpenAI(ctx context.Context, prompt string) (*PolicyDecision, error) {
+	timeout := l.config.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	endpoint := "https://api.openai.com"
+	apiKey := ""
+	if pc, ok := l.providers[l.config.Provider]; ok {
+		if pc.Endpoint != "" {
+			endpoint = pc.Endpoint
+		}
+		apiKey = os.Getenv(pc.APIKeyEnv)
+	}
+
+	model := l.config.Model
+	if model == "" {
+		if pc, ok := l.providers[l.config.Provider]; ok && pc.Model != "" {
+			model = pc.Model
+		} else {
+			model = "gpt-4o"
+		}
+	}
+
+	body := map[string]any{
+		"model":      model,
+		"max_tokens": 1024,
+		"messages":   []map[string]string{{"role": "user", "content": prompt}},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/v1/chat/completions", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return l.fallbackDecision("failed to create request: " + err.Error()), nil
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return l.fallbackDecision("openai request failed: " + err.Error()), nil
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return l.fallbackDecision(fmt.Sprintf("openai returned status %d: %s", resp.StatusCode, string(respBody))), nil
+	}
+
+	var openaiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &openaiResp); err != nil {
+		return l.fallbackDecision("failed to parse openai response: " + err.Error()), nil
+	}
+
+	if len(openaiResp.Choices) == 0 {
+		return l.fallbackDecision("empty response from openai"), nil
+	}
+
+	return extractDecisionFromText(openaiResp.Choices[0].Message.Content)
 }
 
 // extractDecisionFromText looks for a JSON object with "action" and "reason" in the text.
