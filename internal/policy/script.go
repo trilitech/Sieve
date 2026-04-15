@@ -60,16 +60,20 @@ func (s *ScriptEvaluator) Type() string {
 
 // Evaluate runs the configured script and returns its decision.
 func (s *ScriptEvaluator) Evaluate(ctx context.Context, req *PolicyRequest) (*PolicyDecision, error) {
-	_ = ctx // script timeout is independent of the caller's context
 	timeout := s.config.Timeout
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
 
-	// Independent timeout — not derived from the caller's context, because
-	// an already-cancelled caller ctx would make cmd.Run return instantly
-	// without honoring the intended timeout.
-	scriptCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Derive scriptCtx from the caller ctx when it is still live so that a
+	// client disconnect cancels the script process (saving resources).
+	// When the caller ctx is already done (e.g., already-cancelled context),
+	// fall back to context.Background() so the timeout is honoured in full.
+	baseCtx := ctx
+	if ctx.Err() != nil {
+		baseCtx = context.Background()
+	}
+	scriptCtx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(scriptCtx, s.config.Command, s.config.Script)

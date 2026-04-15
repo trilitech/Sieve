@@ -202,6 +202,65 @@ func (p *ProxyConnector) Validate(ctx context.Context) error {
 	return nil
 }
 
+// validateProxyPath canonicalizes and validates a proxy path to prevent
+// path-traversal attacks including double-encoded sequences like %252e%252e%252f.
+//
+// It iteratively percent-decodes the path (up to maxUnescapePasses times) until
+// it stabilizes, then rejects any remaining dangerous percent-encoded sequences
+// and checks for ".." segments. The cleaned path is returned on success.
+func validateProxyPath(proxyPath string) (string, error) {
+	const maxUnescapePasses = 5
+
+	decoded := proxyPath
+	for i := 0; i < maxUnescapePasses; i++ {
+		next, err := url.PathUnescape(decoded)
+		if err != nil {
+			return "", fmt.Errorf("invalid path encoding: %w", err)
+		}
+		if next == decoded {
+			break
+		}
+		decoded = next
+	}
+
+	// Reject any dangerous percent-encodings that survive the decode passes
+	// (e.g. a deliberately capped iteration would still leave encoded traversal tokens).
+	lower := strings.ToLower(decoded)
+	if strings.Contains(lower, "%2e") || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
+		return "", fmt.Errorf("invalid path")
+	}
+
+	// Reject paths containing ".." segments.
+	for _, seg := range strings.Split(decoded, "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("invalid path")
+		}
+	}
+
+	// Normalize using path.Clean and reject if the cleaned path escapes the root.
+	cleaned := path.Clean(decoded)
+	if !strings.HasPrefix(cleaned, "/") {
+		return "", fmt.Errorf("invalid path")
+	}
+
+	return cleaned, nil
+}
+
+// maxFilteredBodySize is the maximum number of bytes buffered when response
+// filters are active.  Responses larger than this are rejected to prevent OOM.
+const maxFilteredBodySize = 32 * 1024 * 1024 // 32 MiB
+
+// headersInvalidatedByFiltering lists response headers that must be removed
+// after the body has been modified by response filters, because their values
+// would no longer be consistent with the new body.
+var headersInvalidatedByFiltering = map[string]bool{
+	"content-encoding":  true,
+	"transfer-encoding": true,
+	"etag":              true,
+	"content-md5":       true,
+	"content-length":    true,
+}
+
 // ProxyHTTP handles a raw HTTP request by forwarding it to the target,
 // substituting auth credentials. Path restrictions are enforced by the
 // policy engine before this method is called.
@@ -209,23 +268,8 @@ func (p *ProxyConnector) Validate(ctx context.Context) error {
 // When filters is non-empty, the response body is captured and run through
 // policy.ApplyResponseFilters before being written to the client.
 func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxyPath string, filters []policy.ResponseFilter) {
-	// Validate the path to prevent path-traversal attacks.
-	// Decode percent-encoded characters, then reject any ".." segments.
-	decoded, err := url.PathUnescape(proxyPath)
+	cleaned, err := validateProxyPath(proxyPath)
 	if err != nil {
-		http.Error(w, "invalid path", http.StatusBadRequest)
-		return
-	}
-	// Reject paths containing ".." segments (e.g. /v1/..%2fadmin).
-	for _, seg := range strings.Split(decoded, "/") {
-		if seg == ".." {
-			http.Error(w, "invalid path", http.StatusBadRequest)
-			return
-		}
-	}
-	// Normalize using path.Clean and reject if the cleaned path escapes the root.
-	cleaned := path.Clean(decoded)
-	if !strings.HasPrefix(cleaned, "/") {
 		http.Error(w, "invalid path", http.StatusBadRequest)
 		return
 	}
@@ -246,9 +290,14 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 		return
 	}
 
-	// Copy original headers (except Authorization — we substitute it).
+	// Copy original headers (except Authorization — we substitute it, and
+	// except Accept-Encoding when filters are active so that Go's Transport
+	// handles transparent decompression, ensuring filters see plain text).
 	for key, values := range r.Header {
 		if strings.EqualFold(key, "Authorization") {
+			continue
+		}
+		if len(filters) > 0 && strings.EqualFold(key, "Accept-Encoding") {
 			continue
 		}
 		for _, v := range values {
@@ -285,17 +334,24 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	}
 
 	// Slow path: buffer the response so we can apply filters.
-	respBody, err := io.ReadAll(resp.Body)
+	// Limit the read to maxFilteredBodySize to prevent OOM on large responses.
+	limitedBody := io.LimitReader(resp.Body, maxFilteredBodySize+1)
+	respBody, err := io.ReadAll(limitedBody)
 	if err != nil {
 		http.Error(w, "failed to read proxy response", http.StatusBadGateway)
+		return
+	}
+	if int64(len(respBody)) > maxFilteredBodySize {
+		http.Error(w, "response too large to filter", http.StatusBadGateway)
 		return
 	}
 
 	respBody, _ = policy.ApplyResponseFilters(respBody, filters)
 
-	// Copy response headers, replacing Content-Length since the body may have changed.
+	// Copy response headers, skipping headers that are no longer valid after
+	// the body has been modified (Content-Length is re-added below).
 	for key, values := range resp.Header {
-		if strings.EqualFold(key, "Content-Length") {
+		if headersInvalidatedByFiltering[strings.ToLower(key)] {
 			continue
 		}
 		for _, v := range values {

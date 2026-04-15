@@ -73,6 +73,8 @@ type Server struct {
 
 	oauthMu     sync.Mutex
 	oauthPending map[string]pendingOAuth // state -> pending connection info
+
+	stopCleanup chan struct{} // closed by Close() to stop the cleanup goroutine
 }
 
 // funcMap returns the template function map used across all templates.
@@ -169,6 +171,7 @@ func NewServer(
 		templates:            make(map[string]*template.Template),
 		googleCredentialsFile: googleCredentialsFile,
 		oauthPending:         make(map[string]pendingOAuth),
+		stopCleanup:          make(chan struct{}),
 	}
 
 	// Parse each page template together with the nav partial.
@@ -553,13 +556,29 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
-// oauthPendingCleanupLoop runs for the lifetime of the server process,
-// deleting oauthPending entries older than 10 minutes every 5 minutes.
+// oauthPendingCleanupLoop runs until Close() is called, deleting oauthPending
+// entries older than 10 minutes every 5 minutes.
 func (s *Server) oauthPendingCleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.sweepOAuthPending(time.Now())
+	for {
+		select {
+		case <-ticker.C:
+			s.sweepOAuthPending(time.Now())
+		case <-s.stopCleanup:
+			return
+		}
+	}
+}
+
+// Close stops the background cleanup goroutine. It is safe to call multiple
+// times; subsequent calls are no-ops.
+func (s *Server) Close() {
+	select {
+	case <-s.stopCleanup:
+		// already closed
+	default:
+		close(s.stopCleanup)
 	}
 }
 
