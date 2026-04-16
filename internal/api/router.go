@@ -388,7 +388,7 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// The connector must be an http_proxy type with ProxyHTTP method.
 	type httpProxier interface {
-		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter)
+		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) bool
 	}
 
 	proxy, ok := conn.(httpProxier)
@@ -466,7 +466,10 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rt.logAudit(tok, connID, operation, nil, "allow", "", 0)
-	proxy.ProxyHTTP(w, r, proxyPath, decision.Filters)
+	if proxied := proxy.ProxyHTTP(w, r, proxyPath, decision.Filters); !proxied {
+		rt.logAudit(tok, connID, operation, nil, "bad_request", "invalid proxy path", time.Since(start).Milliseconds())
+		return
+	}
 	rt.logAudit(tok, connID, operation, nil, "proxied", "", time.Since(start).Milliseconds())
 }
 

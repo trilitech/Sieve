@@ -276,18 +276,23 @@ var headersInvalidatedByFiltering = map[string]bool{
 //
 // When filters is non-empty, the response body is captured and run through
 // policy.ApplyResponseFilters before being written to the client.
-func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxyPath string, filters []policy.ResponseFilter) {
+//
+// Returns true if the request was forwarded to the upstream (even if the
+// upstream replied with an error status), or false if the request was
+// rejected locally (e.g. invalid path). The caller can use this to produce
+// accurate audit log entries.
+func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxyPath string, filters []policy.ResponseFilter) bool {
 	cleaned, err := validateProxyPath(proxyPath)
 	if err != nil {
 		http.Error(w, "invalid path", http.StatusBadRequest)
-		return
+		return false
 	}
 
 	// Build the target URL properly using URL parsing, not string concatenation.
 	targetBase, err := url.Parse(p.targetURL)
 	if err != nil {
 		http.Error(w, "invalid target URL configuration", http.StatusInternalServerError)
-		return
+		return false
 	}
 	// Use JoinPath to safely combine the base path with the proxy path.
 	targetURL := targetBase.JoinPath(cleaned)
@@ -296,7 +301,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), r.Body)
 	if err != nil {
 		http.Error(w, "failed to create proxy request", http.StatusInternalServerError)
-		return
+		return false
 	}
 
 	// Copy original headers (except Authorization — we substitute it, and
@@ -325,7 +330,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	resp, err := p.client.Do(proxyReq)
 	if err != nil {
 		http.Error(w, "proxy request failed: "+err.Error(), http.StatusBadGateway)
-		return
+		return true
 	}
 	defer resp.Body.Close()
 
@@ -339,7 +344,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 		}
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
-		return
+		return true
 	}
 
 	// Slow path: buffer the response so we can apply filters.
@@ -348,11 +353,11 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	respBody, err := io.ReadAll(limitedBody)
 	if err != nil {
 		http.Error(w, "failed to read proxy response", http.StatusBadGateway)
-		return
+		return true
 	}
 	if int64(len(respBody)) > maxFilteredBodySize {
 		http.Error(w, "response too large to filter", http.StatusBadGateway)
-		return
+		return true
 	}
 
 	respBody, _ = policy.ApplyResponseFilters(respBody, filters)
@@ -370,6 +375,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody)
+	return true
 }
 
 func flattenHeaders(h http.Header) map[string]string {

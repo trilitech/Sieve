@@ -74,7 +74,8 @@ type Server struct {
 	oauthMu     sync.Mutex
 	oauthPending map[string]pendingOAuth // state -> pending connection info
 
-	stopCleanup chan struct{} // closed by Close() to stop the cleanup goroutine
+	stopCleanup     chan struct{} // closed by Close() to stop the cleanup goroutine
+	stopCleanupOnce sync.Once    // ensures stopCleanup is closed exactly once
 }
 
 // funcMap returns the template function map used across all templates.
@@ -146,6 +147,12 @@ func funcMap() template.FuncMap {
 }
 
 // NewServer creates a new web UI server.
+//
+// IMPORTANT: NewServer starts a background goroutine (oauthPendingCleanupLoop)
+// that sweeps expired OAuth pending-state entries. Callers MUST call Close()
+// on the returned *Server when they are done with it (e.g. in a defer or
+// during graceful shutdown) to stop that goroutine and prevent a leak.
+// This is especially important in tests that create multiple Server instances.
 func NewServer(
 	tokensSvc *tokens.Service,
 	connsSvc *connections.Service,
@@ -572,14 +579,9 @@ func (s *Server) oauthPendingCleanupLoop() {
 }
 
 // Close stops the background cleanup goroutine. It is safe to call multiple
-// times; subsequent calls are no-ops.
+// times concurrently; the channel is closed exactly once via sync.Once.
 func (s *Server) Close() {
-	select {
-	case <-s.stopCleanup:
-		// already closed
-	default:
-		close(s.stopCleanup)
-	}
+	s.stopCleanupOnce.Do(func() { close(s.stopCleanup) })
 }
 
 // sweepOAuthPending removes pendingOAuth entries older than 10 minutes.
