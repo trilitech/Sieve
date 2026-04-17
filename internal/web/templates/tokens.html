@@ -105,11 +105,13 @@
               <td class="px-6 py-4 text-sm text-slate-300">{{mapGet $.RoleNames .RoleID}}</td>
               <td class="px-6 py-4 text-sm text-slate-400">{{timeAgo .CreatedAt}}</td>
               <td class="px-6 py-4 text-sm text-slate-400">
-                {{if .ExpiresAt}}{{timeAgo (derefTime .ExpiresAt)}}{{else}}<span class="text-slate-600">Never</span>{{end}}
+                {{if .ExpiresAt}}{{timeUntil (derefTime .ExpiresAt)}}{{else}}<span class="text-slate-600">Never</span>{{end}}
               </td>
               <td class="px-6 py-4">
                 {{if .Revoked}}
                 <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-500/10 text-red-400 ring-1 ring-red-500/20">Revoked</span>
+                {{else if isExpired .ExpiresAt}}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20">Expired</span>
                 {{else}}
                 <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20">Active</span>
                 {{end}}

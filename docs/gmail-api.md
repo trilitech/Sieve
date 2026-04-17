@@ -138,7 +138,17 @@ curl -X POST "http://localhost:19817/gmail/v1/users/me/messages/MESSAGE_ID/modif
 | POST | `/gmail/v1/users/{userId}/messages/send` | send_email |
 | POST | `/gmail/v1/users/{userId}/drafts` | create_draft |
 | GET | `/gmail/v1/users/{userId}/labels` | list_labels |
+| GET | `/gmail/v1/users/{userId}/messages/{messageId}/attachments/{attachmentId}` | get_attachment |
 | POST | `/gmail/v1/users/{userId}/messages/{id}/modify` | add_label / remove_label / archive |
+
+### Get an attachment
+
+```bash
+curl "http://localhost:19817/gmail/v1/users/me/messages/MESSAGE_ID/attachments/ATTACHMENT_ID" \
+  -H "Authorization: Bearer sieve_tok_xxxxx"
+```
+
+The response includes the attachment metadata (filename, MIME type, size) and the decoded data.
 
 `{userId}` is `me` (default Gmail connection) or a connection alias (e.g., `work`, `personal`).
 
@@ -170,7 +180,7 @@ For `GET /gmail/v1/users/me/messages`:
 | Parameter | Description |
 |-----------|-------------|
 | `q` | Gmail search query (same syntax as Gmail search box) |
-| `maxResults` | Maximum number of results (default 20) |
+| `maxResults` | Maximum number of results (default 100, max 500) |
 | `pageToken` | Token for paginating through results |
 
 ## How it works

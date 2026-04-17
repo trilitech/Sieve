@@ -39,13 +39,17 @@
             <tr class="hover:bg-slate-700/30 transition-colors">
               <td class="px-6 py-4 text-sm font-mono text-white">{{.ID}}</td>
               <td class="px-6 py-4">
+                {{$label := mapGet $.ConnLabels .ID}}
                 <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
                   {{if eq .ConnectorType "google"}}bg-red-500/10 text-red-400 ring-1 ring-red-500/20
-                  {{else if eq .ConnectorType "slack"}}bg-purple-500/10 text-purple-400 ring-1 ring-purple-500/20
-                  {{else if eq .ConnectorType "aws-s3"}}bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20
-                  {{else}}bg-blue-500/10 text-blue-400 ring-1 ring-blue-500/20
+                  {{else if eq $label "Anthropic"}}bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20
+                  {{else if eq $label "OpenAI"}}bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20
+                  {{else if eq $label "Gemini"}}bg-blue-500/10 text-blue-400 ring-1 ring-blue-500/20
+                  {{else if eq $label "AWS"}}bg-orange-500/10 text-orange-400 ring-1 ring-orange-500/20
+                  {{else if eq $label "Hyperstack"}}bg-purple-500/10 text-purple-400 ring-1 ring-purple-500/20
+                  {{else}}bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/20
                   {{end}}">
-                  {{.ConnectorType}}
+                  {{$label}}
                 </span>
               </td>
               <td class="px-6 py-4 text-sm text-slate-300">{{.DisplayName}}</td>
@@ -485,6 +489,137 @@
       {{if not .Catalog}}
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-8 text-center">
         <p class="text-slate-400">No connectors registered. Check your Sieve configuration.</p>
+      </div>
+      {{end}}
+
+      <!-- Coming Soon -->
+      {{if eq .ConnType ""}}
+      <div class="mt-8">
+        <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-4">Coming Soon</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+
+          <!-- Development & Project Management -->
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">GitHub</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Repos, PRs, issues, actions</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">Linear</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Issues, projects, cycles</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">Jira</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Issues, sprints, boards</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">Notion</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Pages, databases, blocks</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+
+          <!-- Communication -->
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">Slack</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Messages, channels, reactions</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">Discord</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Messages, channels, guilds</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+
+          <!-- Productivity -->
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">Microsoft 365</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Outlook, OneDrive, SharePoint, Teams</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+
+          <!-- Data -->
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">PostgreSQL</h4>
+                <p class="text-xs text-slate-500 mt-0.5">SQL queries with row-level policies</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+
+          <!-- Payments & Business -->
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">Stripe</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Payments, customers, subscriptions</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">Twilio</h4>
+                <p class="text-xs text-slate-500 mt-0.5">SMS, voice, WhatsApp</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+
+          <!-- Cloud -->
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">GCP</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Compute, Storage, BigQuery</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
+            <div class="flex items-start justify-between">
+              <div>
+                <h4 class="text-slate-400 font-medium">Vercel</h4>
+                <p class="text-xs text-slate-500 mt-0.5">Deployments, domains, env vars</p>
+              </div>
+              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
+            </div>
+          </div>
+
+        </div>
+        <p class="text-xs text-slate-600 mt-3">All planned services can be used today via the generic HTTP Proxy or MCP Proxy connectors.</p>
       </div>
       {{end}}
 

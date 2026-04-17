@@ -89,6 +89,7 @@ func (rt *Router) Handler() http.Handler {
 	mux.HandleFunc("POST /gmail/v1/users/{userId}/drafts", rt.gmailCreateDraft)
 	mux.HandleFunc("GET /gmail/v1/users/{userId}/labels", rt.gmailListLabels)
 	mux.HandleFunc("POST /gmail/v1/users/{userId}/messages/{id}/modify", rt.gmailModifyMessage)
+	mux.HandleFunc("GET /gmail/v1/users/{userId}/messages/{messageId}/attachments/{attachmentId}", rt.gmailGetAttachment)
 
 	// Transparent HTTP proxy — forwards requests to any API with credential
 	// substitution. The agent uses /proxy/{connection}/{path...} and Sieve
@@ -809,6 +810,13 @@ func (rt *Router) gmailCreateDraft(w http.ResponseWriter, r *http.Request) {
 
 func (rt *Router) gmailListLabels(w http.ResponseWriter, r *http.Request) {
 	rt.gmailExecute(w, r, "list_labels", map[string]any{})
+}
+
+func (rt *Router) gmailGetAttachment(w http.ResponseWriter, r *http.Request) {
+	rt.gmailExecute(w, r, "get_attachment", map[string]any{
+		"message_id":    r.PathValue("messageId"),
+		"attachment_id": r.PathValue("attachmentId"),
+	})
 }
 
 // gmailModifyMessage translates Gmail's modify endpoint into specific Sieve

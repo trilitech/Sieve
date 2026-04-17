@@ -105,7 +105,7 @@ cd sieve
 go build -o sieve ./cmd/sieve
 
 # Configure (edit ports, database path, Google credentials path)
-cp sieve.yaml.example sieve.yaml
+# sieve.yaml is included — edit as needed
 
 # Start
 ./sieve serve
@@ -195,15 +195,28 @@ else:
     print(json.dumps({"action": "allow"}))
 ```
 
+## Roles
+
+Roles bundle connections with policies. A role defines which connections an agent can access and which policies govern each connection. Tokens reference a role rather than listing connections and policies directly.
+
+```bash
+# Create a role that pairs a connection with policies
+./sieve role create --name developer \
+  --bindings '[{"connection_id":"work","policy_ids":["drafter","redact-pii"]},{"connection_id":"anthropic","policy_ids":["sonnet-only"]}]'
+```
+
+One role can be shared by many tokens. When you update a role's bindings, every token referencing that role picks up the change immediately. This makes it easy to manage permissions across many agents at once.
+
+Manage roles via the CLI (`sieve role list`, `sieve role create`, `sieve role delete`) or the web UI at http://localhost:19816/roles.
+
 ## Create tokens
 
-Tokens bind connections + policies. One token per agent.
+Tokens reference a role, which bundles connections with policies. One token per agent.
 
 ```bash
 ./sieve token create \
   --name project-x-agent \
-  --connections google-work,anthropic \
-  --policies gmail-drafter,sonnet-only,redact-pii \
+  --role developer \
   --expires 168h
 ```
 
@@ -271,6 +284,20 @@ curl http://localhost:19817/proxy/openai/v1/chat/completions \
 ```
 
 The agent never sees the real API key. Sieve swaps the sub-token for the real credential transparently.
+
+### MCP built-in tools
+
+Every MCP session exposes five built-in tools alongside the connector-specific tools (like `list_emails`, `drive_list_files`, etc.):
+
+| Tool | Description |
+|------|-------------|
+| `list_connections` | Discover what service connections are available to this token |
+| `list_policies` | List all policies with their names and rule summaries |
+| `get_my_policy` | See the full rules that apply to this token (per-connection) |
+| `get_policy_schema` | Get the complete JSON schema for policy rules — useful before proposing changes |
+| `propose_policy` | Propose a new policy or changes to an existing one (goes to admin approval queue) |
+
+See [MCP Integration Guide](docs/mcp-integration.md) for protocol details and examples.
 
 ## Approval queue
 
