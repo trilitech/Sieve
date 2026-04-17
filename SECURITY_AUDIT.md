@@ -1,6 +1,10 @@
 # Sieve Security Posture
 
-Current security posture of the Sieve credential gateway. A prior audit identified 9 findings (5 HIGH, 4 MEDIUM); all have been fully remediated. Two additional LOW-severity observations surfaced during re-audit and were also resolved. No open findings remain.
+Current security posture of the Sieve credential gateway. A prior audit
+identified 9 findings (5 HIGH, 4 MEDIUM) plus 2 LOW observations — all
+remediated. A follow-up audit of the `murbard_main` merge (Google
+Workspace connectors, LLM evaluator, web UI additions) surfaced 4
+additional findings, also remediated.
 
 **Baseline:** `go test ./... -race` passes (12 packages green).
 
@@ -21,6 +25,12 @@ Current security posture of the Sieve credential gateway. A prior audit identifi
 - **Stderr truncation:** capped at 500 bytes in denial reasons.
 - **Context handling:** derives from caller ctx when live (preserves client-disconnect cancellation); falls back to `context.Background()` only when caller ctx is already cancelled (prevents stale cancellation from defeating the script timeout).
 
+### LLM Evaluator (`internal/policy/llm.go`)
+
+- **Response size cap:** all provider responses (Ollama, Anthropic, OpenAI, Bedrock) read via `readLimitedLLMResponse` with a 5 MiB cap. Exceeding the cap triggers the fail-closed fallback decision.
+- **Audit hygiene:** upstream error bodies are truncated to 500 chars (`truncateForAudit`) before being embedded in fallback decision reasons, preventing audit log bloat.
+- **Fail-closed fallback:** `NewLLMEvaluator` forces `Fallback = "deny"` (ignoring any `"allow"` setting) so provider outages cannot silently open policy.
+
 ### Approval System (`internal/approval/queue.go`, `internal/api/router.go`)
 
 - **ID entropy:** 256-bit `crypto/rand` hex IDs (64 chars); enumeration infeasible. `generateSecureID` returns `(string, error)` — entropy failure is propagated gracefully, no panic.
@@ -32,10 +42,16 @@ Current security posture of the Sieve credential gateway. A prior audit identifi
 - **State parameter:** 16 bytes `crypto/rand`, hex-encoded, single-use, pinned to request host. 10-minute TTL.
 - **Abandoned flow cleanup:** background goroutine sweeps `oauthPending` every 5 minutes. Controlled by `stopCleanup` channel; `Close()` (guarded by `sync.Once`) terminates the goroutine. All call sites (`router_test.go`, `e2e/testserver/main.go`) invoke `Close()`.
 
-### Admin Boundary
+### Admin Boundary (`internal/web/server.go`)
 
 - Every state-changing web handler enforces `rejectIfAgentToken`.
+- `rejectIfAgentToken` also wired into `/api/models`, `/api/generate-script`, `/api/save-script` — defense-in-depth for the endpoints added by the Google Workspace / LLM feature set.
 - Agent/admin port split (19817 / 19816) intact; no agent-callable endpoints on the web server.
+
+### Google Workspace Connectors (`internal/gmail/*`)
+
+- **Drive download size cap:** `DownloadFile` rejects files larger than 50 MiB — first via `Files.Get` metadata check, then via defensive `io.LimitReader` during the body read (covers Google-native formats that report `size=0`).
+- **ACL enforcement:** File/calendar/contact IDs are passed to Google APIs which enforce access control server-side.
 
 ### SQL Injection
 
@@ -45,7 +61,9 @@ Current security posture of the Sieve credential gateway. A prior audit identifi
 
 ## Known Accepted Risks
 
-- **Approval token-revocation race (MEDIUM, accepted):** The "nice-to-have" recommendation of a token generation counter for transactional approval resolution was not implemented. `tokens.Validate` queries SQLite on every call, so revocation is visible atomically at the DB level — the theoretical race window is vanishingly small. Elevating further would require a DB-level token version column or wrapping the approval flow in a transaction, both out of scope for the current threat model.
+- **Approval token-revocation race (MEDIUM, accepted):** The "nice-to-have" recommendation of a token generation counter for transactional approval resolution was not implemented. `tokens.Validate` queries SQLite on every call, so revocation is visible atomically at the DB level — the theoretical race window is vanishingly small.
+
+- **Prompt injection in LLM evaluator (INFO, by design):** The agent's request JSON is interpolated into the policy prompt via `{{request_json}}`. This is the intended contract — the LLM is evaluating the agent's request. Attempts at jailbreak prompt injection are blunted by the fail-closed fallback and the structured `extractDecisionFromText` parser; the policy author is expected to author prompts that treat the request as untrusted data.
 
 ---
 
@@ -54,11 +72,11 @@ Current security posture of the Sieve credential gateway. A prior audit identifi
 | Severity | Open | Notes |
 |----------|------|-------|
 | CRITICAL | 0 | — |
-| HIGH | 0 | 5 remediated |
-| MEDIUM | 0 | 4 remediated (1 accepted risk documented above) |
-| LOW | 0 | 2 remediated |
+| HIGH     | 0 | 5 remediated (pre-merge) |
+| MEDIUM   | 0 | 4 remediated pre-merge + 3 remediated post-merge (LLM body, Drive download, web `/api/*` defense-in-depth) |
+| LOW      | 0 | 2 remediated pre-merge + 1 remediated post-merge (audit log truncation of LLM error bodies) |
 
 ---
 
-**Last Updated:** 2026-04-16
+**Last Updated:** 2026-04-17
 **Methodology:** Line-by-line review of each remediation diff; full-suite `go test ./... -race` green; exploratory review for regressions.

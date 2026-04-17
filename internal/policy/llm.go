@@ -21,6 +21,34 @@ type LLMConfig struct {
 	Fallback string        `json:"fallback"` // "allow" or "deny", default "deny"
 }
 
+// maxLLMResponseBytes caps how much of an LLM response we will read into
+// memory. Beyond this we treat the response as failed and take the fallback
+// decision. Prevents OOM from misbehaving/malicious upstream LLMs.
+const maxLLMResponseBytes = 5 * 1024 * 1024 // 5 MiB
+
+// readLimitedLLMResponse reads up to maxLLMResponseBytes from r. Returns an
+// error if the response exceeds the cap.
+func readLimitedLLMResponse(r io.Reader) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxLLMResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxLLMResponseBytes {
+		return nil, fmt.Errorf("response exceeds %d byte limit", maxLLMResponseBytes)
+	}
+	return b, nil
+}
+
+// truncateForAudit caps an error fragment so a large upstream error body
+// cannot bloat policy decision reasons and audit log entries.
+func truncateForAudit(s string) string {
+	const maxAuditChars = 500
+	if len(s) > maxAuditChars {
+		return s[:maxAuditChars] + "... (truncated)"
+	}
+	return s
+}
+
 // LLMEvaluator calls an LLM API to make policy decisions.
 type LLMEvaluator struct {
 	config    LLMConfig
@@ -145,13 +173,13 @@ func (l *LLMEvaluator) evaluateOllama(ctx context.Context, prompt string) (*Poli
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readLimitedLLMResponse(resp.Body)
 	if err != nil {
 		return l.fallbackDecision("failed to read ollama response: " + err.Error()), nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return l.fallbackDecision(fmt.Sprintf("ollama returned status %d: %s", resp.StatusCode, string(respBody))), nil
+		return l.fallbackDecision(fmt.Sprintf("ollama returned status %d: %s", resp.StatusCode, truncateForAudit(string(respBody)))), nil
 	}
 
 	// Parse the Ollama response to extract the generated text.
@@ -221,9 +249,12 @@ func (l *LLMEvaluator) evaluateAnthropic(ctx context.Context, prompt string) (*P
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := readLimitedLLMResponse(resp.Body)
+	if err != nil {
+		return l.fallbackDecision("failed to read anthropic response: " + err.Error()), nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return l.fallbackDecision(fmt.Sprintf("anthropic returned status %d: %s", resp.StatusCode, string(respBody))), nil
+		return l.fallbackDecision(fmt.Sprintf("anthropic returned status %d: %s", resp.StatusCode, truncateForAudit(string(respBody)))), nil
 	}
 
 	var anthropicResp struct {
@@ -291,9 +322,12 @@ func (l *LLMEvaluator) evaluateOpenAI(ctx context.Context, prompt string) (*Poli
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := readLimitedLLMResponse(resp.Body)
+	if err != nil {
+		return l.fallbackDecision("failed to read openai response: " + err.Error()), nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return l.fallbackDecision(fmt.Sprintf("openai returned status %d: %s", resp.StatusCode, string(respBody))), nil
+		return l.fallbackDecision(fmt.Sprintf("openai returned status %d: %s", resp.StatusCode, truncateForAudit(string(respBody)))), nil
 	}
 
 	var openaiResp struct {

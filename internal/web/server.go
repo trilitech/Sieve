@@ -1363,6 +1363,9 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 // handleListModels fetches available models from an LLM connection by calling
 // its /v1/models endpoint. Both Anthropic and OpenAI use this standard path.
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
 	connID := r.URL.Query().Get("connection_id")
 	if connID == "" {
 		w.Header().Set("Content-Type", "application/json")
@@ -1453,6 +1456,9 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 // --- Script generation API handler ---
 
 func (s *Server) handleGenerateScript(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
 	var req struct {
 		Description string `json:"description"`
 		Scope       string `json:"scope"`
@@ -1489,6 +1495,9 @@ func (s *Server) handleGenerateScript(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
 	var req struct {
 		Filename string `json:"filename"`
 		Content  string `json:"content"`

@@ -10,6 +10,11 @@ import (
 	"google.golang.org/api/drive/v3"
 )
 
+// maxDriveDownloadBytes caps how much content a single DownloadFile call will
+// buffer into memory. Prevents an agent from triggering OOM by requesting a
+// very large Drive file.
+const maxDriveDownloadBytes = 50 * 1024 * 1024 // 50 MiB
+
 // DriveClient wraps the Google Drive API.
 type DriveClient struct {
 	service *drive.Service
@@ -113,6 +118,7 @@ func (c *DriveClient) GetFile(ctx context.Context, fileID string) (*DriveFile, e
 }
 
 // DownloadFile downloads a file's content and returns it as base64.
+// Files exceeding maxDriveDownloadBytes are rejected.
 func (c *DriveClient) DownloadFile(ctx context.Context, fileID string) (*DriveDownloadResult, error) {
 	// First get metadata for filename and mime type.
 	meta, err := c.service.Files.Get(fileID).Context(ctx).
@@ -121,15 +127,25 @@ func (c *DriveClient) DownloadFile(ctx context.Context, fileID string) (*DriveDo
 		return nil, fmt.Errorf("drive: getting file metadata %s: %w", fileID, err)
 	}
 
+	// Reject based on the reported size before downloading when available.
+	if meta.Size > maxDriveDownloadBytes {
+		return nil, fmt.Errorf("drive: file %s size %d exceeds %d byte download limit", fileID, meta.Size, maxDriveDownloadBytes)
+	}
+
 	resp, err := c.service.Files.Get(fileID).Context(ctx).Download()
 	if err != nil {
 		return nil, fmt.Errorf("drive: downloading file %s: %w", fileID, err)
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	// Defense-in-depth: also cap the read itself in case size metadata is
+	// missing or misreported (e.g. Google Docs native formats return size=0).
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxDriveDownloadBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("drive: reading file content %s: %w", fileID, err)
+	}
+	if int64(len(data)) > maxDriveDownloadBytes {
+		return nil, fmt.Errorf("drive: file %s exceeds %d byte download limit", fileID, maxDriveDownloadBytes)
 	}
 
 	return &DriveDownloadResult{
