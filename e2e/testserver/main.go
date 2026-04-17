@@ -115,6 +115,7 @@ func main() {
 		tokenSvc, connSvc, policiesSvc, rolesSvc, registry,
 		approvalQ, auditLog, "", settingsSvc, scriptgenSvc,
 	)
+	defer webSrv.Close()
 	webListener, err := net.Listen("tcp", "127.0.0.1:0")
 	mustErr(err, "web listen")
 	webPort := webListener.Addr().(*net.TCPAddr).Port

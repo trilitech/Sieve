@@ -1391,6 +1391,7 @@ func TestStory63_AgentSelfApproveProtection(t *testing.T) {
 		env.Settings,
 		scriptgenSvc,
 	)
+	t.Cleanup(webSrv.Close)
 	ts := httptest.NewServer(webSrv.Handler())
 	t.Cleanup(ts.Close)
 

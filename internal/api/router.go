@@ -388,7 +388,7 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// The connector must be an http_proxy type with ProxyHTTP method.
 	type httpProxier interface {
-		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) bool
+		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) error
 	}
 
 	proxy, ok := conn.(httpProxier)
@@ -465,12 +465,11 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rt.logAudit(tok, connID, operation, nil, "allow", "", 0)
-	if proxied := proxy.ProxyHTTP(w, r, proxyPath, decision.Filters); !proxied {
-		rt.logAudit(tok, connID, operation, nil, "bad_request", "invalid proxy path", time.Since(start).Milliseconds())
-		return
+	if err := proxy.ProxyHTTP(w, r, proxyPath, decision.Filters); err != nil {
+		rt.logAudit(tok, connID, operation, nil, "bad_request", err.Error(), time.Since(start).Milliseconds())
+	} else {
+		rt.logAudit(tok, connID, operation, nil, "proxied", "", time.Since(start).Milliseconds())
 	}
-	rt.logAudit(tok, connID, operation, nil, "proxied", "", time.Since(start).Milliseconds())
 }
 
 // logAudit is a helper that logs to the audit logger, ignoring errors.
