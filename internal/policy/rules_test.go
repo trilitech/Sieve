@@ -2,7 +2,10 @@ package policy
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/murbard/Sieve/internal/connector"
 )
 
 func makeRulesEvaluator(t *testing.T, config map[string]any) Evaluator {
@@ -2119,5 +2122,146 @@ func TestAudit_NegativeMaxCost(t *testing.T) {
 	})
 	if dec.Action != "allow" {
 		t.Fatalf("expected allow for negative cost (clamped to 0), got %s", dec.Action)
+	}
+}
+
+// --- Policy validation tests ---
+
+func TestValidatePolicy_ValidGmailRule(t *testing.T) {
+	ops := []connector.OperationDef{
+		{Name: "send_email", Params: map[string]connector.ParamDef{"to": {Type: "[]string"}, "subject": {Type: "string"}, "body": {Type: "string"}}},
+		{Name: "list_emails", Params: map[string]connector.ParamDef{"query": {Type: "string"}, "max_results": {Type: "int"}}},
+	}
+
+	config := map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match":  map[string]any{"operations": []any{"send_email"}, "to": []any{"*@company.com"}},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+	}
+
+	errs := ValidatePolicy(config, ops)
+	if len(errs) != 0 {
+		t.Fatalf("expected valid policy, got errors: %v", errs)
+	}
+}
+
+func TestValidatePolicy_InvalidFilterForOperation(t *testing.T) {
+	ops := []connector.OperationDef{
+		{Name: "send_email", Params: map[string]connector.ParamDef{"to": {Type: "[]string"}, "subject": {Type: "string"}}},
+		{Name: "list_emails", Params: map[string]connector.ParamDef{"query": {Type: "string"}}},
+	}
+
+	config := map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match":  map[string]any{"operations": []any{"list_emails"}, "to": []any{"*@company.com"}},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+	}
+
+	errs := ValidatePolicy(config, ops)
+	if len(errs) == 0 {
+		t.Fatal("expected validation error for 'to' filter on list_emails")
+	}
+	if !strings.Contains(errs[0], "to") || !strings.Contains(errs[0], "list_emails") {
+		t.Fatalf("expected error about 'to' not applying to list_emails, got: %s", errs[0])
+	}
+	// Should suggest valid operations.
+	if !strings.Contains(errs[0], "send_email") {
+		t.Fatalf("expected error to suggest send_email as valid, got: %s", errs[0])
+	}
+}
+
+func TestValidatePolicy_MixedOperationsPartiallyValid(t *testing.T) {
+	ops := []connector.OperationDef{
+		{Name: "send_email", Params: map[string]connector.ParamDef{"to": {Type: "[]string"}}},
+		{Name: "list_emails", Params: map[string]connector.ParamDef{"query": {Type: "string"}}},
+	}
+
+	// to filter with both send_email and list_emails — valid because send_email has "to".
+	config := map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match":  map[string]any{"operations": []any{"send_email", "list_emails"}, "to": []any{"*@company.com"}},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+	}
+
+	errs := ValidatePolicy(config, ops)
+	if len(errs) != 0 {
+		t.Fatalf("expected valid (at least one op has 'to'), got errors: %v", errs)
+	}
+}
+
+func TestValidatePolicy_UnknownOperation(t *testing.T) {
+	ops := []connector.OperationDef{
+		{Name: "list_emails", Params: map[string]connector.ParamDef{}},
+	}
+
+	config := map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match":  map[string]any{"operations": []any{"bogus_operation"}},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+	}
+
+	errs := ValidatePolicy(config, ops)
+	if len(errs) == 0 {
+		t.Fatal("expected error for unknown operation")
+	}
+	if !strings.Contains(errs[0], "bogus_operation") {
+		t.Fatalf("expected error mentioning bogus_operation, got: %s", errs[0])
+	}
+}
+
+func TestValidatePolicy_CatchAllRuleAlwaysValid(t *testing.T) {
+	ops := []connector.OperationDef{
+		{Name: "list_emails", Params: map[string]connector.ParamDef{}},
+	}
+
+	// No match block = catch-all, always valid.
+	config := map[string]any{
+		"rules": []any{
+			map[string]any{"action": "deny", "reason": "block everything"},
+		},
+		"default_action": "deny",
+	}
+
+	errs := ValidatePolicy(config, ops)
+	if len(errs) != 0 {
+		t.Fatalf("catch-all rule should be valid, got errors: %v", errs)
+	}
+}
+
+func TestValidatePolicy_ResponseFieldsAlwaysValid(t *testing.T) {
+	ops := []connector.OperationDef{
+		{Name: "list_emails", Params: map[string]connector.ParamDef{"query": {Type: "string"}}},
+	}
+
+	// "from" and "labels" are response-based fields, should be valid on any operation.
+	config := map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match":  map[string]any{"operations": []any{"list_emails"}, "from": []any{"*@company.com"}, "labels": []any{"INBOX"}},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+	}
+
+	errs := ValidatePolicy(config, ops)
+	if len(errs) != 0 {
+		t.Fatalf("response-based fields (from, labels) should be valid on any op, got errors: %v", errs)
 	}
 }

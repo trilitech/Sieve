@@ -26,6 +26,7 @@ import (
 
 	"github.com/murbard/Sieve/internal/connector"
 	"github.com/murbard/Sieve/internal/database"
+	"github.com/murbard/Sieve/internal/secrets"
 	"golang.org/x/oauth2"
 )
 
@@ -42,16 +43,21 @@ type Connection struct {
 type Service struct {
 	db       *database.DB
 	registry *connector.Registry
+	keyring  *secrets.Keyring
 	// Live connector instances keyed by connection ID
 	live map[string]connector.Connector
 	mu   sync.RWMutex
 }
 
-// NewService creates a new connection service.
-func NewService(db *database.DB, registry *connector.Registry) *Service {
+// NewService creates a new connection service. The keyring must be loaded
+// (passphrase supplied at startup) before any credential read or write —
+// operations that need decryption return secrets.ErrKeyringNotLoaded
+// otherwise, and callers should surface that as a 503.
+func NewService(db *database.DB, registry *connector.Registry, keyring *secrets.Keyring) *Service {
 	return &Service{
 		db:       db,
 		registry: registry,
+		keyring:  keyring,
 		live:     make(map[string]connector.Connector),
 	}
 }
@@ -61,15 +67,31 @@ func (s *Service) Add(id, connectorType, displayName string, config map[string]a
 	if !s.registry.HasType(connectorType) {
 		return &connector.ErrUnknownConnector{Type: connectorType}
 	}
+	if !s.keyring.IsLoaded() {
+		return secrets.ErrKeyringNotLoaded
+	}
 
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
+	blob, err := secrets.Encrypt(s.keyring.KEK(), configJSON)
+	if err != nil {
+		return fmt.Errorf("encrypt config: %w", err)
+	}
+
 	_, err = s.db.DB.Exec(
-		`INSERT INTO connections (id, connector_type, display_name, config, created_at) VALUES (?, ?, ?, ?, ?)`,
-		id, connectorType, displayName, string(configJSON), time.Now().UTC(),
+		`INSERT INTO connections (
+			id, connector_type, display_name,
+			config_ciphertext, config_nonce,
+			dek_wrapped, dek_nonce, enc_version,
+			created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, connectorType, displayName,
+		blob.Ciphertext, blob.Nonce,
+		blob.WrappedDEK, blob.DEKNonce, blob.Version,
+		time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("insert connection: %w", err)
@@ -103,18 +125,36 @@ func (s *Service) Get(id string) (*Connection, error) {
 }
 
 // GetWithConfig returns a connection including its config (for internal use).
+// Requires the keyring to be loaded; returns secrets.ErrKeyringNotLoaded if not.
 func (s *Service) GetWithConfig(id string) (*Connection, error) {
+	if !s.keyring.IsLoaded() {
+		return nil, secrets.ErrKeyringNotLoaded
+	}
+
 	row := s.db.DB.QueryRow(
-		`SELECT id, connector_type, display_name, config, created_at FROM connections WHERE id = ?`, id,
+		`SELECT id, connector_type, display_name,
+			config_ciphertext, config_nonce,
+			dek_wrapped, dek_nonce, enc_version,
+			created_at
+		 FROM connections WHERE id = ?`, id,
 	)
 
 	var c Connection
-	var configJSON string
-	if err := row.Scan(&c.ID, &c.ConnectorType, &c.DisplayName, &configJSON, &c.CreatedAt); err != nil {
+	var blob secrets.EncryptedBlob
+	if err := row.Scan(
+		&c.ID, &c.ConnectorType, &c.DisplayName,
+		&blob.Ciphertext, &blob.Nonce,
+		&blob.WrappedDEK, &blob.DEKNonce, &blob.Version,
+		&c.CreatedAt,
+	); err != nil {
 		return nil, fmt.Errorf("get connection %q: %w", id, err)
 	}
 
-	if err := json.Unmarshal([]byte(configJSON), &c.Config); err != nil {
+	configJSON, err := secrets.Decrypt(s.keyring.KEK(), &blob)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt config for %q: %w", id, err)
+	}
+	if err := json.Unmarshal(configJSON, &c.Config); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
 
@@ -143,14 +183,31 @@ func (s *Service) List() ([]Connection, error) {
 }
 
 // UpdateConfig updates a connection's stored config.
+// Rotates the per-record DEK on every write — random 32 bytes is cheap and
+// avoids carrying state about whether the row's existing DEK is reusable.
 func (s *Service) UpdateConfig(id string, config map[string]any) error {
+	if !s.keyring.IsLoaded() {
+		return secrets.ErrKeyringNotLoaded
+	}
+
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
+	blob, err := secrets.Encrypt(s.keyring.KEK(), configJSON)
+	if err != nil {
+		return fmt.Errorf("encrypt config: %w", err)
+	}
+
 	res, err := s.db.DB.Exec(
-		`UPDATE connections SET config = ? WHERE id = ?`, string(configJSON), id,
+		`UPDATE connections SET
+			config_ciphertext = ?, config_nonce = ?,
+			dek_wrapped = ?, dek_nonce = ?, enc_version = ?
+		 WHERE id = ?`,
+		blob.Ciphertext, blob.Nonce,
+		blob.WrappedDEK, blob.DEKNonce, blob.Version,
+		id,
 	)
 	if err != nil {
 		return fmt.Errorf("update connection config: %w", err)
@@ -265,21 +322,41 @@ func (s *Service) GetConnector(id string) (connector.Connector, error) {
 }
 
 // InitAll loads all connections from DB and creates live connector instances.
+// Requires the keyring to be loaded; returns secrets.ErrKeyringNotLoaded if not.
 func (s *Service) InitAll() error {
-	rows, err := s.db.DB.Query(`SELECT id, connector_type, config FROM connections`)
+	if !s.keyring.IsLoaded() {
+		return secrets.ErrKeyringNotLoaded
+	}
+
+	rows, err := s.db.DB.Query(
+		`SELECT id, connector_type,
+			config_ciphertext, config_nonce,
+			dek_wrapped, dek_nonce, enc_version
+		 FROM connections`,
+	)
 	if err != nil {
 		return fmt.Errorf("load connections: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var id, connType, configJSON string
-		if err := rows.Scan(&id, &connType, &configJSON); err != nil {
+		var id, connType string
+		var blob secrets.EncryptedBlob
+		if err := rows.Scan(
+			&id, &connType,
+			&blob.Ciphertext, &blob.Nonce,
+			&blob.WrappedDEK, &blob.DEKNonce, &blob.Version,
+		); err != nil {
 			return fmt.Errorf("scan connection: %w", err)
 		}
 
+		configJSON, err := secrets.Decrypt(s.keyring.KEK(), &blob)
+		if err != nil {
+			return fmt.Errorf("decrypt config for %q: %w", id, err)
+		}
+
 		var config map[string]any
-		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		if err := json.Unmarshal(configJSON, &config); err != nil {
 			return fmt.Errorf("unmarshal config for %q: %w", id, err)
 		}
 

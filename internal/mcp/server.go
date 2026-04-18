@@ -271,8 +271,17 @@ func (s *Server) handleToolsList(id any, tok *tokens.Token) *JSONRPCResponse {
 	})
 
 	tools = append(tools, ToolDef{
+		Name:        "get_policy_schema",
+		Description: "Get the full JSON schema for policy rules. Use this before calling propose_policy to understand exactly what match fields, actions, and filters are available.",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	})
+
+	tools = append(tools, ToolDef{
 		Name:        "propose_policy",
-		Description: "Propose a new policy or changes to an existing policy. The proposal goes to the human admin for approval — you cannot enact policy changes directly. Describe what the policy should do and provide the rules.",
+		Description: "Propose a new policy or changes to an existing policy. The proposal goes to the human admin for approval — you cannot enact policy changes directly. Call get_policy_schema first to see all available match fields and actions.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -284,9 +293,14 @@ func (s *Server) handleToolsList(id any, tok *tokens.Token) *JSONRPCResponse {
 					"type":        "string",
 					"description": "Human-readable description of what this policy does and why you're proposing it",
 				},
+				"default_action": map[string]any{
+					"type":        "string",
+					"enum":        []string{"allow", "deny"},
+					"description": "Action when no rule matches. Use 'deny' for fail-closed (recommended).",
+				},
 				"rules": map[string]any{
 					"type":        "array",
-					"description": "Array of policy rules. Each rule has: match (operations, from, subject_contains, labels, content_contains), action (allow/deny/approval_required/script/filter), and optional reason, filter_exclude, redact_patterns, script config.",
+					"description": "Ordered array of policy rules. First matching rule wins.",
 					"items": map[string]any{
 						"type": "object",
 					},
@@ -326,6 +340,8 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		return s.handleListPolicies(id, tok, start)
 	case "get_my_policy":
 		return s.handleGetMyPolicy(id, tok, start)
+	case "get_policy_schema":
+		return s.handleGetPolicySchema(id, tok, start)
 	case "propose_policy":
 		return s.handleProposePolicy(id, tok, start, call.Arguments)
 	}
@@ -597,6 +613,182 @@ func (s *Server) handleGetMyPolicy(id any, tok *tokens.Token, start time.Time) *
 
 	resultJSON, _ := json.Marshal(results)
 	s.logAudit(tok, "", "get_my_policy", nil, "allow", "", time.Since(start).Milliseconds())
+
+	return &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  ToolCallResult{Content: []ContentBlock{{Type: "text", Text: string(resultJSON)}}},
+	}
+}
+
+func (s *Server) handleGetPolicySchema(id any, tok *tokens.Token, start time.Time) *JSONRPCResponse {
+	schema := map[string]any{
+		"description": "A policy has an ordered list of rules (first match wins) and a default_action (\"allow\" or \"deny\"). Each rule has a match block (all conditions ANDed; omit for catch-all) and an action.",
+		"actions": map[string]any{
+			"allow":             "Permit the operation.",
+			"deny":              "Block the operation. Optionally set 'reason'.",
+			"approval_required": "Queue for human approval before executing.",
+			"filter":            "Like allow, but apply content filters (filter_exclude / redact_patterns) to the response before returning it.",
+		},
+		"common_rule_fields": map[string]any{
+			"action":          "Required. One of: allow, deny, approval_required, filter.",
+			"reason":          "Optional. Human-readable reason shown when this rule fires.",
+			"filter_exclude":  "For filter action: remove response items containing this string (case-insensitive).",
+			"redact_patterns": "For filter action: array of regex patterns replaced with [REDACTED].",
+		},
+		"common_match_fields": map[string]any{
+			"operations": "Array of operation names this rule applies to. Empty or omitted = match all operations.",
+		},
+		"scopes": map[string]any{
+			"gmail": map[string]any{
+				"operations": []string{"list_emails", "read_email", "read_thread", "get_attachment", "create_draft", "update_draft", "reply", "send_email", "send_draft", "add_label", "remove_label", "archive", "list_labels"},
+				"match_fields": map[string]any{
+					"from":             "Array of sender patterns (glob: \"*@company.com\").",
+					"to":               "Array of recipient patterns (glob: \"*@company.com\").",
+					"subject_contains": "Array of strings — match if subject contains any.",
+					"content_contains": "String — match if response body contains this.",
+					"labels":           "Array of label names — match if email has any of these.",
+				},
+				"example": map[string]any{
+					"default_action": "deny",
+					"rules": []any{
+						map[string]any{"match": map[string]any{"operations": []any{"list_emails", "read_email"}}, "action": "allow"},
+						map[string]any{"match": map[string]any{"operations": []any{"send_email"}, "to": []any{"*@company.com"}}, "action": "approval_required"},
+					},
+				},
+			},
+			"llm": map[string]any{
+				"description": "For LLM API connections (Anthropic, OpenAI, Gemini, Bedrock).",
+				"operations":  []string{"chat", "complete", "embed"},
+				"match_fields": map[string]any{
+					"model":                  "Array of model patterns (glob: \"claude-*\", \"gpt-4*\").",
+					"providers":              "Array of provider names (exact: \"anthropic\", \"openai\", \"gemini\", \"bedrock\").",
+					"max_tokens":             "Integer — deny if request's max_tokens exceeds this.",
+					"max_cost":               "Float — deny if estimated cost per request exceeds this (dollars).",
+					"extended_thinking":      "\"enabled\" or \"disabled\". Anthropic only.",
+					"system_prompt_contains": "String — match if system prompt contains this.",
+					"max_temperature":        "Float — deny if temperature exceeds this. OpenAI.",
+					"json_mode":              "\"required\" or \"forbidden\". OpenAI.",
+					"grounding":              "\"enabled\" or \"disabled\". Gemini.",
+					"safety_threshold":       "Safety level. Gemini.",
+				},
+				"example": map[string]any{
+					"default_action": "deny",
+					"rules": []any{
+						map[string]any{"match": map[string]any{"model": []any{"claude-sonnet-*"}, "max_tokens": 4096, "max_cost": 0.10}, "action": "allow"},
+					},
+				},
+			},
+			"http_proxy": map[string]any{
+				"description": "For generic HTTP proxy connections. Operations are proxy:{METHOD}:{path}.",
+				"match_fields": map[string]any{
+					"path":          "Glob pattern for request path (e.g. \"/v1/messages*\").",
+					"body_contains": "String — match if request body contains this (case-insensitive).",
+				},
+				"example": map[string]any{
+					"default_action": "deny",
+					"rules": []any{
+						map[string]any{"match": map[string]any{"path": "/v1/chat/completions"}, "action": "allow"},
+					},
+				},
+			},
+			"drive": map[string]any{
+				"operations": []string{"drive.list_files", "drive.get_file", "drive.download_file", "drive.upload_file", "drive.share_file"},
+				"match_fields": map[string]any{
+					"mime_type":     "Glob pattern for file MIME type (e.g. \"application/pdf\").",
+					"owner":         "Glob pattern for file owner email.",
+					"shared_status": "\"shared with me\" or \"owned by me\".",
+				},
+			},
+			"calendar": map[string]any{
+				"operations": []string{"calendar.list_events", "calendar.get_event", "calendar.create_event", "calendar.update_event", "calendar.delete_event"},
+				"match_fields": map[string]any{
+					"calendar_id": "Exact match for calendar ID (e.g. \"primary\", \"work@group.calendar.google.com\").",
+					"attendee":    "Glob pattern for attendee email.",
+				},
+			},
+			"people": map[string]any{
+				"operations": []string{"people.list_contacts", "people.get_contact", "people.create_contact", "people.update_contact", "people.delete_contact"},
+				"match_fields": map[string]any{
+					"contact_group":  "Exact match for contact group (e.g. \"myContacts\").",
+					"allowed_fields": "Comma-separated allowed fields (e.g. \"names,emailAddresses\"). Denies if request asks for other fields.",
+				},
+			},
+			"sheets": map[string]any{
+				"operations": []string{"sheets.get_spreadsheet", "sheets.read_range", "sheets.write_range", "sheets.create_spreadsheet"},
+				"match_fields": map[string]any{
+					"spreadsheet_id": "Exact match — restrict to a specific spreadsheet.",
+					"range_pattern":  "Glob pattern for cell range (e.g. \"Sheet1!*\").",
+				},
+			},
+			"docs": map[string]any{
+				"operations": []string{"docs.get_document", "docs.list_documents", "docs.create_document", "docs.update_document"},
+				"match_fields": map[string]any{
+					"document_id":    "Exact match — restrict to a specific document.",
+					"title_contains": "Case-insensitive substring match on document title.",
+				},
+			},
+			"ec2": map[string]any{
+				"operations": []string{"ec2.describe_instances", "ec2.describe_vpcs", "ec2.describe_security_groups", "ec2.describe_subnets", "ec2.describe_images", "ec2.run_instances", "ec2.start_instances", "ec2.stop_instances", "ec2.terminate_instances", "ec2.reboot_instances", "ec2.create_security_group", "ec2.authorize_security_group_ingress", "ec2.create_key_pair"},
+				"match_fields": map[string]any{
+					"instance_type": "Array of allowed types (e.g. [\"t3.micro\", \"t3.small\"]).",
+					"region":        "AWS region (e.g. \"us-east-1\").",
+					"max_count":     "Integer — max instances per launch request.",
+					"ami":           "Glob pattern for AMI ID (e.g. \"ami-0abc*\").",
+					"vpc":           "VPC or subnet ID to restrict to.",
+					"ports":         "Comma-separated allowed ports (e.g. \"443,8080\").",
+					"cidr":          "CIDR pattern. Use \"!0.0.0.0/0\" to block public access.",
+					"tag":           "Tag in \"key=value\" format.",
+				},
+				"example": map[string]any{
+					"default_action": "deny",
+					"rules": []any{
+						map[string]any{"match": map[string]any{"operations": []any{"ec2.describe_instances", "ec2.describe_vpcs"}}, "action": "allow"},
+						map[string]any{"match": map[string]any{"operations": []any{"ec2.run_instances"}, "instance_type": []any{"t3.micro"}, "region": "us-east-1", "max_count": 3}, "action": "allow"},
+					},
+				},
+			},
+			"s3": map[string]any{
+				"operations": []string{"s3.list_buckets", "s3.list_objects", "s3.get_object", "s3.head_object", "s3.put_object", "s3.delete_object", "s3.copy_object"},
+				"match_fields": map[string]any{
+					"bucket":     "Glob pattern for bucket name (e.g. \"prod-*\").",
+					"key_prefix": "Prefix match for object key (e.g. \"public/\").",
+					"region":     "AWS region.",
+				},
+			},
+			"lambda": map[string]any{
+				"operations": []string{"lambda.list_functions", "lambda.get_function", "lambda.invoke", "lambda.invoke_async"},
+				"match_fields": map[string]any{
+					"function_name": "Glob pattern for function name.",
+					"region":        "AWS region.",
+				},
+			},
+			"ses": map[string]any{
+				"operations": []string{"ses.send_email", "ses.send_templated_email", "ses.list_identities", "ses.get_send_quota"},
+				"match_fields": map[string]any{
+					"recipient":       "Glob pattern for recipient email (e.g. \"*@company.com\").",
+					"sender_identity": "Exact match for sender email address.",
+				},
+			},
+			"dynamodb": map[string]any{
+				"operations": []string{"dynamodb.get_item", "dynamodb.query", "dynamodb.scan", "dynamodb.list_tables", "dynamodb.put_item", "dynamodb.update_item", "dynamodb.delete_item"},
+				"match_fields": map[string]any{
+					"table_name": "Exact match for table name.",
+					"index_name": "Exact match for index name.",
+				},
+			},
+			"hyperstack": map[string]any{
+				"operations": []string{"hyperstack.list_vms", "hyperstack.get_vm", "hyperstack.create_vm", "hyperstack.delete_vm", "hyperstack.start_vm", "hyperstack.stop_vm", "hyperstack.restart_vm", "hyperstack.list_flavors", "hyperstack.list_images"},
+				"match_fields": map[string]any{
+					"flavor":  "Exact match for VM flavor (e.g. \"a100\").",
+					"max_vms": "Integer — max VMs per request.",
+				},
+			},
+		},
+	}
+
+	resultJSON, _ := json.Marshal(schema)
+	s.logAudit(tok, "", "get_policy_schema", nil, "allow", "", time.Since(start).Milliseconds())
 
 	return &JSONRPCResponse{
 		JSONRPC: "2.0",

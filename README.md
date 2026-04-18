@@ -105,13 +105,20 @@ cd sieve
 go build -o sieve ./cmd/sieve
 
 # Configure (edit ports, database path, Google credentials path)
-cp sieve.yaml.example sieve.yaml
+# sieve.yaml is included — edit as needed
 
-# Start
+# Start — prompts for a passphrase on first run, then on every restart.
+# The passphrase derives the key that encrypts every stored credential.
 ./sieve serve
 # Web UI: http://localhost:19816
 # API/MCP: http://localhost:19817
 ```
+
+> **Note on upgrading from an older dev build:** the `connections` table schema
+> changed to encrypted columns. On first start against a pre-encryption DB,
+> Sieve drops the `connections` table. Reconnect your services once after
+> upgrade — everything else (policies, roles, tokens, audit log) is preserved.
+> See [docs/credential-encryption.md](docs/credential-encryption.md).
 
 ### Run with Docker
 
@@ -195,15 +202,28 @@ else:
     print(json.dumps({"action": "allow"}))
 ```
 
+## Roles
+
+Roles bundle connections with policies. A role defines which connections an agent can access and which policies govern each connection. Tokens reference a role rather than listing connections and policies directly.
+
+```bash
+# Create a role that pairs a connection with policies
+./sieve role create --name developer \
+  --bindings '[{"connection_id":"work","policy_ids":["drafter","redact-pii"]},{"connection_id":"anthropic","policy_ids":["sonnet-only"]}]'
+```
+
+One role can be shared by many tokens. When you update a role's bindings, every token referencing that role picks up the change immediately. This makes it easy to manage permissions across many agents at once.
+
+Manage roles via the CLI (`sieve role list`, `sieve role create`, `sieve role delete`) or the web UI at http://localhost:19816/roles.
+
 ## Create tokens
 
-Tokens bind connections + policies. One token per agent.
+Tokens reference a role, which bundles connections with policies. One token per agent.
 
 ```bash
 ./sieve token create \
   --name project-x-agent \
-  --connections google-work,anthropic \
-  --policies gmail-drafter,sonnet-only,redact-pii \
+  --role developer \
   --expires 168h
 ```
 
@@ -272,6 +292,20 @@ curl http://localhost:19817/proxy/openai/v1/chat/completions \
 
 The agent never sees the real API key. Sieve swaps the sub-token for the real credential transparently.
 
+### MCP built-in tools
+
+Every MCP session exposes five built-in tools alongside the connector-specific tools (like `list_emails`, `drive_list_files`, etc.):
+
+| Tool | Description |
+|------|-------------|
+| `list_connections` | Discover what service connections are available to this token |
+| `list_policies` | List all policies with their names and rule summaries |
+| `get_my_policy` | See the full rules that apply to this token (per-connection) |
+| `get_policy_schema` | Get the complete JSON schema for policy rules — useful before proposing changes |
+| `propose_policy` | Propose a new policy or changes to an existing one (goes to admin approval queue) |
+
+See [MCP Integration Guide](docs/mcp-integration.md) for protocol details and examples.
+
 ## Approval queue
 
 When a policy returns "require approval", the operation is held:
@@ -313,7 +347,19 @@ Sieve runs two HTTP servers on separate ports:
 
 This separation means an agent cannot access the admin UI even if it knows the URL — it's on a different port that you don't give it.
 
-Data is stored in SQLite (single file at `./data/sieve.db`). Credentials are stored in the database, protected by file permissions (0600). The database file is the trust boundary.
+Data is stored in SQLite (single file at `./data/sieve.db`, WAL mode, `chmod 0600`).
+
+### Credential encryption at rest
+
+Every stored credential (OAuth refresh tokens, LLM API keys, HTTP proxy keys) is encrypted with envelope encryption before it touches the DB:
+
+- A passphrase you enter at startup is stretched with **argon2id** into a 32-byte KEK held only in process memory.
+- Each `connections` row has its own random **DEK** (per-record data-encryption key). The DEK encrypts the config JSON under **AES-256-GCM**, and is itself wrapped under the KEK.
+- Stopping Sieve → the KEK is gone. A stolen DB file, backup, snapshot, or SQLi read against `connections.config_ciphertext` yields only ciphertext.
+
+The trade-off: **reboot requires re-entering the passphrase.** Sieve refuses to start without one. You can automate this for non-interactive deployments by pointing `SIEVE_PASSPHRASE_FILE` at a mounted secret file (e.g., systemd `LoadCredential=`, Docker secrets).
+
+Full threat model, rotation procedure, and deployment recipes: [docs/credential-encryption.md](docs/credential-encryption.md).
 
 ## Configuration
 
@@ -323,6 +369,9 @@ server:
   host: "127.0.0.1"   # bind address (0.0.0.0 for all interfaces)
   api_port: 19817      # agent-facing API/MCP port
   ui_port: 19816       # human-facing web UI port
+  # Optional: path to a file containing the keyring passphrase. If unset,
+  # Sieve prompts on TTY or reads from SIEVE_PASSPHRASE_FILE / FD 3.
+  # passphrase_file: "/run/secrets/sieve-passphrase"
 
 connectors:
   google:

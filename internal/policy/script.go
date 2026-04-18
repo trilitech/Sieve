@@ -65,10 +65,23 @@ func (s *ScriptEvaluator) Evaluate(ctx context.Context, req *PolicyRequest) (*Po
 		timeout = 5 * time.Second
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	// Derive scriptCtx from the caller ctx when it is still live so that a
+	// client disconnect cancels the script process (saving resources).
+	// When the caller ctx is already done (e.g., already-cancelled context),
+	// fall back to context.Background() so the timeout is honoured in full.
+	baseCtx := ctx
+	if ctx.Err() != nil {
+		baseCtx = context.Background()
+	}
+	scriptCtx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, s.config.Command, s.config.Script)
+	cmd := exec.CommandContext(scriptCtx, s.config.Command, s.config.Script)
+
+	// Sandbox: don't leak parent-process environment variables to the
+	// policy script. PATH is whitelisted so the interpreter (python3, node,
+	// etc.) can still be located on disk.
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 
 	inputData, err := json.Marshal(req)
 	if err != nil {
@@ -84,7 +97,12 @@ func (s *ScriptEvaluator) Evaluate(ctx context.Context, req *PolicyRequest) (*Po
 	if err := cmd.Run(); err != nil {
 		reason := fmt.Sprintf("script evaluator: process failed: %v", err)
 		if stderr.Len() > 0 {
-			reason += "; stderr: " + stderr.String()
+			stderrText := stderr.String()
+			const maxStderr = 500
+			if len(stderrText) > maxStderr {
+				stderrText = stderrText[:maxStderr] + "... (truncated)"
+			}
+			reason += "; stderr: " + stderrText
 		}
 		return denyDecision(reason), nil
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/murbard/Sieve/internal/database"
 	"github.com/murbard/Sieve/internal/policies"
 	"github.com/murbard/Sieve/internal/roles"
+	"github.com/murbard/Sieve/internal/secrets"
 	"github.com/murbard/Sieve/internal/settings"
 	mockconn "github.com/murbard/Sieve/internal/testing/mockconnector"
 	"github.com/murbard/Sieve/internal/tokens"
@@ -30,6 +31,7 @@ type Env struct {
 	Audit       *audit.Logger
 	Settings    *settings.Service
 	Registry    *connector.Registry
+	Keyring     *secrets.Keyring
 	Mock        *mockconn.Mock
 	DBPath      string
 }
@@ -50,7 +52,18 @@ func New(t *testing.T) *Env {
 	mock := mockconn.New("mock")
 	registry.Register(mock.Meta(), mock.Factory())
 
-	connSvc := connections.NewService(db, registry)
+	// Tests must run unattended, so set up an in-memory keyring with a
+	// fixed test passphrase. Production paths still require an admin
+	// passphrase at startup.
+	keyring := &secrets.Keyring{}
+	saved := secrets.DefaultArgon2Params
+	secrets.DefaultArgon2Params = secrets.Argon2Params{Time: 1, Memory: 8, Threads: 1, KeyLen: 32}
+	if err := keyring.Setup(db.DB, []byte("test-passphrase")); err != nil {
+		t.Fatalf("keyring setup: %v", err)
+	}
+	secrets.DefaultArgon2Params = saved
+
+	connSvc := connections.NewService(db, registry, keyring)
 	tokenSvc := tokens.NewService(db)
 	policiesSvc := policies.NewService(db)
 	rolesSvc := roles.NewService(db)
@@ -77,6 +90,7 @@ func New(t *testing.T) *Env {
 		Audit:       auditLog,
 		Settings:    settingsSvc,
 		Registry:    registry,
+		Keyring:     keyring,
 		Mock:        mock,
 		DBPath:      dbPath,
 	}

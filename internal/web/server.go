@@ -30,6 +30,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -44,8 +45,10 @@ import (
 	"github.com/murbard/Sieve/internal/connections"
 	"github.com/murbard/Sieve/internal/connector"
 	"github.com/murbard/Sieve/internal/policies"
+	"github.com/murbard/Sieve/internal/policy"
 	"github.com/murbard/Sieve/internal/roles"
 	"github.com/murbard/Sieve/internal/scriptgen"
+	"github.com/murbard/Sieve/internal/secrets"
 	"github.com/murbard/Sieve/internal/settings"
 	"github.com/murbard/Sieve/internal/tokens"
 	"golang.org/x/oauth2"
@@ -73,6 +76,9 @@ type Server struct {
 
 	oauthMu     sync.Mutex
 	oauthPending map[string]pendingOAuth // state -> pending connection info
+
+	stopCleanup     chan struct{} // closed by Close() to stop the cleanup goroutine
+	stopCleanupOnce sync.Once    // ensures Close() is safe under concurrent calls
 }
 
 // funcMap returns the template function map used across all templates.
@@ -140,10 +146,47 @@ func funcMap() template.FuncMap {
 			}
 			return *t
 		},
+		"isExpired": func(t *time.Time) bool {
+			if t == nil {
+				return false
+			}
+			return time.Now().After(*t)
+		},
+		"timeUntil": func(t time.Time) string {
+			d := time.Until(t)
+			if d < 0 {
+				// Already past — show "ago" format.
+				d = -d
+				switch {
+				case d < time.Minute:
+					return "just expired"
+				case d < time.Hour:
+					return fmt.Sprintf("%dm ago", int(d.Minutes()))
+				case d < 24*time.Hour:
+					return fmt.Sprintf("%dh ago", int(d.Hours()))
+				default:
+					return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+				}
+			}
+			switch {
+			case d < time.Minute:
+				return "in <1m"
+			case d < time.Hour:
+				return fmt.Sprintf("in %dm", int(d.Minutes()))
+			case d < 24*time.Hour:
+				return fmt.Sprintf("in %dh", int(d.Hours()))
+			case d < 30*24*time.Hour:
+				return fmt.Sprintf("in %dd", int(d.Hours()/24))
+			default:
+				return fmt.Sprintf("in %dmo", int(d.Hours()/(24*30)))
+			}
+		},
 	}
 }
 
-// NewServer creates a new web UI server.
+// NewServer creates a new web UI server. It starts a background goroutine for
+// OAuth cleanup; callers MUST call (*Server).Close() when the server is no
+// longer needed (e.g. via defer or t.Cleanup) to stop the goroutine.
 func NewServer(
 	tokensSvc *tokens.Service,
 	connsSvc *connections.Service,
@@ -169,6 +212,7 @@ func NewServer(
 		templates:            make(map[string]*template.Template),
 		googleCredentialsFile: googleCredentialsFile,
 		oauthPending:         make(map[string]pendingOAuth),
+		stopCleanup:          make(chan struct{}),
 	}
 
 	// Parse each page template together with the nav partial.
@@ -182,6 +226,12 @@ func NewServer(
 		)
 		s.templates[page] = t
 	}
+
+	// Background sweep of abandoned OAuth flows. Without this, the
+	// oauthPending map would grow unboundedly (entries are normally
+	// deleted when the callback completes, but incomplete flows would
+	// never get cleaned up).
+	go s.oauthPendingCleanupLoop()
 
 	return s
 }
@@ -235,6 +285,9 @@ func (s *Server) Handler() http.Handler {
 	// Script generation API
 	mux.HandleFunc("POST /api/generate-script", s.handleGenerateScript)
 	mux.HandleFunc("POST /api/save-script", s.handleSaveScript)
+
+	// Model discovery API
+	mux.HandleFunc("GET /api/models", s.handleListModels)
 
 	// Docs
 	mux.HandleFunc("GET /docs/{name}", s.handleDocs)
@@ -322,9 +375,56 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		catalog = nil
 	}
 
+	// Build display labels for connection types. LLM connections show
+	// their provider name instead of generic "http_proxy".
+	connLabels := make(map[string]string)
+	for _, c := range conns {
+		label := c.ConnectorType
+		if label == "http_proxy" || label == "mcp_proxy" {
+			if full, err := s.connections.GetWithConfig(c.ID); err == nil {
+				if cat, ok := full.Config["category"].(string); ok {
+					switch cat {
+					case "llm":
+						label = "LLM API"
+						// Try to detect specific provider from target_url.
+						if target, ok := full.Config["target_url"].(string); ok {
+							switch {
+							case strings.Contains(target, "anthropic"):
+								label = "Anthropic"
+							case strings.Contains(target, "openai.com"):
+								label = "OpenAI"
+							case strings.Contains(target, "googleapis.com"):
+								label = "Gemini"
+							case strings.Contains(target, "bedrock"):
+								label = "Bedrock"
+							}
+						}
+					case "cloud":
+						label = "Cloud"
+						if target, ok := full.Config["target_url"].(string); ok {
+							if strings.Contains(target, "hyperstack") {
+								label = "Hyperstack"
+							} else {
+								label = "AWS"
+							}
+						}
+					}
+				}
+				if label == "http_proxy" {
+					label = "HTTP Proxy"
+				}
+			}
+		}
+		if label == "mcp_proxy" {
+			label = "MCP Proxy"
+		}
+		connLabels[c.ID] = label
+	}
+
 	data := map[string]any{
 		"Active":      active,
 		"Connections": conns,
+		"ConnLabels":  connLabels,
 		"Catalog":     catalog,
 		"ConnType":    connType,
 	}
@@ -452,6 +552,7 @@ func (s *Server) googleOAuthConfig(host string) (*oauth2.Config, error) {
 		"https://www.googleapis.com/auth/calendar",
 		"https://www.googleapis.com/auth/contacts",
 		"https://www.googleapis.com/auth/spreadsheets",
+		"https://www.googleapis.com/auth/documents",
 	}
 	conf, err := google.ConfigFromJSON(data, scopes...)
 	if err != nil {
@@ -545,6 +646,41 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
+// oauthPendingCleanupLoop runs until Close() is called, deleting oauthPending
+// entries older than 10 minutes every 5 minutes.
+func (s *Server) oauthPendingCleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.sweepOAuthPending(time.Now())
+		case <-s.stopCleanup:
+			return
+		}
+	}
+}
+
+// Close stops the background cleanup goroutine. It is safe to call
+// concurrently and multiple times; subsequent calls are no-ops.
+func (s *Server) Close() {
+	s.stopCleanupOnce.Do(func() {
+		close(s.stopCleanup)
+	})
+}
+
+// sweepOAuthPending removes pendingOAuth entries older than 10 minutes.
+// Extracted for testability.
+func (s *Server) sweepOAuthPending(now time.Time) {
+	s.oauthMu.Lock()
+	defer s.oauthMu.Unlock()
+	for state, pending := range s.oauthPending {
+		if now.Sub(pending.CreatedAt) > 10*time.Minute {
+			delete(s.oauthPending, state)
+		}
+	}
 }
 
 // --- Tokens handlers ---
@@ -875,6 +1011,12 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		policyConfig = make(map[string]any)
 	}
 
+	// Validate the policy rules against known operations.
+	if errs := s.validatePolicyRules(policyConfig); len(errs) > 0 {
+		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
+		return
+	}
+
 	if _, err := s.policies.Create(name, policyType, policyConfig); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -931,12 +1073,48 @@ func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		policyConfig = make(map[string]any)
 	}
 
+	if errs := s.validatePolicyRules(policyConfig); len(errs) > 0 {
+		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
+		return
+	}
+
 	if err := s.policies.Update(id, name, policyType, policyConfig); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	http.Redirect(w, r, "/policies", http.StatusSeeOther)
+}
+
+// validatePolicyRules gathers all operations from all live connections and
+// validates the policy config against them. Returns nil if valid.
+func (s *Server) validatePolicyRules(config map[string]any) []string {
+	// Gather all operations from all connections.
+	conns, err := s.connections.List()
+	if err != nil {
+		return nil // can't validate without connections, skip
+	}
+
+	var allOps []connector.OperationDef
+	seen := make(map[string]bool)
+	for _, conn := range conns {
+		c, err := s.connections.GetConnector(conn.ID)
+		if err != nil {
+			continue
+		}
+		for _, op := range c.Operations() {
+			if !seen[op.Name] {
+				allOps = append(allOps, op)
+				seen[op.Name] = true
+			}
+		}
+	}
+
+	if len(allOps) == 0 {
+		return nil // no connectors available, skip validation
+	}
+
+	return policy.ValidatePolicy(config, allOps)
 }
 
 func (s *Server) handlePolicyDelete(w http.ResponseWriter, r *http.Request) {
@@ -957,9 +1135,20 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build token name lookup for display.
+	tokenNames := make(map[string]string)
+	for _, item := range items {
+		if _, ok := tokenNames[item.TokenID]; !ok {
+			if tok, err := s.tokens.Get(item.TokenID); err == nil {
+				tokenNames[item.TokenID] = tok.Name
+			}
+		}
+	}
+
 	data := map[string]any{
-		"Active":    "approvals",
-		"Approvals": items,
+		"Active":     "approvals",
+		"Approvals":  items,
+		"TokenNames": tokenNames,
 	}
 	s.render(w, "approvals", data)
 }
@@ -1171,9 +1360,111 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }
 
+// --- Model discovery API handler ---
+
+// handleListModels fetches available models from an LLM connection by calling
+// its /v1/models endpoint. Both Anthropic and OpenAI use this standard path.
+func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
+	connID := r.URL.Query().Get("connection_id")
+	if connID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"models": []any{}})
+		return
+	}
+
+	conn, err := s.connections.GetWithConfig(connID)
+	if err != nil {
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, "connection not found", http.StatusNotFound)
+		return
+	}
+
+	targetURL, _ := conn.Config["target_url"].(string)
+	authHeader, _ := conn.Config["auth_header"].(string)
+	authValue, _ := conn.Config["auth_value"].(string)
+
+	if targetURL == "" || authValue == "" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"models": []any{}})
+		return
+	}
+
+	// Call /v1/models on the target API.
+	modelsURL := strings.TrimRight(targetURL, "/") + "/v1/models"
+	req, err := http.NewRequest("GET", modelsURL, nil)
+	if err != nil {
+		http.Error(w, "failed to create request", http.StatusInternalServerError)
+		return
+	}
+
+	if authHeader != "" {
+		req.Header.Set(authHeader, authValue)
+	}
+
+	// Anthropic requires anthropic-version header.
+	if strings.Contains(targetURL, "anthropic.com") {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+
+	// Add any extra headers from config.
+	if extra, ok := conn.Config["extra_headers"].(map[string]any); ok {
+		for k, v := range extra {
+			if vs, ok := v.(string); ok {
+				req.Header.Set(k, vs)
+			}
+		}
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"models": []any{}, "error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"models": []any{}})
+		return
+	}
+
+	// Both Anthropic and OpenAI return {"data": [...]} with model objects.
+	var models []map[string]any
+	if data, ok := body["data"].([]any); ok {
+		for _, item := range data {
+			if m, ok := item.(map[string]any); ok {
+				id, _ := m["id"].(string)
+				displayName, _ := m["display_name"].(string)
+				if displayName == "" {
+					displayName = id
+				}
+				models = append(models, map[string]any{
+					"id":           id,
+					"display_name": displayName,
+				})
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"models": models})
+}
+
 // --- Script generation API handler ---
 
 func (s *Server) handleGenerateScript(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
 	var req struct {
 		Description string `json:"description"`
 		Scope       string `json:"scope"`
@@ -1210,6 +1501,9 @@ func (s *Server) handleGenerateScript(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
 	var req struct {
 		Filename string `json:"filename"`
 		Content  string `json:"content"`

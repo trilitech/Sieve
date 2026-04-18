@@ -1501,3 +1501,249 @@ func TestStory144_Extended_ToolsSchemasVerification(t *testing.T) {
 		t.Fatalf("story 144 ext: 'message_id' should be required for read_email, required=%v", readRequired)
 	}
 }
+
+// Test get_policy_schema returns complete schema with all match fields.
+func TestGetPolicySchema(t *testing.T) {
+	ts, tok, _ := setup(t)
+
+	resp := doRPC(t, ts, tok, jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      300,
+		Method:  "tools/call",
+		Params: map[string]any{
+			"name":      "get_policy_schema",
+			"arguments": map[string]any{},
+		},
+	})
+
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+
+	content, ok := resp.Result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatal("expected content in result")
+	}
+	block := content[0].(map[string]any)
+	text, _ := block["text"].(string)
+
+	// Verify schema is organized by scope with per-scope operations and match fields.
+	for _, scope := range []string{
+		"gmail", "llm", "http_proxy", "drive", "calendar", "people",
+		"sheets", "docs", "ec2", "s3", "lambda", "ses", "dynamodb", "hyperstack",
+	} {
+		if !strings.Contains(text, `"`+scope+`"`) {
+			t.Errorf("schema missing scope %q", scope)
+		}
+	}
+
+	// Verify key match fields appear under their respective scopes.
+	for _, field := range []string{
+		"from", "to", "labels", "subject_contains",
+		"model", "providers", "max_tokens", "max_cost",
+		"path", "body_contains",
+		"instance_type", "region", "max_count", "ami", "ports", "cidr",
+		"bucket", "key_prefix",
+		"calendar_id", "attendee",
+		"spreadsheet_id", "range_pattern",
+		"document_id", "title_contains",
+		"table_name", "function_name",
+		"flavor", "max_vms",
+		"filter_exclude", "redact_patterns",
+	} {
+		if !strings.Contains(text, field) {
+			t.Errorf("schema missing field %q", field)
+		}
+	}
+}
+
+// TestToolsListIncludesAllGoogleOps verifies that tools/list returns all 36
+// operations from the mock connector (which now mirrors the real Google
+// connector's operation set: 13 Gmail + 23 new Google ops).
+func TestToolsListIncludesAllGoogleOps(t *testing.T) {
+	ts, tok, _ := setup(t)
+
+	resp := doRPC(t, ts, tok, jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      400,
+		Method:  "tools/list",
+	})
+
+	if resp.Error != nil {
+		t.Fatalf("tools/list error: %v", resp.Error)
+	}
+
+	tools, ok := resp.Result["tools"].([]any)
+	if !ok {
+		t.Fatal("expected tools array in result")
+	}
+
+	toolNames := make(map[string]bool)
+	for _, tool := range tools {
+		tm, ok := tool.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := tm["name"].(string)
+		toolNames[name] = true
+	}
+
+	// Verify Drive operations appear (dots normalized to underscores in MCP).
+	driveOps := []string{
+		"drive_list_files", "drive_get_file", "drive_download_file",
+		"drive_upload_file", "drive_share_file",
+	}
+	for _, op := range driveOps {
+		if !toolNames[op] {
+			t.Errorf("missing Drive tool %q in tools/list", op)
+		}
+	}
+
+	// Verify Calendar operations.
+	calOps := []string{
+		"calendar_list_events", "calendar_get_event", "calendar_create_event",
+		"calendar_update_event", "calendar_delete_event",
+	}
+	for _, op := range calOps {
+		if !toolNames[op] {
+			t.Errorf("missing Calendar tool %q in tools/list", op)
+		}
+	}
+
+	// Verify People operations.
+	peopleOps := []string{
+		"people_list_contacts", "people_get_contact", "people_create_contact",
+		"people_update_contact", "people_delete_contact",
+	}
+	for _, op := range peopleOps {
+		if !toolNames[op] {
+			t.Errorf("missing People tool %q in tools/list", op)
+		}
+	}
+
+	// Verify Sheets operations.
+	sheetsOps := []string{
+		"sheets_get_spreadsheet", "sheets_read_range",
+		"sheets_write_range", "sheets_create_spreadsheet",
+	}
+	for _, op := range sheetsOps {
+		if !toolNames[op] {
+			t.Errorf("missing Sheets tool %q in tools/list", op)
+		}
+	}
+
+	// Verify Docs operations.
+	docsOps := []string{
+		"docs_get_document", "docs_list_documents",
+		"docs_create_document", "docs_update_document",
+	}
+	for _, op := range docsOps {
+		if !toolNames[op] {
+			t.Errorf("missing Docs tool %q in tools/list", op)
+		}
+	}
+
+	// Built-in tools (4) + connector ops (36) = at least 40.
+	if len(tools) < 40 {
+		t.Errorf("expected at least 40 tools (4 builtin + 36 connector), got %d", len(tools))
+	}
+}
+
+// TestToolsListGoogleOpsHaveCorrectSchemas verifies that the new Google
+// operations have proper inputSchema with required fields and properties.
+func TestToolsListGoogleOpsHaveCorrectSchemas(t *testing.T) {
+	ts, tok, _ := setup(t)
+
+	resp := doRPC(t, ts, tok, jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      401,
+		Method:  "tools/list",
+	})
+
+	if resp.Error != nil {
+		t.Fatalf("tools/list error: %v", resp.Error)
+	}
+
+	tools, ok := resp.Result["tools"].([]any)
+	if !ok {
+		t.Fatal("expected tools array")
+	}
+
+	toolMap := make(map[string]map[string]any)
+	for _, tool := range tools {
+		tm, ok := tool.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := tm["name"].(string)
+		toolMap[name] = tm
+	}
+
+	// Verify drive_get_file has file_id as required.
+	driveGetFile, ok := toolMap["drive_get_file"]
+	if !ok {
+		t.Fatal("missing drive_get_file tool")
+	}
+	schema, ok := driveGetFile["inputSchema"].(map[string]any)
+	if !ok {
+		t.Fatal("missing inputSchema for drive_get_file")
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("missing properties in drive_get_file schema")
+	}
+	if _, ok := props["file_id"]; !ok {
+		t.Fatal("drive_get_file missing 'file_id' property")
+	}
+
+	// Verify sheets_read_range has spreadsheet_id and range as required.
+	sheetsRead, ok := toolMap["sheets_read_range"]
+	if !ok {
+		t.Fatal("missing sheets_read_range tool")
+	}
+	schema = sheetsRead["inputSchema"].(map[string]any)
+	props = schema["properties"].(map[string]any)
+	if _, ok := props["spreadsheet_id"]; !ok {
+		t.Fatal("sheets_read_range missing 'spreadsheet_id' property")
+	}
+	if _, ok := props["range"]; !ok {
+		t.Fatal("sheets_read_range missing 'range' property")
+	}
+	required, ok := schema["required"].([]any)
+	if !ok {
+		t.Fatal("sheets_read_range missing required array")
+	}
+	reqSet := make(map[string]bool)
+	for _, r := range required {
+		reqSet[r.(string)] = true
+	}
+	if !reqSet["spreadsheet_id"] {
+		t.Fatal("sheets_read_range: spreadsheet_id should be required")
+	}
+	if !reqSet["range"] {
+		t.Fatal("sheets_read_range: range should be required")
+	}
+
+	// Verify calendar_create_event has summary, start, end as required.
+	calCreate, ok := toolMap["calendar_create_event"]
+	if !ok {
+		t.Fatal("missing calendar_create_event tool")
+	}
+	schema = calCreate["inputSchema"].(map[string]any)
+	props = schema["properties"].(map[string]any)
+	for _, field := range []string{"summary", "start", "end"} {
+		if _, ok := props[field]; !ok {
+			t.Fatalf("calendar_create_event missing %q property", field)
+		}
+	}
+	required = schema["required"].([]any)
+	reqSet = make(map[string]bool)
+	for _, r := range required {
+		reqSet[r.(string)] = true
+	}
+	for _, field := range []string{"summary", "start", "end"} {
+		if !reqSet[field] {
+			t.Fatalf("calendar_create_event: %q should be required", field)
+		}
+	}
+}

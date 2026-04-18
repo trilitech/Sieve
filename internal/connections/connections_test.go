@@ -8,8 +8,23 @@ import (
 	"github.com/murbard/Sieve/internal/connector"
 	"github.com/murbard/Sieve/internal/database"
 	"github.com/murbard/Sieve/internal/roles"
+	"github.com/murbard/Sieve/internal/secrets"
 	mockconn "github.com/murbard/Sieve/internal/testing/mockconnector"
 )
+
+// testKeyring builds a loaded Keyring for tests. Uses cheap argon2
+// parameters so the suite stays fast.
+func testKeyring(t *testing.T, db *database.DB) *secrets.Keyring {
+	t.Helper()
+	saved := secrets.DefaultArgon2Params
+	secrets.DefaultArgon2Params = secrets.Argon2Params{Time: 1, Memory: 8, Threads: 1, KeyLen: 32}
+	defer func() { secrets.DefaultArgon2Params = saved }()
+	k := &secrets.Keyring{}
+	if err := k.Setup(db.DB, []byte("test-passphrase")); err != nil {
+		t.Fatalf("keyring setup: %v", err)
+	}
+	return k
+}
 
 func setup(t *testing.T) (*connections.Service, *mockconn.Mock) {
 	t.Helper()
@@ -24,7 +39,7 @@ func setup(t *testing.T) (*connections.Service, *mockconn.Mock) {
 	mock := mockconn.New("mock")
 	registry.Register(mock.Meta(), mock.Factory())
 
-	return connections.NewService(db, registry), mock
+	return connections.NewService(db, registry, testKeyring(t, db)), mock
 }
 
 func TestAddAndGet(t *testing.T) {
@@ -239,7 +254,7 @@ func TestStory6_DeleteConnectionReferencedByRole(t *testing.T) {
 	mock := mockconn.New("mock")
 	registry.Register(mock.Meta(), mock.Factory())
 
-	connSvc := connections.NewService(db, registry)
+	connSvc := connections.NewService(db, registry, testKeyring(t, db))
 	roleSvc := roles.NewService(db)
 
 	// Create a connection.
@@ -334,7 +349,8 @@ func TestInitAll(t *testing.T) {
 	mock := mockconn.New("mock")
 	registry.Register(mock.Meta(), mock.Factory())
 
-	svc := connections.NewService(db, registry)
+	keyring := testKeyring(t, db)
+	svc := connections.NewService(db, registry, keyring)
 
 	// Add connections.
 	for _, id := range []string{"a", "b"} {
@@ -343,8 +359,10 @@ func TestInitAll(t *testing.T) {
 		}
 	}
 
-	// Create a fresh service (simulating restart) and init all.
-	svc2 := connections.NewService(db, registry)
+	// Create a fresh service (simulating restart) and init all. The keyring
+	// stays loaded across "restart" since this simulates a running process
+	// that reconstructed services after, e.g., reconfiguration.
+	svc2 := connections.NewService(db, registry, keyring)
 	if err := svc2.InitAll(); err != nil {
 		t.Fatalf("init all: %v", err)
 	}

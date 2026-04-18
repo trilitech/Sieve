@@ -24,6 +24,7 @@ package gmail
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -32,8 +33,13 @@ import (
 	gmailclient "github.com/murbard/Sieve/internal/gmail"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	calendarapi "google.golang.org/api/calendar/v3"
+	docsapi "google.golang.org/api/docs/v1"
+	driveapi "google.golang.org/api/drive/v3"
 	googleapi "google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
+	peopleapi "google.golang.org/api/people/v1"
+	sheetsapi "google.golang.org/api/sheets/v4"
 )
 
 // Meta describes the Google Account connector for the UI catalog.
@@ -50,8 +56,13 @@ var Meta = connector.ConnectorMeta{
 
 // GoogleConnector implements the connector.Connector interface for Google services.
 type GoogleConnector struct {
-	client *gmailclient.Client
-	email  string
+	client         *gmailclient.Client
+	driveClient    *gmailclient.DriveClient
+	calendarClient *gmailclient.CalendarClient
+	peopleClient   *gmailclient.PeopleClient
+	sheetsClient   *gmailclient.SheetsClient
+	docsClient     *gmailclient.DocsClient
+	email          string
 }
 
 // persistingTokenSource wraps an oauth2.TokenSource and calls a callback
@@ -127,16 +138,48 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		tokenSource = oauth2.StaticTokenSource(token)
 	}
 
-	svc, err := googleapi.NewService(context.Background(), option.WithTokenSource(tokenSource))
+	tsOpt := option.WithTokenSource(tokenSource)
+
+	svc, err := googleapi.NewService(context.Background(), tsOpt)
 	if err != nil {
 		return nil, fmt.Errorf("gmail connector: creating gmail service: %w", err)
+	}
+
+	driveSvc, err := driveapi.NewService(context.Background(), tsOpt)
+	if err != nil {
+		return nil, fmt.Errorf("gmail connector: creating drive service: %w", err)
+	}
+
+	calendarSvc, err := calendarapi.NewService(context.Background(), tsOpt)
+	if err != nil {
+		return nil, fmt.Errorf("gmail connector: creating calendar service: %w", err)
+	}
+
+	peopleSvc, err := peopleapi.NewService(context.Background(), tsOpt)
+	if err != nil {
+		return nil, fmt.Errorf("gmail connector: creating people service: %w", err)
+	}
+
+	sheetsSvc, err := sheetsapi.NewService(context.Background(), tsOpt)
+	if err != nil {
+		return nil, fmt.Errorf("gmail connector: creating sheets service: %w", err)
+	}
+
+	docsSvc, err := docsapi.NewService(context.Background(), tsOpt)
+	if err != nil {
+		return nil, fmt.Errorf("gmail connector: creating docs service: %w", err)
 	}
 
 	client := gmailclient.NewClient(svc, email)
 
 	return &GoogleConnector{
-		client: client,
-		email:  email,
+		client:         client,
+		driveClient:    gmailclient.NewDriveClient(driveSvc),
+		calendarClient: gmailclient.NewCalendarClient(calendarSvc),
+		peopleClient:   gmailclient.NewPeopleClient(peopleSvc),
+		sheetsClient:   gmailclient.NewSheetsClient(sheetsSvc),
+		docsClient:     gmailclient.NewDocsClient(docsSvc, driveSvc),
+		email:          email,
 	}, nil
 }
 
@@ -310,20 +353,20 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 			ReadOnly: true,
 		},
 
-		// --- Drive operations ---
+		// --- Google Drive ---
 		{
 			Name:        "drive.list_files",
-			Description: "List/search files in Google Drive",
+			Description: "List files in Google Drive with optional search query",
 			Params: map[string]connector.ParamDef{
-				"query":       {Type: "string", Description: "Drive search query string", Required: false},
-				"max_results": {Type: "int", Description: "Maximum number of results to return", Required: false},
-				"page_token":  {Type: "string", Description: "Page token for pagination", Required: false},
+				"query":      {Type: "string", Description: "Drive search query (e.g. \"name contains 'report'\")", Required: false},
+				"page_size":  {Type: "int", Description: "Maximum number of results (default 100)", Required: false},
+				"page_token": {Type: "string", Description: "Page token for pagination", Required: false},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "drive.get_file",
-			Description: "Get file metadata from Google Drive",
+			Description: "Get metadata for a single file in Google Drive",
 			Params: map[string]connector.ParamDef{
 				"file_id": {Type: "string", Description: "The ID of the file", Required: true},
 			},
@@ -331,7 +374,7 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 		},
 		{
 			Name:        "drive.download_file",
-			Description: "Download file content from Google Drive",
+			Description: "Download a file's content from Google Drive (returned as base64)",
 			Params: map[string]connector.ParamDef{
 				"file_id": {Type: "string", Description: "The ID of the file to download", Required: true},
 			},
@@ -341,101 +384,108 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 			Name:        "drive.upload_file",
 			Description: "Upload a file to Google Drive",
 			Params: map[string]connector.ParamDef{
-				"name":      {Type: "string", Description: "File name", Required: true},
-				"content":   {Type: "string", Description: "File content (base64 encoded for binary)", Required: true},
-				"mime_type": {Type: "string", Description: "MIME type of the file", Required: true},
+				"name":             {Type: "string", Description: "Filename", Required: true},
+				"content":          {Type: "string", Description: "File content as base64", Required: true},
+				"mime_type":        {Type: "string", Description: "MIME type of the file", Required: true},
+				"parent_folder_id": {Type: "string", Description: "Parent folder ID (optional)", Required: false},
 			},
 			ReadOnly: false,
 		},
 		{
 			Name:        "drive.share_file",
-			Description: "Share a file in Google Drive",
+			Description: "Share a file with a user by email",
 			Params: map[string]connector.ParamDef{
 				"file_id": {Type: "string", Description: "The ID of the file to share", Required: true},
 				"email":   {Type: "string", Description: "Email address to share with", Required: true},
-				"role":    {Type: "string", Description: "Permission role (reader, writer, commenter)", Required: true},
+				"role":    {Type: "string", Description: "Permission role: reader, writer, commenter (default: reader)", Required: false},
 			},
 			ReadOnly: false,
 		},
 
-		// --- Calendar operations ---
+		// --- Google Calendar ---
 		{
 			Name:        "calendar.list_events",
-			Description: "List events from Google Calendar",
+			Description: "List events from a Google Calendar",
 			Params: map[string]connector.ParamDef{
 				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
-				"time_min":    {Type: "string", Description: "Start of time range (RFC3339)", Required: false},
-				"time_max":    {Type: "string", Description: "End of time range (RFC3339)", Required: false},
-				"max_results": {Type: "int", Description: "Maximum number of results to return", Required: false},
+				"time_min":    {Type: "string", Description: "Start time filter (RFC3339, e.g. 2024-01-01T00:00:00Z)", Required: false},
+				"time_max":    {Type: "string", Description: "End time filter (RFC3339)", Required: false},
+				"max_results": {Type: "int", Description: "Maximum number of events (default 100)", Required: false},
+				"page_token":  {Type: "string", Description: "Page token for pagination", Required: false},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "calendar.get_event",
-			Description: "Get event details from Google Calendar",
+			Description: "Get a single calendar event by ID",
 			Params: map[string]connector.ParamDef{
 				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
-				"event_id":    {Type: "string", Description: "The ID of the event", Required: true},
+				"event_id":    {Type: "string", Description: "The event ID", Required: true},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "calendar.create_event",
-			Description: "Create an event in Google Calendar",
+			Description: "Create a new calendar event",
 			Params: map[string]connector.ParamDef{
 				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
 				"summary":     {Type: "string", Description: "Event title", Required: true},
 				"start":       {Type: "string", Description: "Start time (RFC3339)", Required: true},
 				"end":         {Type: "string", Description: "End time (RFC3339)", Required: true},
+				"location":    {Type: "string", Description: "Event location", Required: false},
+				"description": {Type: "string", Description: "Event description", Required: false},
 				"attendees":   {Type: "[]string", Description: "Attendee email addresses", Required: false},
 			},
 			ReadOnly: false,
 		},
 		{
 			Name:        "calendar.update_event",
-			Description: "Update an event in Google Calendar",
+			Description: "Update an existing calendar event",
 			Params: map[string]connector.ParamDef{
 				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
-				"event_id":    {Type: "string", Description: "The ID of the event to update", Required: true},
+				"event_id":    {Type: "string", Description: "The event ID", Required: true},
 				"summary":     {Type: "string", Description: "Event title", Required: false},
 				"start":       {Type: "string", Description: "Start time (RFC3339)", Required: false},
 				"end":         {Type: "string", Description: "End time (RFC3339)", Required: false},
+				"location":    {Type: "string", Description: "Event location", Required: false},
+				"description": {Type: "string", Description: "Event description", Required: false},
+				"attendees":   {Type: "[]string", Description: "Attendee email addresses", Required: false},
 			},
 			ReadOnly: false,
 		},
 		{
 			Name:        "calendar.delete_event",
-			Description: "Delete an event from Google Calendar",
+			Description: "Delete a calendar event",
 			Params: map[string]connector.ParamDef{
 				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
-				"event_id":    {Type: "string", Description: "The ID of the event to delete", Required: true},
+				"event_id":    {Type: "string", Description: "The event ID to delete", Required: true},
 			},
 			ReadOnly: false,
 		},
 
-		// --- People/Contacts operations ---
+		// --- Google People/Contacts ---
 		{
 			Name:        "people.list_contacts",
-			Description: "List contacts from Google People API",
+			Description: "List the user's Google contacts",
 			Params: map[string]connector.ParamDef{
-				"max_results": {Type: "int", Description: "Maximum number of results to return", Required: false},
-				"page_token":  {Type: "string", Description: "Page token for pagination", Required: false},
+				"page_size":  {Type: "int", Description: "Maximum number of contacts (default 100)", Required: false},
+				"page_token": {Type: "string", Description: "Page token for pagination", Required: false},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "people.get_contact",
-			Description: "Get a contact from Google People API",
+			Description: "Get a single contact by resource name",
 			Params: map[string]connector.ParamDef{
-				"resource_name": {Type: "string", Description: "Resource name of the contact (e.g. people/c123)", Required: true},
+				"resource_name": {Type: "string", Description: "Resource name (e.g. people/c12345)", Required: true},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "people.create_contact",
-			Description: "Create a contact via Google People API",
+			Description: "Create a new contact",
 			Params: map[string]connector.ParamDef{
-				"name":  {Type: "string", Description: "Contact display name", Required: true},
+				"name":  {Type: "string", Description: "Contact name", Required: false},
 				"email": {Type: "string", Description: "Contact email address", Required: false},
 				"phone": {Type: "string", Description: "Contact phone number", Required: false},
 			},
@@ -443,10 +493,10 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 		},
 		{
 			Name:        "people.update_contact",
-			Description: "Update a contact via Google People API",
+			Description: "Update an existing contact",
 			Params: map[string]connector.ParamDef{
-				"resource_name": {Type: "string", Description: "Resource name of the contact", Required: true},
-				"name":          {Type: "string", Description: "Contact display name", Required: false},
+				"resource_name": {Type: "string", Description: "Resource name (e.g. people/c12345)", Required: true},
+				"name":          {Type: "string", Description: "Contact name", Required: false},
 				"email":         {Type: "string", Description: "Contact email address", Required: false},
 				"phone":         {Type: "string", Description: "Contact phone number", Required: false},
 			},
@@ -454,38 +504,38 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 		},
 		{
 			Name:        "people.delete_contact",
-			Description: "Delete a contact via Google People API",
+			Description: "Delete a contact",
 			Params: map[string]connector.ParamDef{
-				"resource_name": {Type: "string", Description: "Resource name of the contact to delete", Required: true},
+				"resource_name": {Type: "string", Description: "Resource name (e.g. people/c12345)", Required: true},
 			},
 			ReadOnly: false,
 		},
 
-		// --- Sheets operations ---
+		// --- Google Sheets ---
 		{
 			Name:        "sheets.get_spreadsheet",
-			Description: "Get spreadsheet metadata from Google Sheets",
+			Description: "Get metadata about a spreadsheet (sheets, titles)",
 			Params: map[string]connector.ParamDef{
-				"spreadsheet_id": {Type: "string", Description: "The ID of the spreadsheet", Required: true},
+				"spreadsheet_id": {Type: "string", Description: "The spreadsheet ID", Required: true},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "sheets.read_range",
-			Description: "Read a cell range from Google Sheets",
+			Description: "Read values from a spreadsheet range",
 			Params: map[string]connector.ParamDef{
-				"spreadsheet_id": {Type: "string", Description: "The ID of the spreadsheet", Required: true},
+				"spreadsheet_id": {Type: "string", Description: "The spreadsheet ID", Required: true},
 				"range":          {Type: "string", Description: "A1 notation range (e.g. Sheet1!A1:D10)", Required: true},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "sheets.write_range",
-			Description: "Write values to a cell range in Google Sheets",
+			Description: "Write values to a spreadsheet range",
 			Params: map[string]connector.ParamDef{
-				"spreadsheet_id": {Type: "string", Description: "The ID of the spreadsheet", Required: true},
+				"spreadsheet_id": {Type: "string", Description: "The spreadsheet ID", Required: true},
 				"range":          {Type: "string", Description: "A1 notation range (e.g. Sheet1!A1:D10)", Required: true},
-				"values":         {Type: "string", Description: "JSON array of row arrays to write", Required: true},
+				"values":         {Type: "string", Description: "JSON array of rows, e.g. [[\"a\",\"b\"],[\"c\",\"d\"]]", Required: true},
 			},
 			ReadOnly: false,
 		},
@@ -493,32 +543,32 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 			Name:        "sheets.create_spreadsheet",
 			Description: "Create a new Google Sheets spreadsheet",
 			Params: map[string]connector.ParamDef{
-				"title": {Type: "string", Description: "Title of the new spreadsheet", Required: true},
+				"title": {Type: "string", Description: "Spreadsheet title", Required: true},
 			},
 			ReadOnly: false,
 		},
 
-		// --- Docs operations ---
+		// --- Google Docs ---
 		{
 			Name:        "docs.get_document",
-			Description: "Get a Google Docs document",
+			Description: "Get a Google Doc with its plain text content",
 			Params: map[string]connector.ParamDef{
-				"document_id": {Type: "string", Description: "The ID of the document", Required: true},
+				"document_id": {Type: "string", Description: "The document ID", Required: true},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "docs.list_documents",
-			Description: "List Google Docs documents (via Drive API with MIME type filter)",
+			Description: "List Google Docs from Drive",
 			Params: map[string]connector.ParamDef{
-				"query":       {Type: "string", Description: "Search query", Required: false},
-				"max_results": {Type: "int", Description: "Maximum number of results", Required: false},
+				"page_size":  {Type: "int", Description: "Maximum number of results (default 100)", Required: false},
+				"page_token": {Type: "string", Description: "Page token for pagination", Required: false},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "docs.create_document",
-			Description: "Create a new Google Docs document",
+			Description: "Create a new Google Doc",
 			Params: map[string]connector.ParamDef{
 				"title": {Type: "string", Description: "Document title", Required: true},
 			},
@@ -526,10 +576,10 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 		},
 		{
 			Name:        "docs.update_document",
-			Description: "Update a Google Docs document",
+			Description: "Update a Google Doc using batch update requests",
 			Params: map[string]connector.ParamDef{
-				"document_id": {Type: "string", Description: "The ID of the document", Required: true},
-				"requests":    {Type: "string", Description: "JSON array of batch update requests", Required: true},
+				"document_id": {Type: "string", Description: "The document ID", Required: true},
+				"requests":    {Type: "string", Description: "JSON array of Docs API request objects", Required: true},
 			},
 			ReadOnly: false,
 		},
@@ -658,12 +708,235 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 		}
 		return g.client.GetAttachment(ctx, messageID, attachmentID)
 
-	case "drive.list_files", "drive.get_file", "drive.download_file", "drive.upload_file", "drive.share_file",
-		"calendar.list_events", "calendar.get_event", "calendar.create_event", "calendar.update_event", "calendar.delete_event",
-		"people.list_contacts", "people.get_contact", "people.create_contact", "people.update_contact", "people.delete_contact",
-		"sheets.get_spreadsheet", "sheets.read_range", "sheets.write_range", "sheets.create_spreadsheet",
-		"docs.get_document", "docs.list_documents", "docs.create_document", "docs.update_document":
-		return nil, fmt.Errorf("google: %s not yet implemented", op)
+	// --- Google Drive ---
+	case "drive.list_files":
+		return g.driveClient.ListFiles(ctx,
+			getStringParam(params, "query"),
+			int64(getIntParam(params, "page_size")),
+			getStringParam(params, "page_token"),
+		)
+
+	case "drive.get_file":
+		fileID, err := requireStringParam(params, "file_id")
+		if err != nil {
+			return nil, err
+		}
+		return g.driveClient.GetFile(ctx, fileID)
+
+	case "drive.download_file":
+		fileID, err := requireStringParam(params, "file_id")
+		if err != nil {
+			return nil, err
+		}
+		return g.driveClient.DownloadFile(ctx, fileID)
+
+	case "drive.upload_file":
+		name, err := requireStringParam(params, "name")
+		if err != nil {
+			return nil, err
+		}
+		content, err := requireStringParam(params, "content")
+		if err != nil {
+			return nil, err
+		}
+		mimeType, err := requireStringParam(params, "mime_type")
+		if err != nil {
+			return nil, err
+		}
+		parentFolderID := getStringParam(params, "parent_folder_id")
+		return g.driveClient.UploadFile(ctx, name, content, mimeType, parentFolderID)
+
+	case "drive.share_file":
+		fileID, err := requireStringParam(params, "file_id")
+		if err != nil {
+			return nil, err
+		}
+		email, err := requireStringParam(params, "email")
+		if err != nil {
+			return nil, err
+		}
+		role := getStringParam(params, "role")
+		return g.driveClient.ShareFile(ctx, fileID, email, role)
+
+	// --- Google Calendar ---
+	case "calendar.list_events":
+		return g.calendarClient.ListEvents(ctx,
+			getStringParam(params, "calendar_id"),
+			getStringParam(params, "time_min"),
+			getStringParam(params, "time_max"),
+			int64(getIntParam(params, "max_results")),
+			getStringParam(params, "page_token"),
+		)
+
+	case "calendar.get_event":
+		eventID, err := requireStringParam(params, "event_id")
+		if err != nil {
+			return nil, err
+		}
+		return g.calendarClient.GetEvent(ctx, getStringParam(params, "calendar_id"), eventID)
+
+	case "calendar.create_event":
+		summary, err := requireStringParam(params, "summary")
+		if err != nil {
+			return nil, err
+		}
+		startTime, err := requireStringParam(params, "start")
+		if err != nil {
+			return nil, err
+		}
+		endTime, err := requireStringParam(params, "end")
+		if err != nil {
+			return nil, err
+		}
+		return g.calendarClient.CreateEvent(ctx,
+			getStringParam(params, "calendar_id"),
+			summary,
+			getStringParam(params, "location"),
+			getStringParam(params, "description"),
+			startTime,
+			endTime,
+			getStringSliceParam(params, "attendees"),
+		)
+
+	case "calendar.update_event":
+		eventID, err := requireStringParam(params, "event_id")
+		if err != nil {
+			return nil, err
+		}
+		return g.calendarClient.UpdateEvent(ctx,
+			getStringParam(params, "calendar_id"),
+			eventID,
+			getStringParam(params, "summary"),
+			getStringParam(params, "location"),
+			getStringParam(params, "description"),
+			getStringParam(params, "start"),
+			getStringParam(params, "end"),
+			getStringSliceParam(params, "attendees"),
+		)
+
+	case "calendar.delete_event":
+		eventID, err := requireStringParam(params, "event_id")
+		if err != nil {
+			return nil, err
+		}
+		return nil, g.calendarClient.DeleteEvent(ctx, getStringParam(params, "calendar_id"), eventID)
+
+	// --- Google People/Contacts ---
+	case "people.list_contacts":
+		return g.peopleClient.ListContacts(ctx,
+			int64(getIntParam(params, "page_size")),
+			getStringParam(params, "page_token"),
+		)
+
+	case "people.get_contact":
+		resourceName, err := requireStringParam(params, "resource_name")
+		if err != nil {
+			return nil, err
+		}
+		return g.peopleClient.GetContact(ctx, resourceName)
+
+	case "people.create_contact":
+		return g.peopleClient.CreateContact(ctx,
+			getStringParam(params, "name"),
+			getStringParam(params, "email"),
+			getStringParam(params, "phone"),
+		)
+
+	case "people.update_contact":
+		resourceName, err := requireStringParam(params, "resource_name")
+		if err != nil {
+			return nil, err
+		}
+		return g.peopleClient.UpdateContact(ctx,
+			resourceName,
+			getStringParam(params, "name"),
+			getStringParam(params, "email"),
+			getStringParam(params, "phone"),
+		)
+
+	case "people.delete_contact":
+		resourceName, err := requireStringParam(params, "resource_name")
+		if err != nil {
+			return nil, err
+		}
+		return nil, g.peopleClient.DeleteContact(ctx, resourceName)
+
+	// --- Google Sheets ---
+	case "sheets.get_spreadsheet":
+		spreadsheetID, err := requireStringParam(params, "spreadsheet_id")
+		if err != nil {
+			return nil, err
+		}
+		return g.sheetsClient.GetSpreadsheet(ctx, spreadsheetID)
+
+	case "sheets.read_range":
+		spreadsheetID, err := requireStringParam(params, "spreadsheet_id")
+		if err != nil {
+			return nil, err
+		}
+		readRange, err := requireStringParam(params, "range")
+		if err != nil {
+			return nil, err
+		}
+		return g.sheetsClient.ReadRange(ctx, spreadsheetID, readRange)
+
+	case "sheets.write_range":
+		spreadsheetID, err := requireStringParam(params, "spreadsheet_id")
+		if err != nil {
+			return nil, err
+		}
+		writeRange, err := requireStringParam(params, "range")
+		if err != nil {
+			return nil, err
+		}
+		valuesJSON, err := requireStringParam(params, "values")
+		if err != nil {
+			return nil, err
+		}
+		var values [][]interface{}
+		if err := json.Unmarshal([]byte(valuesJSON), &values); err != nil {
+			return nil, fmt.Errorf("google connector: parsing values JSON: %w", err)
+		}
+		return g.sheetsClient.WriteRange(ctx, spreadsheetID, writeRange, values)
+
+	case "sheets.create_spreadsheet":
+		title, err := requireStringParam(params, "title")
+		if err != nil {
+			return nil, err
+		}
+		return g.sheetsClient.CreateSpreadsheet(ctx, title)
+
+	// --- Google Docs ---
+	case "docs.get_document":
+		documentID, err := requireStringParam(params, "document_id")
+		if err != nil {
+			return nil, err
+		}
+		return g.docsClient.GetDocument(ctx, documentID)
+
+	case "docs.list_documents":
+		return g.docsClient.ListDocuments(ctx,
+			int64(getIntParam(params, "page_size")),
+			getStringParam(params, "page_token"),
+		)
+
+	case "docs.create_document":
+		title, err := requireStringParam(params, "title")
+		if err != nil {
+			return nil, err
+		}
+		return g.docsClient.CreateDocument(ctx, title)
+
+	case "docs.update_document":
+		documentID, err := requireStringParam(params, "document_id")
+		if err != nil {
+			return nil, err
+		}
+		requestsJSON, err := requireStringParam(params, "requests")
+		if err != nil {
+			return nil, err
+		}
+		return g.docsClient.UpdateDocument(ctx, documentID, requestsJSON)
 
 	default:
 		return nil, fmt.Errorf("google connector: unknown operation %q", op)

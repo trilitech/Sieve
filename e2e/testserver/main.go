@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/murbard/Sieve/internal/policies"
 	"github.com/murbard/Sieve/internal/roles"
 	"github.com/murbard/Sieve/internal/scriptgen"
+	"github.com/murbard/Sieve/internal/secrets"
 	"github.com/murbard/Sieve/internal/settings"
 	mockconn "github.com/murbard/Sieve/internal/testing/mockconnector"
 	"github.com/murbard/Sieve/internal/tokens"
@@ -29,6 +31,10 @@ import (
 )
 
 func main() {
+	testPassphrase := flag.String("test-passphrase", "e2e-test-passphrase",
+		"passphrase for the in-memory keyring; e2e tests run unattended")
+	flag.Parse()
+
 	dir, err := os.MkdirTemp("", "sieve-e2e-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create temp dir: %v\n", err)
@@ -44,13 +50,25 @@ func main() {
 	}
 	defer db.Close()
 
+	// Set up an in-memory keyring with the test passphrase. Production
+	// startup uses interactive prompt or systemd LoadCredential — never an
+	// argument flag.
+	keyring := &secrets.Keyring{}
+	saved := secrets.DefaultArgon2Params
+	secrets.DefaultArgon2Params = secrets.Argon2Params{Time: 1, Memory: 8, Threads: 1, KeyLen: 32}
+	if err := keyring.Setup(db.DB, []byte(*testPassphrase)); err != nil {
+		fmt.Fprintf(os.Stderr, "keyring setup: %v\n", err)
+		os.Exit(1)
+	}
+	secrets.DefaultArgon2Params = saved
+
 	// Set up mock connector registry.
 	registry := connector.NewRegistry()
 	mock := mockconn.New("mock")
 	registry.Register(mock.Meta(), mock.Factory())
 
 	// Create all services.
-	connSvc := connections.NewService(db, registry)
+	connSvc := connections.NewService(db, registry, keyring)
 	tokenSvc := tokens.NewService(db)
 	policiesSvc := policies.NewService(db)
 	rolesSvc := roles.NewService(db)
@@ -115,6 +133,7 @@ func main() {
 		tokenSvc, connSvc, policiesSvc, rolesSvc, registry,
 		approvalQ, auditLog, "", settingsSvc, scriptgenSvc,
 	)
+	defer webSrv.Close()
 	webListener, err := net.Listen("tcp", "127.0.0.1:0")
 	mustErr(err, "web listen")
 	webPort := webListener.Addr().(*net.TCPAddr).Port

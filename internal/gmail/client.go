@@ -24,7 +24,17 @@ type Email struct {
 	Date          time.Time `json:"date"`
 	Labels        []string  `json:"labels"`
 	Snippet       string    `json:"snippet"`
-	HasAttachment bool      `json:"has_attachment"`
+	HasAttachment bool              `json:"has_attachment"`
+	Attachments   []AttachmentMeta  `json:"attachments,omitempty"`
+}
+
+// AttachmentMeta is lightweight attachment info included in email responses
+// so agents can discover what's attached without a separate API call.
+type AttachmentMeta struct {
+	ID       string `json:"id"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Size     int64  `json:"size"`
 }
 
 // Attachment represents an email attachment.
@@ -406,8 +416,9 @@ func parseEmail(msg *gmail.Message) Email {
 			email.Body = email.BodyHTML
 		}
 
-		// Check for attachments.
-		email.HasAttachment = hasAttachment(msg.Payload)
+		// Collect attachment metadata.
+		email.Attachments = collectAttachments(msg.Payload)
+		email.HasAttachment = len(email.Attachments) > 0
 	}
 
 	return email
@@ -452,6 +463,27 @@ func hasAttachment(part *gmail.MessagePart) bool {
 		}
 	}
 	return false
+}
+
+// collectAttachments recursively walks message parts to find attachments
+// and returns their metadata (ID, filename, MIME type, size).
+func collectAttachments(part *gmail.MessagePart) []AttachmentMeta {
+	if part == nil {
+		return nil
+	}
+	var attachments []AttachmentMeta
+	if part.Filename != "" && part.Body != nil && part.Body.AttachmentId != "" {
+		attachments = append(attachments, AttachmentMeta{
+			ID:       part.Body.AttachmentId,
+			Filename: part.Filename,
+			MimeType: part.MimeType,
+			Size:     part.Body.Size,
+		})
+	}
+	for _, p := range part.Parts {
+		attachments = append(attachments, collectAttachments(p)...)
+	}
+	return attachments
 }
 
 // parseAddressList splits a comma-separated list of email addresses.

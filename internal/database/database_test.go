@@ -16,7 +16,7 @@ func TestNewCreatesDB(t *testing.T) {
 	defer db.Close()
 
 	// Verify tables exist by querying them.
-	tables := []string{"connections", "policies", "roles", "tokens", "approval_queue", "audit_log"}
+	tables := []string{"connections", "policies", "roles", "tokens", "approval_queue", "audit_log", "crypto_meta"}
 	for _, table := range tables {
 		var count int
 		err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count)
@@ -35,8 +35,12 @@ func TestNewIdempotent(t *testing.T) {
 		t.Fatalf("first open: %v", err)
 	}
 
-	// Insert data.
-	_, err = db1.Exec(`INSERT INTO connections (id, connector_type, display_name, config) VALUES ('c1', 'mock', 'Test', '{}')`)
+	// Insert data. Encrypted columns get filler bytes — this test only
+	// exercises the schema and reopen behavior, not the encryption path.
+	_, err = db1.Exec(`INSERT INTO connections (
+		id, connector_type, display_name,
+		config_ciphertext, config_nonce, dek_wrapped, dek_nonce, enc_version
+	) VALUES ('c1', 'mock', 'Test', X'00', X'00', X'00', X'00', 1)`)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -69,7 +73,10 @@ func TestStory99_DataPersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("first open: %v", err)
 	}
 	_, err = db1.Exec(
-		`INSERT INTO connections (id, connector_type, display_name, config) VALUES ('persist-conn', 'mock', 'Persist Test', '{}')`,
+		`INSERT INTO connections (
+			id, connector_type, display_name,
+			config_ciphertext, config_nonce, dek_wrapped, dek_nonce, enc_version
+		) VALUES ('persist-conn', 'mock', 'Persist Test', X'00', X'00', X'00', X'00', 1)`,
 	)
 	if err != nil {
 		t.Fatalf("insert connection: %v", err)

@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,7 @@ import (
 	"github.com/murbard/Sieve/internal/policies"
 	"github.com/murbard/Sieve/internal/policy"
 	"github.com/murbard/Sieve/internal/roles"
+	"github.com/murbard/Sieve/internal/secrets"
 	"github.com/murbard/Sieve/internal/tokens"
 )
 
@@ -89,6 +91,7 @@ func (rt *Router) Handler() http.Handler {
 	mux.HandleFunc("POST /gmail/v1/users/{userId}/drafts", rt.gmailCreateDraft)
 	mux.HandleFunc("GET /gmail/v1/users/{userId}/labels", rt.gmailListLabels)
 	mux.HandleFunc("POST /gmail/v1/users/{userId}/messages/{id}/modify", rt.gmailModifyMessage)
+	mux.HandleFunc("GET /gmail/v1/users/{userId}/messages/{messageId}/attachments/{attachmentId}", rt.gmailGetAttachment)
 
 	// Transparent HTTP proxy — forwards requests to any API with credential
 	// substitution. The agent uses /proxy/{connection}/{path...} and Sieve
@@ -216,7 +219,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	// Get the connector instance.
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("connector not found: %v", err))
+		writeConnectionError(w, http.StatusNotFound, fmt.Sprintf("connector not found: %v", err), err)
 		return
 	}
 
@@ -292,8 +295,17 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Re-validate the token after the approval wait. The token may have
-		// been revoked while waiting for human approval.
-		if _, err := rt.tokens.Validate(r.Header.Get("Authorization")[len("Bearer "):]); err != nil {
+		// been revoked while waiting for human approval. Use strings.CutPrefix
+		// to safely extract the bearer value (mirrors authMiddleware), instead
+		// of the unchecked slice [len("Bearer "):] which would return garbage
+		// or panic on a malformed header.
+		bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || bearer == "" {
+			rt.logAudit(tok, connID, operation, params, "denied(malformed_auth_during_approval)", "", time.Since(start).Milliseconds())
+			writeError(w, http.StatusUnauthorized, "malformed authorization header")
+			return
+		}
+		if _, err := rt.tokens.Validate(bearer); err != nil {
 			rt.logAudit(tok, connID, operation, params, "denied(revoked_during_approval)", "", time.Since(start).Milliseconds())
 			writeError(w, http.StatusUnauthorized, "token was revoked during approval wait")
 			return
@@ -373,13 +385,13 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "connection not available")
+		writeConnectionError(w, http.StatusNotFound, "connection not available", err)
 		return
 	}
 
 	// The connector must be an http_proxy type with ProxyHTTP method.
 	type httpProxier interface {
-		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string)
+		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) error
 	}
 
 	proxy, ok := conn.(httpProxier)
@@ -456,9 +468,11 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rt.logAudit(tok, connID, operation, nil, "allow", "", 0)
-	proxy.ProxyHTTP(w, r, proxyPath)
-	rt.logAudit(tok, connID, operation, nil, "proxied", "", time.Since(start).Milliseconds())
+	if err := proxy.ProxyHTTP(w, r, proxyPath, decision.Filters); err != nil {
+		rt.logAudit(tok, connID, operation, nil, "bad_request", err.Error(), time.Since(start).Milliseconds())
+	} else {
+		rt.logAudit(tok, connID, operation, nil, "proxied", "", time.Since(start).Milliseconds())
+	}
 }
 
 // logAudit is a helper that logs to the audit logger, ignoring errors.
@@ -503,6 +517,18 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// writeConnectionError centralizes the locked-state response. If err is the
+// keyring-not-loaded sentinel, return 503; otherwise fall through to the
+// caller-supplied default status. Routed through one helper so every
+// credential-touching endpoint produces an identical 503 body.
+func writeConnectionError(w http.ResponseWriter, defaultStatus int, defaultMessage string, err error) {
+	if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+		writeError(w, http.StatusServiceUnavailable, "service locked: passphrase required")
+		return
+	}
+	writeError(w, defaultStatus, defaultMessage)
 }
 
 // --- Approval status endpoint ---
@@ -599,7 +625,7 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "connector not available")
+		writeConnectionError(w, http.StatusNotFound, "connector not available", err)
 		return
 	}
 
@@ -798,6 +824,13 @@ func (rt *Router) gmailCreateDraft(w http.ResponseWriter, r *http.Request) {
 
 func (rt *Router) gmailListLabels(w http.ResponseWriter, r *http.Request) {
 	rt.gmailExecute(w, r, "list_labels", map[string]any{})
+}
+
+func (rt *Router) gmailGetAttachment(w http.ResponseWriter, r *http.Request) {
+	rt.gmailExecute(w, r, "get_attachment", map[string]any{
+		"message_id":    r.PathValue("messageId"),
+		"attachment_id": r.PathValue("attachmentId"),
+	})
 }
 
 // gmailModifyMessage translates Gmail's modify endpoint into specific Sieve
