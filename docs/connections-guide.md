@@ -4,6 +4,8 @@ This guide walks through setting up every connection type in Sieve. Connections 
 
 All connection setup happens in the Sieve web UI at `http://localhost:19816/connections`.
 
+> **Prerequisite:** Sieve must be unlocked before you can save a connection. On first startup you set a passphrase; on every restart you re-enter it. The passphrase derives the encryption key that protects every stored credential. If the UI returns `503 service locked`, Sieve is running without a passphrase source -- see [credential-encryption.md](credential-encryption.md).
+
 ## Google Account
 
 A single Google connection provides access to six services: Gmail, Drive, Calendar, Contacts (People API), Sheets, and Docs -- over 35 operations total. Policies control which operations the agent can use.

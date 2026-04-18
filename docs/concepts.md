@@ -23,6 +23,8 @@ A **token** references exactly one **role**. A role defines one or more **connec
 
 A connection is a set of real credentials for one external service. Sieve holds the credentials; agents never see them.
 
+The stored credential is encrypted at rest with a key derived from a passphrase you enter at startup -- a stolen DB file yields only ciphertext. See [credential-encryption.md](credential-encryption.md) for the full model.
+
 Each connection has:
 - **An alias** (e.g., `work`, `anthropic`, `aws-prod`) -- used to identify it in roles and in API paths.
 - **A display name** (e.g., "Work Gmail", "Claude API") -- shown in the UI.

@@ -107,11 +107,18 @@ go build -o sieve ./cmd/sieve
 # Configure (edit ports, database path, Google credentials path)
 # sieve.yaml is included — edit as needed
 
-# Start
+# Start — prompts for a passphrase on first run, then on every restart.
+# The passphrase derives the key that encrypts every stored credential.
 ./sieve serve
 # Web UI: http://localhost:19816
 # API/MCP: http://localhost:19817
 ```
+
+> **Note on upgrading from an older dev build:** the `connections` table schema
+> changed to encrypted columns. On first start against a pre-encryption DB,
+> Sieve drops the `connections` table. Reconnect your services once after
+> upgrade — everything else (policies, roles, tokens, audit log) is preserved.
+> See [docs/credential-encryption.md](docs/credential-encryption.md).
 
 ### Run with Docker
 
@@ -340,7 +347,19 @@ Sieve runs two HTTP servers on separate ports:
 
 This separation means an agent cannot access the admin UI even if it knows the URL — it's on a different port that you don't give it.
 
-Data is stored in SQLite (single file at `./data/sieve.db`). Credentials are stored in the database, protected by file permissions (0600). The database file is the trust boundary.
+Data is stored in SQLite (single file at `./data/sieve.db`, WAL mode, `chmod 0600`).
+
+### Credential encryption at rest
+
+Every stored credential (OAuth refresh tokens, LLM API keys, HTTP proxy keys) is encrypted with envelope encryption before it touches the DB:
+
+- A passphrase you enter at startup is stretched with **argon2id** into a 32-byte KEK held only in process memory.
+- Each `connections` row has its own random **DEK** (per-record data-encryption key). The DEK encrypts the config JSON under **AES-256-GCM**, and is itself wrapped under the KEK.
+- Stopping Sieve → the KEK is gone. A stolen DB file, backup, snapshot, or SQLi read against `connections.config_ciphertext` yields only ciphertext.
+
+The trade-off: **reboot requires re-entering the passphrase.** Sieve refuses to start without one. You can automate this for non-interactive deployments by pointing `SIEVE_PASSPHRASE_FILE` at a mounted secret file (e.g., systemd `LoadCredential=`, Docker secrets).
+
+Full threat model, rotation procedure, and deployment recipes: [docs/credential-encryption.md](docs/credential-encryption.md).
 
 ## Configuration
 
@@ -350,6 +369,9 @@ server:
   host: "127.0.0.1"   # bind address (0.0.0.0 for all interfaces)
   api_port: 19817      # agent-facing API/MCP port
   ui_port: 19816       # human-facing web UI port
+  # Optional: path to a file containing the keyring passphrase. If unset,
+  # Sieve prompts on TTY or reads from SIEVE_PASSPHRASE_FILE / FD 3.
+  # passphrase_file: "/run/secrets/sieve-passphrase"
 
 connectors:
   google:

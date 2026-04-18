@@ -52,15 +52,49 @@ func (db *DB) Close() error {
 	return db.DB.Close()
 }
 
+// columnExists reports whether the named column is present on the table.
+// SQLite-only; uses PRAGMA table_info.
+func columnExists(db *DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt *string
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			continue
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 // migrate runs all schema migrations in order.
 func (db *DB) migrate() error {
 	const schema = `
 	CREATE TABLE IF NOT EXISTS connections (
-		id              TEXT PRIMARY KEY,
-		connector_type  TEXT NOT NULL,
-		display_name    TEXT NOT NULL,
-		config          TEXT NOT NULL,
-		created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+		id                TEXT PRIMARY KEY,
+		connector_type    TEXT NOT NULL,
+		display_name      TEXT NOT NULL,
+		config_ciphertext BLOB NOT NULL,
+		config_nonce      BLOB NOT NULL,
+		dek_wrapped       BLOB NOT NULL,
+		dek_nonce         BLOB NOT NULL,
+		enc_version       INTEGER NOT NULL,
+		created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS crypto_meta (
+		id            INTEGER PRIMARY KEY CHECK (id = 1),
+		argon2_salt   BLOB NOT NULL,
+		argon2_params TEXT NOT NULL,
+		kek_check     BLOB NOT NULL
 	);
 
 	CREATE TABLE IF NOT EXISTS policies (
@@ -116,6 +150,37 @@ func (db *DB) migrate() error {
 
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("execute schema: %w", err)
+	}
+
+	// Migration: drop the old plaintext `config` column on the connections
+	// table when present. Sieve is pre-launch; rather than convert plaintext
+	// credentials in place (which would require the operator's passphrase
+	// inside this migration), we drop the table and force the operator to
+	// re-add connections under the encrypted schema. Documented in README
+	// under setup.
+	hasOldConfig, err := columnExists(db, "connections", "config")
+	if err != nil {
+		return fmt.Errorf("check connections schema: %w", err)
+	}
+	if hasOldConfig {
+		if _, err := db.Exec(`DROP TABLE connections`); err != nil {
+			return fmt.Errorf("drop legacy connections table: %w", err)
+		}
+		if _, err := db.Exec(`
+			CREATE TABLE connections (
+				id                TEXT PRIMARY KEY,
+				connector_type    TEXT NOT NULL,
+				display_name      TEXT NOT NULL,
+				config_ciphertext BLOB NOT NULL,
+				config_nonce      BLOB NOT NULL,
+				dek_wrapped       BLOB NOT NULL,
+				dek_nonce         BLOB NOT NULL,
+				enc_version       INTEGER NOT NULL,
+				created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+		`); err != nil {
+			return fmt.Errorf("recreate connections table: %w", err)
+		}
 	}
 
 	// Migration: rename policy_id -> policy_ids (JSON array) if the old column exists.

@@ -30,6 +30,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -47,6 +48,7 @@ import (
 	"github.com/murbard/Sieve/internal/policy"
 	"github.com/murbard/Sieve/internal/roles"
 	"github.com/murbard/Sieve/internal/scriptgen"
+	"github.com/murbard/Sieve/internal/secrets"
 	"github.com/murbard/Sieve/internal/settings"
 	"github.com/murbard/Sieve/internal/tokens"
 	"golang.org/x/oauth2"
@@ -1375,6 +1377,10 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := s.connections.GetWithConfig(connID)
 	if err != nil {
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "connection not found", http.StatusNotFound)
 		return
 	}

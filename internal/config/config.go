@@ -19,6 +19,10 @@ type ServerConfig struct {
 	APIPort      int    `yaml:"api_port"`
 	UIPort       int    `yaml:"ui_port"`
 	MCPTransport string `yaml:"mcp_transport"`
+	// PassphraseFile is the path to a file containing the keyring passphrase.
+	// Mirrors the SIEVE_PASSPHRASE_FILE env var so operators can configure
+	// non-interactive startup via either YAML or environment.
+	PassphraseFile string `yaml:"passphrase_file,omitempty"`
 }
 
 type ConnectorConfig struct {

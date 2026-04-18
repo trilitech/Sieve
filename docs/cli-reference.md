@@ -28,12 +28,25 @@ If no config file is found, built-in defaults are used (`127.0.0.1:19817` for AP
 On startup the server:
 
 - Opens (or creates) the SQLite database
+- **Prompts for the keyring passphrase** -- on first run it asks you to set one (confirmed twice), on subsequent runs it verifies the one you enter. See [credential-encryption.md](credential-encryption.md). For non-interactive deployments, set `SIEVE_PASSPHRASE_FILE` to a file path, or use systemd `LoadCredential=` (FD 3).
 - Registers connector types (Google, HTTP Proxy, MCP Proxy)
-- Initializes all saved connections
+- Initializes all saved connections (decrypts configs using the derived KEK)
 - Seeds built-in policy presets (read-only, drafter, full-assist, triage)
 - Starts an audit log cleanup goroutine (purges entries older than 90 days, runs daily)
 
 Graceful shutdown on SIGINT or SIGTERM with a 5-second timeout.
+
+---
+
+## sieve passphrase change
+
+Rotate the keyring passphrase. Sieve prompts for the current passphrase, then twice for the new one, then re-wraps every per-record DEK under a new KEK derived from the new passphrase. Ciphertext payloads themselves are not touched.
+
+```bash
+sieve passphrase change
+```
+
+The rotation runs in a single transaction -- if any step fails, the old passphrase remains valid and the database is unchanged.
 
 ---
 

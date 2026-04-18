@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,7 @@ import (
 	"github.com/murbard/Sieve/internal/policies"
 	"github.com/murbard/Sieve/internal/policy"
 	"github.com/murbard/Sieve/internal/roles"
+	"github.com/murbard/Sieve/internal/secrets"
 	"github.com/murbard/Sieve/internal/tokens"
 )
 
@@ -217,7 +219,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	// Get the connector instance.
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("connector not found: %v", err))
+		writeConnectionError(w, http.StatusNotFound, fmt.Sprintf("connector not found: %v", err), err)
 		return
 	}
 
@@ -383,7 +385,7 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "connection not available")
+		writeConnectionError(w, http.StatusNotFound, "connection not available", err)
 		return
 	}
 
@@ -517,6 +519,18 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
+// writeConnectionError centralizes the locked-state response. If err is the
+// keyring-not-loaded sentinel, return 503; otherwise fall through to the
+// caller-supplied default status. Routed through one helper so every
+// credential-touching endpoint produces an identical 503 body.
+func writeConnectionError(w http.ResponseWriter, defaultStatus int, defaultMessage string, err error) {
+	if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+		writeError(w, http.StatusServiceUnavailable, "service locked: passphrase required")
+		return
+	}
+	writeError(w, defaultStatus, defaultMessage)
+}
+
 // --- Approval status endpoint ---
 
 func (rt *Router) approvalStatus(w http.ResponseWriter, r *http.Request) {
@@ -611,7 +625,7 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "connector not available")
+		writeConnectionError(w, http.StatusNotFound, "connector not available", err)
 		return
 	}
 
