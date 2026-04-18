@@ -4,6 +4,7 @@ sieve
 *client_secret*.json
 *credentials*.json
 .env
+.gh_token
 .vscode/
 .idea/
 *.swp

@@ -77,6 +77,8 @@ type Server struct {
 	oauthMu     sync.Mutex
 	oauthPending map[string]pendingOAuth // state -> pending connection info
 
+	githubApp *gitHubAppState // pending GitHub App manifest installs
+
 	stopCleanup     chan struct{} // closed by Close() to stop the cleanup goroutine
 	stopCleanupOnce sync.Once    // ensures Close() is safe under concurrent calls
 }
@@ -212,6 +214,7 @@ func NewServer(
 		templates:            make(map[string]*template.Template),
 		googleCredentialsFile: googleCredentialsFile,
 		oauthPending:         make(map[string]pendingOAuth),
+		githubApp:            newGitHubAppState(),
 		stopCleanup:          make(chan struct{}),
 	}
 
@@ -250,6 +253,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /connections/add", s.handleConnectionAdd)
 	mux.HandleFunc("POST /connections/{id}/delete", s.handleConnectionDelete)
 	mux.HandleFunc("GET /oauth/callback", s.handleOAuthCallback)
+
+	// GitHub-specific setup flows
+	mux.HandleFunc("POST /connections/github/pat", s.handleGitHubPAT)
+	mux.HandleFunc("POST /connections/github/app/start", s.handleGitHubAppStart)
+	mux.HandleFunc("GET /connections/github/app/created", s.handleGitHubAppCreated)
+	mux.HandleFunc("GET /connections/github/app/installed", s.handleGitHubAppInstalled)
 
 	// Tokens
 	mux.HandleFunc("GET /tokens", s.handleTokens)
@@ -657,6 +666,7 @@ func (s *Server) oauthPendingCleanupLoop() {
 		select {
 		case <-ticker.C:
 			s.sweepOAuthPending(time.Now())
+			s.githubApp.sweep(time.Now())
 		case <-s.stopCleanup:
 			return
 		}

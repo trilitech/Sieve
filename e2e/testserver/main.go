@@ -18,6 +18,7 @@ import (
 	"github.com/murbard/Sieve/internal/audit"
 	"github.com/murbard/Sieve/internal/connections"
 	"github.com/murbard/Sieve/internal/connector"
+	githubconn "github.com/murbard/Sieve/internal/connectors/github"
 	"github.com/murbard/Sieve/internal/policies"
 	"github.com/murbard/Sieve/internal/roles"
 	"github.com/murbard/Sieve/internal/scriptgen"
@@ -66,6 +67,7 @@ func main() {
 	registry := connector.NewRegistry()
 	mock := mockconn.New("mock")
 	registry.Register(mock.Meta(), mock.Factory())
+	registry.Register(githubconn.Meta(), githubconn.Factory())
 
 	// Create all services.
 	connSvc := connections.NewService(db, registry, keyring)
