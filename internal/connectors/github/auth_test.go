@@ -170,6 +170,8 @@ func TestValidateRelativePath(t *testing.T) {
 		`\repos\o\r`,
 		`/repos/o/r/sub\file`,
 		`/repos/o/r/%5cetc`,
+		`/repos//victim/private`, // empty segment collapses owner to ""
+		`//user`,
 	}
 	for _, p := range bad {
 		if err := validateRelativePath(p); err == nil {

@@ -135,9 +135,15 @@ func validateRelativePath(p string) error {
 			return fmt.Errorf("github: encoded sequence %q in path", bad)
 		}
 	}
-	for _, seg := range strings.Split(p, "/") {
+	segs := strings.Split(p, "/")
+	for i, seg := range segs {
 		if seg == ".." {
 			return errors.New("github: '..' segment in path")
+		}
+		// Reject empty interior segments (consecutive '//'). The leading '/'
+		// produces an empty segs[0], which is expected and ignored.
+		if seg == "" && i != 0 {
+			return errors.New("github: empty path segment")
 		}
 	}
 	return nil
