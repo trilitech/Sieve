@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/murbard/Sieve/internal/connections"
-	"github.com/murbard/Sieve/internal/settings"
+	"github.com/trilitech/Sieve/internal/connections"
+	"github.com/trilitech/Sieve/internal/settings"
 )
 
 // Service generates Python policy scripts via LLM.

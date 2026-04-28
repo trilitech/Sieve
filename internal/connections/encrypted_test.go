@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/murbard/Sieve/internal/connections"
-	"github.com/murbard/Sieve/internal/connector"
-	"github.com/murbard/Sieve/internal/database"
-	"github.com/murbard/Sieve/internal/secrets"
-	mockconn "github.com/murbard/Sieve/internal/testing/mockconnector"
+	"github.com/trilitech/Sieve/internal/connections"
+	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/secrets"
+	mockconn "github.com/trilitech/Sieve/internal/testing/mockconnector"
 )
 
 // TestEncryptedRoundTrip confirms that a stored config decrypts back to the

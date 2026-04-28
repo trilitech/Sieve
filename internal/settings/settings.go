@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/murbard/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/database"
 )
 
 // Well-known setting keys.

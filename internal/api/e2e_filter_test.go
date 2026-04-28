@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/murbard/Sieve/internal/api"
-	"github.com/murbard/Sieve/internal/approval"
-	"github.com/murbard/Sieve/internal/roles"
-	mockconn "github.com/murbard/Sieve/internal/testing/mockconnector"
-	"github.com/murbard/Sieve/internal/testing/testenv"
-	"github.com/murbard/Sieve/internal/tokens"
+	"github.com/trilitech/Sieve/internal/api"
+	"github.com/trilitech/Sieve/internal/approval"
+	"github.com/trilitech/Sieve/internal/roles"
+	mockconn "github.com/trilitech/Sieve/internal/testing/mockconnector"
+	"github.com/trilitech/Sieve/internal/testing/testenv"
+	"github.com/trilitech/Sieve/internal/tokens"
 )
 
 // setupWithFixtures creates a test environment with realistic Gmail fixture data

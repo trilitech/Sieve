@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/murbard/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/database"
 )
 
 // Status represents the resolution state of an approval queue item.

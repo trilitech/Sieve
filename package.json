@@ -11,15 +11,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/murbard/Sieve.git"
+    "url": "git+https://github.com/trilitech/Sieve.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/murbard/Sieve/issues"
+    "url": "https://github.com/trilitech/Sieve/issues"
   },
-  "homepage": "https://github.com/murbard/Sieve#readme",
+  "homepage": "https://github.com/trilitech/Sieve#readme",
   "devDependencies": {
     "@playwright/test": "^1.59.1"
   }

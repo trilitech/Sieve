@@ -1,13 +1,14 @@
 data/
-sieve
+/sieve
+/testserver
 *.db
 *client_secret*.json
 *credentials*.json
 .env
+.gh_token
 .vscode/
 .idea/
 *.swp
 *~
 node_modules/
 test-results/
-testserver

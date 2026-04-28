@@ -4,9 +4,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/murbard/Sieve/internal/database"
-	"github.com/murbard/Sieve/internal/roles"
-	"github.com/murbard/Sieve/internal/tokens"
+	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/tokens"
 )
 
 func setup(t *testing.T) *roles.Service {

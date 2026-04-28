@@ -62,11 +62,57 @@ func RulesPresetTriage() map[string]any {
 	}
 }
 
+func RulesPresetGitHubReadOnly() map[string]any {
+	return map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match": map[string]any{"operations": []any{
+					"github_list_repos", "github_get_file", "github_list_issues",
+					"github_list_prs", "github_get_pr", "github_search_code",
+				}},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+		"scope":          "github",
+	}
+}
+
+// RulesPresetGitHubWithApproval mirrors the Gmail "drafter" pattern for
+// GitHub: read ops pass through, write ops require human approval. Users who
+// want repo-level allowlisting should copy this preset and add an
+// `owner: "<org>/*"` matcher to each rule.
+func RulesPresetGitHubWithApproval() map[string]any {
+	return map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match": map[string]any{"operations": []any{
+					"github_put_file", "github_create_issue", "github_comment_issue",
+					"github_create_pr", "github_request",
+				}},
+				"action": "approval_required",
+				"reason": "GitHub write operations require approval",
+			},
+			map[string]any{
+				"match": map[string]any{"operations": []any{
+					"github_list_repos", "github_get_file", "github_list_issues",
+					"github_list_prs", "github_get_pr", "github_search_code",
+				}},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+		"scope":          "github",
+	}
+}
+
 var rulesPresets = map[string]func() map[string]any{
-	"read-only":   RulesPresetReadOnly,
-	"drafter":     RulesPresetDrafter,
-	"full-assist": RulesPresetFullAssist,
-	"triage":      RulesPresetTriage,
+	"read-only":             RulesPresetReadOnly,
+	"drafter":               RulesPresetDrafter,
+	"full-assist":           RulesPresetFullAssist,
+	"triage":                RulesPresetTriage,
+	"github-read-only":      RulesPresetGitHubReadOnly,
+	"github-with-approval":  RulesPresetGitHubWithApproval,
 }
 
 // GetRulesPreset returns a rules-type preset by name.

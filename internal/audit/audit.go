@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/murbard/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/database"
 )
 
 // Entry represents a single row in the audit_log table.

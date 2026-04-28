@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/murbard/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 func makeRulesEvaluator(t *testing.T, config map[string]any) Evaluator {

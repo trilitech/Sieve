@@ -13,21 +13,22 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/murbard/Sieve/internal/api"
-	"github.com/murbard/Sieve/internal/approval"
-	"github.com/murbard/Sieve/internal/audit"
-	"github.com/murbard/Sieve/internal/connections"
-	"github.com/murbard/Sieve/internal/connector"
-	"github.com/murbard/Sieve/internal/policies"
-	"github.com/murbard/Sieve/internal/roles"
-	"github.com/murbard/Sieve/internal/scriptgen"
-	"github.com/murbard/Sieve/internal/secrets"
-	"github.com/murbard/Sieve/internal/settings"
-	mockconn "github.com/murbard/Sieve/internal/testing/mockconnector"
-	"github.com/murbard/Sieve/internal/tokens"
-	"github.com/murbard/Sieve/internal/web"
+	"github.com/trilitech/Sieve/internal/api"
+	"github.com/trilitech/Sieve/internal/approval"
+	"github.com/trilitech/Sieve/internal/audit"
+	"github.com/trilitech/Sieve/internal/connections"
+	"github.com/trilitech/Sieve/internal/connector"
+	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
+	"github.com/trilitech/Sieve/internal/policies"
+	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/scriptgen"
+	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/settings"
+	mockconn "github.com/trilitech/Sieve/internal/testing/mockconnector"
+	"github.com/trilitech/Sieve/internal/tokens"
+	"github.com/trilitech/Sieve/internal/web"
 
-	"github.com/murbard/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/database"
 )
 
 func main() {
@@ -66,6 +67,7 @@ func main() {
 	registry := connector.NewRegistry()
 	mock := mockconn.New("mock")
 	registry.Register(mock.Meta(), mock.Factory())
+	registry.Register(githubconn.Meta(), githubconn.Factory())
 
 	// Create all services.
 	connSvc := connections.NewService(db, registry, keyring)

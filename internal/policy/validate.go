@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/murbard/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 // matchFieldToParams maps each RuleMatch field name to the operation parameter
