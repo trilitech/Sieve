@@ -104,15 +104,21 @@ cd sieve
 # Build
 go build -o sieve ./cmd/sieve
 
-# Configure (edit ports, database path, Google credentials path)
-# sieve.yaml is included — edit as needed
+# First run: initialize the keyring (prompts twice for a passphrase
+# you'll re-enter on every subsequent start; this passphrase derives
+# the key that encrypts every stored credential).
+./sieve --setup
 
-# Start — prompts for a passphrase on first run, then on every restart.
-# The passphrase derives the key that encrypts every stored credential.
-./sieve serve
-# Web UI: http://localhost:19816
+# Subsequent runs (or non-interactive start via SIEVE_PASSPHRASE_FILE
+# / FD 3 — never an environment variable):
+./sieve
+# Web UI: http://localhost:19816  (admin only — do not expose to agents)
 # API/MCP: http://localhost:19817
 ```
+
+Common flags: `--db PATH` (default `./data/sieve.db`), `--web HOST:PORT`,
+`--api HOST:PORT`, `--google-credentials FILE` (auto-discovered from cwd
+if a `*client_secret*.json` is present).
 
 > **Note on upgrading from an older dev build:** the `connections` table schema
 > changed to encrypted columns. On first start against a pre-encryption DB,
@@ -206,28 +212,25 @@ else:
 
 Roles bundle connections with policies. A role defines which connections an agent can access and which policies govern each connection. Tokens reference a role rather than listing connections and policies directly.
 
-```bash
-# Create a role that pairs a connection with policies
-./sieve role create --name developer \
-  --bindings '[{"connection_id":"work","policy_ids":["drafter","redact-pii"]},{"connection_id":"anthropic","policy_ids":["sonnet-only"]}]'
+A role looks like this in storage:
+
+```json
+{
+  "name": "developer",
+  "bindings": [
+    {"connection_id": "work",       "policy_ids": ["drafter", "redact-pii"]},
+    {"connection_id": "anthropic",  "policy_ids": ["sonnet-only"]}
+  ]
+}
 ```
 
 One role can be shared by many tokens. When you update a role's bindings, every token referencing that role picks up the change immediately. This makes it easy to manage permissions across many agents at once.
 
-Manage roles via the CLI (`sieve role list`, `sieve role create`, `sieve role delete`) or the web UI at http://localhost:19816/roles.
+Manage roles via the web UI at http://localhost:19816/roles.
 
 ## Create tokens
 
-Tokens reference a role, which bundles connections with policies. One token per agent.
-
-```bash
-./sieve token create \
-  --name project-x-agent \
-  --role developer \
-  --expires 168h
-```
-
-Or use the web UI at http://localhost:19816/tokens.
+Tokens reference a role, which bundles connections with policies. One token per agent. Create them in the web UI at http://localhost:19816/tokens — the plaintext `sieve_tok_…` is shown exactly once when minted.
 
 ## Agent integration
 
