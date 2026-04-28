@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/murbard/Sieve/internal/connectors/github"
+	"github.com/trilitech/Sieve/internal/connectors/github"
 )
 
 // githubHTTPClient is the hardened client used for all GitHub calls made

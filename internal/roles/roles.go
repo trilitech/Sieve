@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/murbard/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/database"
 )
 
 // Binding pairs a connection with its applicable policies.

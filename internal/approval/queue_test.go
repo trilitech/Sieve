@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/murbard/Sieve/internal/approval"
-	"github.com/murbard/Sieve/internal/testing/testenv"
+	"github.com/trilitech/Sieve/internal/approval"
+	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
 func submitTestItem(t *testing.T, q *approval.Queue, op string) *approval.Item {

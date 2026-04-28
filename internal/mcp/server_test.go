@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/murbard/Sieve/internal/connector"
-	"github.com/murbard/Sieve/internal/mcp"
-	mockconn "github.com/murbard/Sieve/internal/testing/mockconnector"
-	"github.com/murbard/Sieve/internal/roles"
-	"github.com/murbard/Sieve/internal/testing/testenv"
-	"github.com/murbard/Sieve/internal/tokens"
+	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/mcp"
+	mockconn "github.com/trilitech/Sieve/internal/testing/mockconnector"
+	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/testing/testenv"
+	"github.com/trilitech/Sieve/internal/tokens"
 )
 
 type jsonRPCRequest struct {

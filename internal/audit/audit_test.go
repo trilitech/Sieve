@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/murbard/Sieve/internal/audit"
-	"github.com/murbard/Sieve/internal/testing/testenv"
+	"github.com/trilitech/Sieve/internal/audit"
+	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
 func logEntry(t *testing.T, logger *audit.Logger, tokenID, connID, op, result string) {

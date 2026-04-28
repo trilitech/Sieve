@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/murbard/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 // Call records a single operation invocation.

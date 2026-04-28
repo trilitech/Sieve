@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/murbard/Sieve/internal/policy"
-	"github.com/murbard/Sieve/internal/testing/testenv"
+	"github.com/trilitech/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
 func TestCreateAndGet(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/murbard/Sieve/internal/database"
-	"github.com/murbard/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/policy"
 )
 
 // Policy is a stored, reusable policy definition.

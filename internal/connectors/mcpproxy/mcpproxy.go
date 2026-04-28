@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/murbard/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 var Meta = connector.ConnectorMeta{

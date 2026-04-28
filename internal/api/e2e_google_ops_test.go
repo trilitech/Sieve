@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/murbard/Sieve/internal/api"
-	"github.com/murbard/Sieve/internal/roles"
-	"github.com/murbard/Sieve/internal/testing/testenv"
-	"github.com/murbard/Sieve/internal/tokens"
+	"github.com/trilitech/Sieve/internal/api"
+	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/testing/testenv"
+	"github.com/trilitech/Sieve/internal/tokens"
 )
 
 // setupGoogleOps creates a test environment with an allow-all policy for

@@ -98,7 +98,7 @@ Two-phase policy evaluation: pre-execution (should this operation happen?) and p
 ### Run locally
 
 ```bash
-git clone https://github.com/murbard/Sieve
+git clone https://github.com/trilitech/Sieve
 cd sieve
 
 # Build

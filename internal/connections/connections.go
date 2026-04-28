@@ -24,9 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/murbard/Sieve/internal/connector"
-	"github.com/murbard/Sieve/internal/database"
-	"github.com/murbard/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/secrets"
 	"golang.org/x/oauth2"
 )
 

@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/murbard/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/database"
 )
 
 // Token represents a stored API token.

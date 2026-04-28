@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/murbard/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 // escapeRepoPath percent-escapes each path segment while preserving '/'

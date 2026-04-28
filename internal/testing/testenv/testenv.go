@@ -7,17 +7,17 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/murbard/Sieve/internal/approval"
-	"github.com/murbard/Sieve/internal/audit"
-	"github.com/murbard/Sieve/internal/connections"
-	"github.com/murbard/Sieve/internal/connector"
-	"github.com/murbard/Sieve/internal/database"
-	"github.com/murbard/Sieve/internal/policies"
-	"github.com/murbard/Sieve/internal/roles"
-	"github.com/murbard/Sieve/internal/secrets"
-	"github.com/murbard/Sieve/internal/settings"
-	mockconn "github.com/murbard/Sieve/internal/testing/mockconnector"
-	"github.com/murbard/Sieve/internal/tokens"
+	"github.com/trilitech/Sieve/internal/approval"
+	"github.com/trilitech/Sieve/internal/audit"
+	"github.com/trilitech/Sieve/internal/connections"
+	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/policies"
+	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/settings"
+	mockconn "github.com/trilitech/Sieve/internal/testing/mockconnector"
+	"github.com/trilitech/Sieve/internal/tokens"
 )
 
 // Env holds all Sieve services for testing.

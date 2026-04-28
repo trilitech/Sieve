@@ -1,4 +1,4 @@
-module github.com/murbard/Sieve
+module github.com/trilitech/Sieve
 
 go 1.25.0
 

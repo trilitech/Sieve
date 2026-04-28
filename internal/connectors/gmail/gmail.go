@@ -29,8 +29,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/murbard/Sieve/internal/connector"
-	gmailclient "github.com/murbard/Sieve/internal/gmail"
+	"github.com/trilitech/Sieve/internal/connector"
+	gmailclient "github.com/trilitech/Sieve/internal/gmail"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	calendarapi "google.golang.org/api/calendar/v3"

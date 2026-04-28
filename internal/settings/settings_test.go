@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/murbard/Sieve/internal/database"
-	"github.com/murbard/Sieve/internal/settings"
+	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/settings"
 )
 
 func setup(t *testing.T) *settings.Service {

@@ -30,14 +30,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/murbard/Sieve/internal/approval"
-	"github.com/murbard/Sieve/internal/audit"
-	"github.com/murbard/Sieve/internal/connections"
-	"github.com/murbard/Sieve/internal/connector"
-	"github.com/murbard/Sieve/internal/policies"
-	"github.com/murbard/Sieve/internal/policy"
-	"github.com/murbard/Sieve/internal/roles"
-	"github.com/murbard/Sieve/internal/tokens"
+	"github.com/trilitech/Sieve/internal/approval"
+	"github.com/trilitech/Sieve/internal/audit"
+	"github.com/trilitech/Sieve/internal/connections"
+	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/policies"
+	"github.com/trilitech/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/tokens"
 )
 
 // JSON-RPC 2.0 types

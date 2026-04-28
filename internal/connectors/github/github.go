@@ -17,7 +17,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/murbard/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 // ConnectorType is the type string used in the registry.

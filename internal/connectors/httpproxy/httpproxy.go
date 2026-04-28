@@ -34,8 +34,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/murbard/Sieve/internal/connector"
-	"github.com/murbard/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/policy"
 )
 
 var Meta = connector.ConnectorMeta{
