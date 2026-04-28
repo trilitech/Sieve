@@ -78,6 +78,15 @@ func Factory(config map[string]any) (connector.Connector, error) {
 	if authValue == "" {
 		return nil, fmt.Errorf("http_proxy: missing auth_value")
 	}
+	// Convenience: when the auth header is "Authorization" and the value
+	// looks like a bare token (no space, so no scheme prefix), prepend
+	// "Bearer ". RFC 7235 requires a scheme; modern bearer-token APIs
+	// (Voyage, OpenAI, GitHub PATs over REST, etc.) all expect this form.
+	// A user who pasted "Bearer xxx" or "Basic xxx" already has a space
+	// and is left untouched, so existing setups don't change.
+	if strings.EqualFold(authHeader, "Authorization") && !strings.Contains(authValue, " ") {
+		authValue = "Bearer " + authValue
+	}
 
 	// Path restrictions are handled by the policy engine, not the connector.
 	// The connector just proxies — what's allowed is a policy decision.

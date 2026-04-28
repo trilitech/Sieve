@@ -137,8 +137,9 @@
               </div>
               <div>
                 <label class="block text-xs font-medium text-slate-400 mb-1">Auth Value (your real API key)</label>
-                <input type="password" name="auth_value" required placeholder="Bearer sk-..."
+                <input type="password" name="auth_value" required placeholder="sk-..."
                        class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <p class="text-xs text-slate-500 mt-1 italic">If header is <code>Authorization</code> and value has no scheme prefix, <code>Bearer&nbsp;</code> is added automatically.</p>
               </div>
               <button type="submit"
                       class="w-full rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">
