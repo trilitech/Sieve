@@ -191,6 +191,30 @@ func TestExecute_RejectsBadPath(t *testing.T) {
 	}
 }
 
+func TestExecute_RejectsSlashInOwnerOrRepo(t *testing.T) {
+	c, _ := newTestConnector(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream should not have been called for path %q", r.URL.Path)
+	}))
+
+	// owner or repo containing '/' must be rejected to prevent endpoint hijacking.
+	cases := []struct {
+		op     string
+		params map[string]any
+	}{
+		{"github_list_issues", map[string]any{"owner": "org/evil", "repo": "Sieve"}},
+		{"github_list_issues", map[string]any{"owner": "trilitech", "repo": "Sieve/evil"}},
+		{"github_get_file", map[string]any{"owner": "org/evil", "repo": "Sieve", "path": "README.md"}},
+		{"github_create_issue", map[string]any{"owner": "org/evil", "repo": "Sieve", "title": "x"}},
+		{"github_list_repos", map[string]any{"owner": "org/evil"}},
+	}
+	for _, tc := range cases {
+		_, err := c.Execute(context.Background(), tc.op, tc.params)
+		if err == nil {
+			t.Errorf("op %q with owner/repo slash: expected error, got nil", tc.op)
+		}
+	}
+}
+
 func TestExecute_RejectsBadMethod(t *testing.T) {
 	c, _ := newTestConnector(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("upstream should not have been called")

@@ -172,6 +172,8 @@ func TestValidateRelativePath(t *testing.T) {
 		`/repos/o/r/%5cetc`,
 		`/repos//victim/private`, // empty segment collapses owner to ""
 		`//user`,
+		`/repos/o/r/%252e%252e`, // double-encoded dot traversal
+		`/repos/o/%252f%252f`,   // double-encoded slash
 	}
 	for _, p := range bad {
 		if err := validateRelativePath(p); err == nil {

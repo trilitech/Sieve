@@ -61,7 +61,7 @@ func Meta() connector.ConnectorMeta {
 func (g *Connector) Type() string                   { return ConnectorType }
 func (g *Connector) Operations() []connector.OperationDef { return operations }
 
-// Validate hits /user (or /app for App-only setups) to confirm the first
+// Validate hits /user (or /installation/repositories for App credentials) to confirm the first
 // credential is live. Avoids hammering GitHub on every call.
 func (g *Connector) Validate(ctx context.Context) error {
 	if len(g.config.Credentials) == 0 {

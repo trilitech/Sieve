@@ -91,14 +91,21 @@ func (g *gitHubAppState) update(state string, mutate func(*pendingGitHubApp)) bo
 	return true
 }
 
-// has reports whether a pending entry exists for state without mutating it
-// or touching its TTL. Used by the redirect_url callback to validate state
-// before doing the (potentially slow) manifest code exchange.
-func (g *gitHubAppState) has(state string) bool {
+// has reports whether a non-expired pending entry exists for state, deleting
+// it if found to be expired. Used by the redirect_url callback to validate
+// state before doing the (potentially slow) manifest code exchange.
+func (g *gitHubAppState) has(state string, now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	_, ok := g.pending[state]
-	return ok
+	p, ok := g.pending[state]
+	if !ok {
+		return false
+	}
+	if now.Sub(p.CreatedAt) > pendingGitHubAppTTL {
+		delete(g.pending, state)
+		return false
+	}
+	return true
 }
 
 func (g *gitHubAppState) sweep(now time.Time) {
@@ -288,7 +295,7 @@ func (s *Server) handleGitHubAppCreated(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if !s.githubApp.has(state) {
+	if !s.githubApp.has(state, time.Now()) {
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}

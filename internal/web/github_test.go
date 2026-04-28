@@ -71,16 +71,28 @@ func TestGitHubAppState_Has(t *testing.T) {
 	g := newGitHubAppState()
 	g.put("s1", pendingGitHubApp{CreatedAt: time.Now()})
 
-	if !g.has("s1") {
+	if !g.has("s1", time.Now()) {
 		t.Error("has should return true for present entry")
 	}
-	if g.has("nonexistent") {
+	if g.has("nonexistent", time.Now()) {
 		t.Error("has should return false for missing entry")
 	}
 
 	// has must not mutate: a follow-up take should still succeed.
 	if _, ok := g.take("s1", time.Now()); !ok {
 		t.Error("has mutated the entry: take after has failed")
+	}
+
+	// Expired entry must be rejected and removed.
+	g.put("expired", pendingGitHubApp{CreatedAt: time.Now().Add(-20 * time.Minute)})
+	if g.has("expired", time.Now()) {
+		t.Error("has should return false for expired entry")
+	}
+	g.mu.Lock()
+	_, stillPresent := g.pending["expired"]
+	g.mu.Unlock()
+	if stillPresent {
+		t.Error("expired entry should be removed from map by has")
 	}
 }
 

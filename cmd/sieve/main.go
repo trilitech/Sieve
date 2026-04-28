@@ -174,11 +174,12 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	var listenErr error
 	select {
 	case sig := <-sigCh:
 		log.Printf("received %s, shutting down…", sig)
-	case err := <-errCh:
-		log.Printf("listener error: %v", err)
+	case listenErr = <-errCh:
+		log.Printf("listener error: %v", listenErr)
 	}
 
 	// --- Graceful shutdown ---
@@ -193,7 +194,7 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	}
 
 	log.Print("shutdown complete")
-	return nil
+	return listenErr
 }
 
 // zero overwrites the passphrase bytes after we're done with them. Doesn't

@@ -122,20 +122,40 @@ func (g *Connector) bearerFor(ctx context.Context, cred *Credential) (string, er
 	}
 }
 
-// validateRelativePath rejects path traversal, backslashes, and double-encoded
-// dot segments. Mirrors the hardening pattern in httpproxy.
+// validateRelativePath rejects path traversal, backslashes, and encoded dot
+// segments. It iteratively percent-decodes the path (up to maxUnescapePasses
+// times) until stable, then checks for dangerous sequences and ".." segments.
+// This mirrors the hardening pattern in httpproxy.validateProxyPath, including
+// defence against double-encoded traversal like "%252e%252e%252f".
 func validateRelativePath(p string) error {
-	if strings.Contains(p, "\\") {
+	// 5 passes collapses any realistic multi-layer encoding while bounding cost.
+	// e.g. "%252e" requires 2 passes: "%252e" → "%2e" → ".".
+	const maxUnescapePasses = 5
+
+	decoded := p
+	for i := 0; i < maxUnescapePasses; i++ {
+		next, err := url.PathUnescape(decoded)
+		if err != nil {
+			return fmt.Errorf("github: invalid path encoding: %w", err)
+		}
+		if next == decoded {
+			break
+		}
+		decoded = next
+	}
+
+	// After iterative decoding, reject any remaining dangerous percent-encoded
+	// sequences. These would only survive if the input contained a staggering
+	// depth of nesting beyond maxUnescapePasses, which we treat as invalid.
+	lower := strings.ToLower(decoded)
+	if strings.Contains(lower, "%2e") || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
+		return errors.New("github: path contains dangerous encoded sequences")
+	}
+
+	if strings.Contains(decoded, "\\") {
 		return errors.New("github: backslash in path")
 	}
-	// Reject any percent-encoding of dot or slash (full or partial).
-	low := strings.ToLower(p)
-	for _, bad := range []string{"%2e", "%2f", "%5c"} {
-		if strings.Contains(low, bad) {
-			return fmt.Errorf("github: encoded sequence %q in path", bad)
-		}
-	}
-	segs := strings.Split(p, "/")
+	segs := strings.Split(decoded, "/")
 	for i, seg := range segs {
 		if seg == ".." {
 			return errors.New("github: '..' segment in path")

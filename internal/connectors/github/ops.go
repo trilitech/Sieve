@@ -22,6 +22,17 @@ func escapeRepoPath(p string) string {
 	return strings.Join(parts, "/")
 }
 
+// escapeSegment validates and percent-escapes a single owner/repo-style path
+// segment. It rejects values containing '/' because such values would silently
+// change the effective API endpoint while still appearing to be authorized
+// under the curated operation name.
+func escapeSegment(s, field string) (string, error) {
+	if strings.Contains(s, "/") {
+		return "", fmt.Errorf("github: param %q must not contain '/'", field)
+	}
+	return url.PathEscape(s), nil
+}
+
 // operations is the catalog the connector exposes to the registry / UI / MCP
 // layer. The escape-hatch `github_request` is listed first so it's prominent.
 var operations = []connector.OperationDef{
@@ -198,7 +209,11 @@ func (g *Connector) opListRepos(ctx context.Context, p map[string]any) (any, err
 
 	owner := getString(p, "owner")
 	if owner != "" {
-		return g.doRequest(ctx, http.MethodGet, fmt.Sprintf("/orgs/%s/repos", owner), q, nil)
+		ownerEsc, err := escapeSegment(owner, "owner")
+		if err != nil {
+			return nil, err
+		}
+		return g.doRequest(ctx, http.MethodGet, "/orgs/"+ownerEsc+"/repos", q, nil)
 	}
 	return g.doRequest(ctx, http.MethodGet, "/user/repos", q, nil)
 }
@@ -208,7 +223,15 @@ func (g *Connector) opGetFile(ctx context.Context, p map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
+	ownerEsc, err := escapeSegment(owner, "owner")
+	if err != nil {
+		return nil, err
+	}
 	repo, err := requireString(p, "repo")
+	if err != nil {
+		return nil, err
+	}
+	repoEsc, err := escapeSegment(repo, "repo")
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +241,7 @@ func (g *Connector) opGetFile(ctx context.Context, p map[string]any) (any, error
 	}
 	q := url.Values{}
 	qFromString(q, "ref", getString(p, "ref"))
-	return g.doRequest(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, escapeRepoPath(path)), q, nil)
+	return g.doRequest(ctx, http.MethodGet, "/repos/"+ownerEsc+"/"+repoEsc+"/contents/"+escapeRepoPath(path), q, nil)
 }
 
 func (g *Connector) opPutFile(ctx context.Context, p map[string]any) (any, error) {
@@ -226,7 +249,15 @@ func (g *Connector) opPutFile(ctx context.Context, p map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
+	ownerEsc, err := escapeSegment(owner, "owner")
+	if err != nil {
+		return nil, err
+	}
 	repo, err := requireString(p, "repo")
+	if err != nil {
+		return nil, err
+	}
+	repoEsc, err := escapeSegment(repo, "repo")
 	if err != nil {
 		return nil, err
 	}
@@ -234,9 +265,17 @@ func (g *Connector) opPutFile(ctx context.Context, p map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
+	message, err := requireString(p, "message")
+	if err != nil {
+		return nil, err
+	}
+	content, err := requireString(p, "content")
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]any{
-		"message": getString(p, "message"),
-		"content": getString(p, "content"),
+		"message": message,
+		"content": content,
 	}
 	if v := getString(p, "branch"); v != "" {
 		body["branch"] = v
@@ -244,7 +283,7 @@ func (g *Connector) opPutFile(ctx context.Context, p map[string]any) (any, error
 	if v := getString(p, "sha"); v != "" {
 		body["sha"] = v
 	}
-	return g.doRequest(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, escapeRepoPath(path)), nil, body)
+	return g.doRequest(ctx, http.MethodPut, "/repos/"+ownerEsc+"/"+repoEsc+"/contents/"+escapeRepoPath(path), nil, body)
 }
 
 func (g *Connector) opListIssues(ctx context.Context, p map[string]any) (any, error) {
@@ -252,7 +291,15 @@ func (g *Connector) opListIssues(ctx context.Context, p map[string]any) (any, er
 	if err != nil {
 		return nil, err
 	}
+	ownerEsc, err := escapeSegment(owner, "owner")
+	if err != nil {
+		return nil, err
+	}
 	repo, err := requireString(p, "repo")
+	if err != nil {
+		return nil, err
+	}
+	repoEsc, err := escapeSegment(repo, "repo")
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +308,7 @@ func (g *Connector) opListIssues(ctx context.Context, p map[string]any) (any, er
 	qFromString(q, "labels", getString(p, "labels"))
 	qFromInt(q, "per_page", getInt(p, "per_page"))
 	qFromInt(q, "page", getInt(p, "page"))
-	return g.doRequest(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/issues", owner, repo), q, nil)
+	return g.doRequest(ctx, http.MethodGet, "/repos/"+ownerEsc+"/"+repoEsc+"/issues", q, nil)
 }
 
 func (g *Connector) opCreateIssue(ctx context.Context, p map[string]any) (any, error) {
@@ -269,7 +316,15 @@ func (g *Connector) opCreateIssue(ctx context.Context, p map[string]any) (any, e
 	if err != nil {
 		return nil, err
 	}
+	ownerEsc, err := escapeSegment(owner, "owner")
+	if err != nil {
+		return nil, err
+	}
 	repo, err := requireString(p, "repo")
+	if err != nil {
+		return nil, err
+	}
+	repoEsc, err := escapeSegment(repo, "repo")
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +342,7 @@ func (g *Connector) opCreateIssue(ctx context.Context, p map[string]any) (any, e
 	if v, ok := p["assignees"]; ok {
 		body["assignees"] = v
 	}
-	return g.doRequest(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/issues", owner, repo), nil, body)
+	return g.doRequest(ctx, http.MethodPost, "/repos/"+ownerEsc+"/"+repoEsc+"/issues", nil, body)
 }
 
 func (g *Connector) opCommentIssue(ctx context.Context, p map[string]any) (any, error) {
@@ -295,7 +350,15 @@ func (g *Connector) opCommentIssue(ctx context.Context, p map[string]any) (any, 
 	if err != nil {
 		return nil, err
 	}
+	ownerEsc, err := escapeSegment(owner, "owner")
+	if err != nil {
+		return nil, err
+	}
 	repo, err := requireString(p, "repo")
+	if err != nil {
+		return nil, err
+	}
+	repoEsc, err := escapeSegment(repo, "repo")
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +371,7 @@ func (g *Connector) opCommentIssue(ctx context.Context, p map[string]any) (any, 
 		return nil, err
 	}
 	return g.doRequest(ctx, http.MethodPost,
-		fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), nil,
+		fmt.Sprintf("/repos/%s/%s/issues/%d/comments", ownerEsc, repoEsc, number), nil,
 		map[string]any{"body": body})
 }
 
@@ -317,7 +380,15 @@ func (g *Connector) opListPRs(ctx context.Context, p map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
+	ownerEsc, err := escapeSegment(owner, "owner")
+	if err != nil {
+		return nil, err
+	}
 	repo, err := requireString(p, "repo")
+	if err != nil {
+		return nil, err
+	}
+	repoEsc, err := escapeSegment(repo, "repo")
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +396,7 @@ func (g *Connector) opListPRs(ctx context.Context, p map[string]any) (any, error
 	qFromString(q, "state", getString(p, "state"))
 	qFromInt(q, "per_page", getInt(p, "per_page"))
 	qFromInt(q, "page", getInt(p, "page"))
-	return g.doRequest(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls", owner, repo), q, nil)
+	return g.doRequest(ctx, http.MethodGet, "/repos/"+ownerEsc+"/"+repoEsc+"/pulls", q, nil)
 }
 
 func (g *Connector) opGetPR(ctx context.Context, p map[string]any) (any, error) {
@@ -333,7 +404,15 @@ func (g *Connector) opGetPR(ctx context.Context, p map[string]any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
+	ownerEsc, err := escapeSegment(owner, "owner")
+	if err != nil {
+		return nil, err
+	}
 	repo, err := requireString(p, "repo")
+	if err != nil {
+		return nil, err
+	}
+	repoEsc, err := escapeSegment(repo, "repo")
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +420,7 @@ func (g *Connector) opGetPR(ctx context.Context, p map[string]any) (any, error) 
 	if number <= 0 {
 		return nil, fmt.Errorf("github: param %q required", "number")
 	}
-	return g.doRequest(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number), nil, nil)
+	return g.doRequest(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/pulls/%d", ownerEsc, repoEsc, number), nil, nil)
 }
 
 func (g *Connector) opCreatePR(ctx context.Context, p map[string]any) (any, error) {
@@ -349,7 +428,15 @@ func (g *Connector) opCreatePR(ctx context.Context, p map[string]any) (any, erro
 	if err != nil {
 		return nil, err
 	}
+	ownerEsc, err := escapeSegment(owner, "owner")
+	if err != nil {
+		return nil, err
+	}
 	repo, err := requireString(p, "repo")
+	if err != nil {
+		return nil, err
+	}
+	repoEsc, err := escapeSegment(repo, "repo")
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +459,7 @@ func (g *Connector) opCreatePR(ctx context.Context, p map[string]any) (any, erro
 	if v, ok := p["draft"].(bool); ok {
 		body["draft"] = v
 	}
-	return g.doRequest(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/pulls", owner, repo), nil, body)
+	return g.doRequest(ctx, http.MethodPost, "/repos/"+ownerEsc+"/"+repoEsc+"/pulls", nil, body)
 }
 
 func (g *Connector) opSearchCode(ctx context.Context, p map[string]any) (any, error) {

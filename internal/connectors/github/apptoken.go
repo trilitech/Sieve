@@ -54,18 +54,24 @@ func newAppTokenCache(doer httpDoer) *appTokenCache {
 
 // installationToken returns a valid installation access token for the given
 // credential, minting (or refreshing) one if no cached token has at least
-// `refreshSlack` left before expiry.
+// `refreshSlack` left before expiry. The mutex is held only for cache reads
+// and writes; the JWT signing and network exchange happen outside the lock so
+// concurrent requests for different installations are not serialized.
 func (c *appTokenCache) installationToken(ctx context.Context, cred *Credential) (string, error) {
 	const refreshSlack = 5 * time.Minute
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	key := appTokenKey{appID: cred.AppID, installationID: cred.InstallationID}
+
+	c.mu.Lock()
 	if e, ok := c.entries[key]; ok && c.now().Add(refreshSlack).Before(e.expires) {
+		c.mu.Unlock()
 		return e.token, nil
 	}
+	c.mu.Unlock()
 
+	// Sign the JWT and exchange for an installation token outside the lock.
+	// Two concurrent callers may both reach this point for the same key; the
+	// result is at most one redundant mint (the second write wins in the cache).
 	jwt, err := signAppJWT(cred.AppID, cred.PrivateKeyPEM, c.now())
 	if err != nil {
 		return "", err
@@ -75,7 +81,10 @@ func (c *appTokenCache) installationToken(ctx context.Context, cred *Credential)
 	if err != nil {
 		return "", err
 	}
+
+	c.mu.Lock()
 	c.entries[key] = appTokenCacheEntry{token: tok, expires: exp}
+	c.mu.Unlock()
 	return tok, nil
 }
 
