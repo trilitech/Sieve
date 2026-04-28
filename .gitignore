@@ -1,5 +1,6 @@
 data/
-sieve
+/sieve
+/testserver
 *.db
 *client_secret*.json
 *credentials*.json
@@ -11,4 +12,3 @@ sieve
 *~
 node_modules/
 test-results/
-testserver
