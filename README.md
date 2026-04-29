@@ -129,7 +129,8 @@ if a `*client_secret*.json` is present).
 ### Run with Docker
 
 ```bash
-docker compose up -d
+docker compose run --rm -it sieve --setup        # one-time keyring init
+docker compose run --rm -it --service-ports sieve  # start (TTY passphrase prompt)
 ```
 
 The Docker image comes with a batteries-included Python environment (requests, httpx, pandas, numpy, anthropic, openai, tiktoken, beautifulsoup4, pydantic) for policy scripts.

@@ -30,9 +30,13 @@ Advantages over PATs:
 - Per-installation permissions are granular and GitHub-visible.
 - Works for all repos in an org (or a selected subset) via one install.
 
-Your Sieve host must be reachable from GitHub's servers during setup,
+**Note**: Your Sieve host must be reachable from GitHub's servers during setup,
 because GitHub calls back to `/connections/github/app/created` and
 `/connections/github/app/installed` during the flow.
+
+- On a remote VM, assign a public IP or DNS name, open port 19816, and (for production) use HTTPS via a reverse proxy (e.g., Nginx or Caddy).
+- Register your public URL as the callback and webhook in the GitHub App manifest.
+- For local/dev, use a tunneling service like ngrok to expose Sieve to the internet.
 
 ## Setting up a PAT connection
 

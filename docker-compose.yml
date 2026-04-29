@@ -1,13 +1,18 @@
 services:
   sieve:
     build: .
+    command:
+      - "--web=0.0.0.0:19816"
+      - "--api=0.0.0.0:19817"
+      - "--db=/data/sieve.db"
+      - "--google-credentials=/data/gmail_credentials.json"
     ports:
       - "127.0.0.1:19816:19816"  # Web UI
       - "127.0.0.1:19817:19817"  # API + MCP
     volumes:
-      - sieve-data:/data
+      - ./data:/data
       - ./policies:/policies:ro
-      - ./sieve.yaml:/etc/sieve/sieve.yaml:ro
+      - ./sieve.yaml:/etc/sieve/sieve.yaml:ro   # currently unused; reserved for future --config support
     security_opt:
       - no-new-privileges:true
     cap_drop:
