@@ -82,4 +82,7 @@ Scripts (Python by default, any language works) read JSON from stdin, write a JS
 - Don't add plaintext credential fields to the `connections` schema. If a new credential type needs storing, route it through `connections.Config` so it flows through the existing envelope-encryption path.
 - Don't add env-var-based passphrase intake. Env leaks through `/proc/<pid>/environ`, `ps`, and crash dumps. `SIEVE_PASSPHRASE_FILE` is fine (points at a file); `SIEVE_PASSPHRASE` is not.
 
-
+<!-- SPECKIT START -->
+Active plan: [specs/001-slack-linear-jira-connectors/plan.md](specs/001-slack-linear-jira-connectors/plan.md)
+Spec: [specs/001-slack-linear-jira-connectors/spec.md](specs/001-slack-linear-jira-connectors/spec.md)
+<!-- SPECKIT END -->
