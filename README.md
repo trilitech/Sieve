@@ -237,13 +237,13 @@ Tokens reference a role, which bundles connections with policies. One token per 
 
 ### Claude Code (MCP)
 
-Add to your project's `.mcp.json`:
+Claude Code speaks Sieve's HTTP transport directly. Add to your project's `.mcp.json` (or `~/.claude/mcp.json` for all projects):
 
 ```json
 {
   "mcpServers": {
     "sieve": {
-      "type": "sse",
+      "type": "http",
       "url": "http://localhost:19817/mcp",
       "headers": {
         "Authorization": "Bearer sieve_tok_xxxxx"
@@ -253,7 +253,34 @@ Add to your project's `.mcp.json`:
 }
 ```
 
-The agent sees tools like `list_emails`, `read_email`, `create_draft` — each call goes through Sieve's policy pipeline.
+`sieve token create` prints this snippet for you. The agent sees tools like `list_emails`, `read_email`, `create_draft` — each call goes through Sieve's policy pipeline.
+
+### Claude Desktop (MCP)
+
+Claude Desktop only supports stdio MCP servers, so use the built-in `sieve mcp-launch` bridge — it pulls the bearer token from the macOS Keychain so it never lives in plaintext on disk:
+
+```bash
+# 1. Install sieve to a directory on Claude Desktop's PATH
+go install ./cmd/sieve   # lands at ~/go/bin/sieve
+
+# 2. Store the token in Keychain (mint one at http://localhost:19816/tokens first)
+security add-generic-password -a "$USER" -s sieve-token -w 'sieve_tok_xxxxx'
+```
+
+Then edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "sieve": {
+      "command": "sieve",
+      "args": ["mcp-launch"]
+    }
+  }
+}
+```
+
+Fully quit Claude Desktop (⌘Q) and reopen. See [docs/mcp-integration.md#claude-desktop-configuration](docs/mcp-integration.md#claude-desktop-configuration) for multi-token setups, the non-macOS file fallback, and troubleshooting.
 
 ### Gmail REST API
 

@@ -54,6 +54,18 @@ const (
 )
 
 func main() {
+	// Subcommand dispatch must run BEFORE flag.Parse and BEFORE keyring
+	// intake — `mcp-launch` is a stdio bridge that talks to a separately
+	// running Sieve over HTTP, so it has no business prompting for a
+	// passphrase or opening the database.
+	if len(os.Args) > 1 && os.Args[1] == "mcp-launch" {
+		if err := runMCPLaunch(os.Args[2:]); err != nil {
+			log.SetFlags(0)
+			log.Fatalf("sieve mcp-launch: %v", err)
+		}
+		return
+	}
+
 	var (
 		dbPath          = flag.String("db", defaultDBPath, "path to the persistent sieve database file")
 		webAddr         = flag.String("web", defaultWebAddr, "host:port for the admin web UI")
