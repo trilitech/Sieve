@@ -30,6 +30,13 @@ type errorEnvelope struct {
 //
 // See https://docs.slack.dev/authentication/tokens — these codes are
 // stable across API versions and apply to every Web API method.
+//
+// Codes deliberately NOT in this set:
+//   - "team_added_to_org" — workspace migration, recoverable
+//   - "rate_limited" / 429 — transient
+//   - any 5xx — transient
+//   - unknown new codes — treated as transient (false negative is
+//     preferred over false positive for unknowns)
 var terminalAuthErrors = map[string]bool{
 	"invalid_auth":     true, // token is bad or malformed
 	"token_revoked":    true, // operator uninstalled the app
@@ -37,7 +44,6 @@ var terminalAuthErrors = map[string]bool{
 	"account_inactive": true, // workspace owner deactivated the team
 	"not_authed":       true, // no token presented
 	"missing_auth":     true, // synonym used by some endpoints
-	"team_added_to_org": false, // workspace migrated; not a terminal-auth — keep transient
 }
 
 // isTerminalAuthError reports whether the Slack response body indicates

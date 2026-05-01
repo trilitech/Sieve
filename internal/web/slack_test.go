@@ -16,8 +16,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/trilitech/Sieve/internal/approval"
-	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 	"github.com/trilitech/Sieve/internal/scriptgen"
@@ -48,37 +46,28 @@ func slackTestServer(t *testing.T) (handler http.Handler, mockSlack *httptest.Se
 	t.Setenv("SLACK_CLIENT_ID", "test-client-id")
 	t.Setenv("SLACK_CLIENT_SECRET", "test-client-secret")
 
+	// Build a Server directly (no NewServer) so the OAuth-cleanup
+	// background goroutine doesn't run during the test. None of the
+	// Slack handlers under test render templates, so an empty templates
+	// map is sufficient — if a future test needs template rendering it
+	// must call NewServer instead and accept the goroutine.
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := &Server{
-		tokens:                env.Tokens,
-		connections:           env.Connections,
-		policies:              env.Policies,
-		roles:                 env.Roles,
-		registry:              env.Registry,
-		approval:              env.Approval,
-		audit:                 env.Audit,
-		settings:              env.Settings,
-		scriptgen:             scriptgenSvc,
-		oauthPending:          make(map[string]pendingOAuth),
-		githubApp:             newGitHubAppState(),
-		stopCleanup:           make(chan struct{}),
+		tokens:       env.Tokens,
+		connections:  env.Connections,
+		policies:     env.Policies,
+		roles:        env.Roles,
+		registry:     env.Registry,
+		approval:     env.Approval,
+		audit:        env.Audit,
+		settings:     env.Settings,
+		scriptgen:    scriptgenSvc,
+		oauthPending: make(map[string]pendingOAuth),
+		githubApp:    newGitHubAppState(),
+		stopCleanup:  make(chan struct{}),
 	}
-	// Reuse the same template-loading code NewServer runs.
-	loadTemplatesForTest(t, srv)
 	t.Cleanup(func() { srv.Close() })
 	return srv.Handler(), mockSlack, env
-}
-
-// loadTemplatesForTest mirrors the template parsing block in NewServer.
-// Lifted out so we can construct a Server directly without spinning up
-// the OAuth-cleanup background goroutine. (Tests close srv via the
-// stopCleanup channel.)
-func loadTemplatesForTest(t *testing.T, s *Server) {
-	t.Helper()
-	// We don't need any rendered output for these tests — handlers
-	// either redirect or return 4xx. Empty templates map is fine; the
-	// handlers we test don't touch s.render.
-	_ = s
 }
 
 // slackMockHandler implements oauth.v2.access and auth.test. The
@@ -346,7 +335,3 @@ func TestHandleSlackReauth_TokenPath(t *testing.T) {
 	}
 }
 
-// keep the audit/approval imports referenced even if a future test
-// removes the only path that needs them.
-var _ = audit.Entry{}
-var _ = approval.SubmitRequest{}

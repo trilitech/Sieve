@@ -90,7 +90,7 @@ Spec: [specs/001-slack-linear-jira-connectors/spec.md](specs/001-slack-linear-ji
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **Sieve** (2531 symbols, 6637 relationships, 219 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **Sieve** (2786 symbols, 7442 relationships, 239 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

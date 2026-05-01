@@ -465,6 +465,18 @@ func (s *Service) injectRefreshCallback(id string, config map[string]any) {
 // happens before keyring decryption so a non-active connection can be
 // rejected even when the keyring is unloaded. Routers map both sentinels
 // to HTTP 403.
+//
+// Cost note: every call now incurs one keyless `SELECT ... WHERE id = ?`
+// against the connections table to read the current status. Previously
+// the cache-hit path was a single sync.RWMutex.RLock with no DB round
+// trip. We accept the cost because:
+//   - Sieve is positioned for individual-account scale (tens of
+//     connections, not high request rate).
+//   - Every operation is already audit-logged + policy-evaluated, so
+//     one extra SELECT is in the noise.
+//   - Caching status alongside the live connector instance would force
+//     us to invalidate on every SetStatus, re-introducing the
+//     stale-state foot-gun that the gate exists to close.
 func (s *Service) GetConnector(id string) (connector.Connector, error) {
 	// Status gate: refuse non-active connections immediately. Reading
 	// status does not require the keyring.

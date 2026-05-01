@@ -1642,32 +1642,47 @@ test.describe('Slack connector — UI surfaces', () => {
     await expect(page.locator('tr:has-text("test-conn") span:has-text("Active")')).toBeVisible();
   });
 
-  test('disabled connection rejects agent operations with HTTP 403', async ({ request }) => {
-    // Disable, hit the API with a known-good token, expect 403 with
-    // {"error":"disabled"} body. The token we use already exists in
-    // testserver — we pull it from the seeded data via list-tokens.
-    // Easier path: use the testserver's pre-created `read-only-tok`
-    // (matches the pattern in earlier tests).
-    await request.post(`${s.web_url}/connections/test-conn/disable`);
+  test('disabled connection rejects agent operations with HTTP 403 + structured body', async ({ request }) => {
+    // Disable test-conn (the seeded mock connection that seed_token is
+    // bound to). Then hit the API with the real seeded token and assert
+    // the sentinel-mapping path: 403 with body {"error":"disabled",...}.
+    //
+    // The earlier version of this test used a fake token, which made
+    // authMiddleware short-circuit at 401 and masked any regression in
+    // the disable gate. Using s.seed_token forces auth to succeed so
+    // the 403 we observe is genuinely from the GetConnector status
+    // gate (T015).
+    try {
+      const disableResp = await request.post(`${s.web_url}/connections/test-conn/disable`);
+      expect(disableResp.ok()).toBe(true);
 
-    // The pre-seeded token name is documented in testserver fixtures;
-    // call /api/v1/connections to list, then hit a denied op.
-    // We use the same plaintext token the earlier tests use.
-    // For simplicity: just confirm the 403 body shape by hitting an
-    // arbitrary token. The exact token plumbing here is unimportant —
-    // what matters is that a disabled connection produces the correct
-    // structured error.
-    const resp = await request.post(`${s.api_url}/api/v1/connections/test-conn/ops/list_emails`, {
-      headers: { Authorization: 'Bearer sieve_tok_unknown' },
-      data: '{}',
-    });
-    // Regardless of token validity, the response code & body indicate
-    // either auth failure (401) for an unknown token OR disabled (403)
-    // for a known token. We don't assert which — just that the disable
-    // path is in effect.
-    expect([401, 403].includes(resp.status())).toBe(true);
+      const resp = await request.post(`${s.api_url}/api/v1/connections/test-conn/ops/list_emails`, {
+        headers: { Authorization: `Bearer ${s.seed_token}` },
+        data: '{}',
+      });
+      expect(resp.status()).toBe(403);
 
-    // Re-enable so subsequent test cases see a clean state.
-    await request.post(`${s.web_url}/connections/test-conn/enable`);
+      const body = await resp.json();
+      expect(body.error).toBe('disabled');
+      expect(body.message).toBeTruthy();
+    } finally {
+      // Always re-enable so subsequent test cases see a clean state,
+      // even if the assertions above failed mid-flight.
+      await request.post(`${s.web_url}/connections/test-conn/enable`);
+    }
+  });
+
+  test('reauth_required connection returns 403 with reauth_required code', async ({ request }) => {
+    // Companion to the disabled test: drive the same path but with the
+    // reauth_required sentinel. Both surfaces use the same mapper
+    // (writeConnectionError / connectionStateError), so this is the
+    // sister assertion that catches a regression in the other branch.
+    //
+    // We can't put a real connection into reauth_required from the
+    // public web surface (it's connector-driven), so we reach into the
+    // testserver via a SetStatus call... which is also not exposed.
+    // Instead: skip if no testing endpoint exists. The unit test in
+    // internal/api/router_status_test.go covers this comprehensively.
+    test.skip(true, 'reauth_required transitions are connector-internal; covered by api/router_status_test.go');
   });
 });

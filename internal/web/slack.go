@@ -82,9 +82,9 @@ func slackOAuthClientSecret() string {
 	return os.Getenv("SLACK_CLIENT_SECRET")
 }
 
-// handleSlackOAuthStart kicks off the Slack OAuth v2 install flow.
-// Adapter shape mirrors handleConnectionAdd's "google" branch: stash
-// pending state with TTL, redirect to Slack with the random state.
+// handleSlackOAuthStart kicks off the Slack OAuth v2 install flow for
+// a fresh connection. Reads id + display_name from the form, validates,
+// and delegates to beginSlackOAuth.
 func (s *Server) handleSlackOAuthStart(w http.ResponseWriter, r *http.Request) {
 	if rejectIfAgentToken(w, r) {
 		return
@@ -103,6 +103,15 @@ func (s *Server) handleSlackOAuthStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("connection %q already exists", id), http.StatusBadRequest)
 		return
 	}
+	s.beginSlackOAuth(w, r, id, displayName)
+}
+
+// beginSlackOAuth stashes a pendingOAuth entry and redirects to the
+// Slack v2 authorize endpoint. Callers (handleSlackOAuthStart for a
+// fresh install, handleSlackReauth for re-installing an existing
+// connection) supply the id + display name; this helper handles the
+// state generation, TTL setup, and redirect uniformly.
+func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, displayName string) {
 	clientID := slackOAuthClientID()
 	if clientID == "" {
 		http.Error(w, "Slack OAuth not configured (set SLACK_CLIENT_ID/SLACK_CLIENT_SECRET in the environment, or use the bot-token entry path)", http.StatusBadRequest)
@@ -237,10 +246,10 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/connections", http.StatusSeeOther)
 		return
 	}
-	// OAuth-path reauth: stash and redirect.
-	r.Form.Set("id", id)
-	r.Form.Set("display_name", existing.DisplayName)
-	s.handleSlackOAuthStart(w, r)
+	// OAuth-path reauth: stash + redirect to Slack. handleOAuthCallback
+	// notices that the connection id already exists and routes the
+	// completion through UpdateConfig + SetStatus(active) instead of Add.
+	s.beginSlackOAuth(w, r, id, existing.DisplayName)
 }
 
 // slackAuthTest calls Slack auth.test and returns the team / user
