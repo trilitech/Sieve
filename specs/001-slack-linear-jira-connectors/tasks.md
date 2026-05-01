@@ -50,8 +50,8 @@ Single-Go-service layout already in place. New code lives under `internal/connec
 
 ### Refresh-token rotation persistence (FR-016)
 
-- [ ] T009 Modify `injectRefreshCallback` in `internal/connections/connections.go` so that when the persist of a rotated refresh token fails (any error from `UpdateConfig`), the connection's `status` is transitioned to `reauth_required` via `SetStatus(id, "reauth_required")` BEFORE the error is returned to the caller. The status transition MUST be best-effort (if `SetStatus` itself fails, log and return the original persist error — do not mask it)
-- [ ] T010 [P] Add `TestInjectRefreshCallback_PersistFailure_TransitionsToReauthRequired` and `TestInjectRefreshCallback_PersistSuccess_LeavesStatusActive` in `internal/connections/refresh_test.go` (NEW file). The persist-failure test injects a stub `UpdateConfig` that returns an error and asserts the row's `status` lands in `reauth_required`
+- [X] T009 Modify `injectRefreshCallback` in `internal/connections/connections.go` so that when the persist of a rotated refresh token fails (any error from `UpdateConfig`), the connection's `status` is transitioned to `reauth_required` via `SetStatus(id, "reauth_required")` BEFORE the error is returned to the caller. The status transition MUST be best-effort (if `SetStatus` itself fails, log and return the original persist error — do not mask it)
+- [X] T010 [P] Add `TestInjectRefreshCallback_PersistFailure_TransitionsToReauthRequired` and `TestInjectRefreshCallback_PersistSuccess_LeavesStatusActive` in `internal/connections/refresh_test.go` (NEW file). The persist-failure test injects a stub `UpdateConfig` that returns an error and asserts the row's `status` lands in `reauth_required`
 
 ### Status surfacing on API/Web/MCP
 

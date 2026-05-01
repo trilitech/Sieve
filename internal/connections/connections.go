@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -387,8 +388,35 @@ func (s *Service) Exists(id string) (bool, error) {
 	return count > 0, err
 }
 
-// injectRefreshCallback adds two token-lifecycle callbacks to the config
-// map. The connector hands these to its OAuth token source:
+// persistRefreshedToken merges the refreshed access/refresh-token pair from
+// tok into the connection's stored config and persists it. Returns any
+// error from the read or write step.
+//
+// Exposed as a method (not just a closure body) so the failure path can be
+// exercised in tests per FR-016 — see refresh_test.go.
+func (s *Service) persistRefreshedToken(id string, tok *oauth2.Token) error {
+	c, err := s.GetWithConfig(id)
+	if err != nil {
+		return fmt.Errorf("read for refresh: %w", err)
+	}
+	oauthToken, _ := c.Config["oauth_token"].(map[string]any)
+	if oauthToken == nil {
+		oauthToken = make(map[string]any)
+	}
+	oauthToken["access_token"] = tok.AccessToken
+	oauthToken["token_type"] = tok.TokenType
+	if tok.RefreshToken != "" {
+		oauthToken["refresh_token"] = tok.RefreshToken
+	}
+	if !tok.Expiry.IsZero() {
+		oauthToken["expiry"] = tok.Expiry.Format(time.RFC3339)
+	}
+	c.Config["oauth_token"] = oauthToken
+	return s.UpdateConfig(id, c.Config)
+}
+
+// injectRefreshCallback adds two token-lifecycle callbacks to the config map.
+// The connector hands these to its OAuth token source:
 //
 //   - _on_token_refresh: a refresh succeeded. Persist the new access (and
 //     possibly rotated refresh) token to the DB so future server starts
@@ -397,26 +425,29 @@ func (s *Service) Exists(id string) (bool, error) {
 //     connection needs_reauth with the error code as the reason. The web
 //     UI will surface a banner; the API/MCP layers will return 503
 //     connection_reauth_required to anyone trying to use it.
+//
+// FR-016: Linear, Jira, and Asana rotate refresh tokens — the upstream
+// invalidates the old refresh token the moment the new pair is issued.
+// If the persist of the new pair fails (DB error, decrypt error, keyring
+// unloaded mid-call), the connection is unrecoverable until an admin
+// re-authenticates. Surface that immediately by transitioning the
+// connection's status to reauth_required so the next agent call short-
+// circuits with ErrReauthRequired (mapped to HTTP 403) instead of
+// burning further refresh attempts against a stale refresh token.
+//
+// The status transition is best-effort: if SetStatus itself fails (e.g.,
+// the same DB error that broke UpdateConfig), the original persist error
+// is logged and the next call's auth-error path will transition status
+// when the upstream returns 401.
 func (s *Service) injectRefreshCallback(id string, config map[string]any) {
 	config["_on_token_refresh"] = func(tok *oauth2.Token) {
-		c, err := s.GetWithConfig(id)
-		if err != nil {
-			return
+		if err := s.persistRefreshedToken(id, tok); err != nil {
+			if setErr := s.SetStatus(id, StatusReauthRequired); setErr != nil {
+				log.Printf("connections: refresh-token persist failed for %q: %v (SetStatus also failed: %v)", id, err, setErr)
+			} else {
+				log.Printf("connections: refresh-token persist failed for %q, transitioned to reauth_required: %v", id, err)
+			}
 		}
-		oauthToken, _ := c.Config["oauth_token"].(map[string]any)
-		if oauthToken == nil {
-			oauthToken = make(map[string]any)
-		}
-		oauthToken["access_token"] = tok.AccessToken
-		oauthToken["token_type"] = tok.TokenType
-		if tok.RefreshToken != "" {
-			oauthToken["refresh_token"] = tok.RefreshToken
-		}
-		if !tok.Expiry.IsZero() {
-			oauthToken["expiry"] = tok.Expiry.Format(time.RFC3339)
-		}
-		c.Config["oauth_token"] = oauthToken
-		s.UpdateConfig(id, c.Config)
 	}
 	config["_on_token_refresh_failure"] = func(reason string) {
 		// Best-effort: a deleted connection or a closed DB shouldn't block
