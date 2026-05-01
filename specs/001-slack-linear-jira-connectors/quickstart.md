@@ -1,4 +1,4 @@
-# Quickstart: Slack, Linear, and Jira Connectors
+# Quickstart: Slack, Linear, Jira, and Asana Connectors
 
 This walks through adding each connector to a local Sieve install and verifying the happy path. Assumes you've cloned the repo and have `go`, `npm`, and Docker available.
 
@@ -97,7 +97,44 @@ curl -s -X POST http://localhost:19817/api/v1/connections/<conn-id>/operations/j
   -d '{"jql":"project = BOT","max_results":5}'
 ```
 
-Expected: 200 with up to 5 BOT issues.
+Expected: 200 with up to 5 BOT issues. The result shape is `{ items: [...], next_cursor: "..." }` per FR-014; each issue includes `description` (raw ADF) and `description_text` (plain-text rendering) per FR-015 when `description` is in the requested field set.
+
+## Asana (P4)
+
+### OAuth path
+
+1. Create an Asana OAuth app at <https://app.asana.com/0/my-apps>. Add the redirect URL `http://<your-sieve-host>:19816/oauth/callback`. (Asana grants full access to the authorizing user's data; per-resource access is enforced by the user's existing Asana role/permissions.)
+2. Copy Client ID + Client Secret into `ASANA_CLIENT_ID` / `ASANA_CLIENT_SECRET` in your settings file.
+3. **Add Connection** → **Asana** → **Install via OAuth**. Approve.
+4. The connector resolves your default workspace via `GET /users/me?opt_fields=gid,workspaces.gid,workspaces.name` and stores the first workspace as `default_workspace_gid`.
+5. Connection lands `active`.
+
+### Personal Access Token path
+
+1. Create a Personal Access Token at <https://app.asana.com/0/my-apps> → "Create new token". Copy the `1/...` value (shown only once).
+2. **Add Connection** → **Asana** → **Use Personal Access Token**. Paste the token. If your account belongs to multiple workspaces, optionally select a default workspace; otherwise the first one is used. Submit.
+3. Sieve calls `GET /users/me`; on 200 with `data.gid` the connection lands `active`.
+
+### Verify
+
+```bash
+# Replace <project-gid> with a real Asana project GID from your workspace.
+curl -s -X POST http://localhost:19817/api/v1/connections/<conn-id>/operations/asana.list_tasks \
+  -H "Authorization: Bearer sieve_tok_..." \
+  -H "Content-Type: application/json" \
+  -d '{"project":"<project-gid>","page_size":5}'
+```
+
+Expected: 200 with up to 5 tasks. Result shape is `{ items: [...], next_cursor: "..." }` per FR-014. Each task that has rich text in `html_notes` carries both `notes` (HTML) and `notes_text` (plain text) per FR-015. To create a task:
+
+```bash
+curl -s -X POST http://localhost:19817/api/v1/connections/<conn-id>/operations/asana.create_task \
+  -H "Authorization: Bearer sieve_tok_..." \
+  -H "Content-Type: application/json" \
+  -d '{"project":"<project-gid>","name":"Smoke test from Sieve","notes":"hello"}'
+```
+
+For the project-scoping policy test (User Story 4 acceptance scenario 3), attach a rules policy that restricts `asana.list_tasks` to a specific project GID and verify cross-project queries are denied.
 
 ## Status field migration check
 

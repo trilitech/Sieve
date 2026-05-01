@@ -1,6 +1,8 @@
-# Phase 1 Data Model: Slack, Linear, and Jira Connectors
+# Phase 1 Data Model: Slack, Linear, Jira, and Asana Connectors
 
 This document defines the persisted entities introduced or modified by this feature. All credential fields are stored inside the encrypted `config_ciphertext` blob on the `connections` row — never as plaintext columns.
+
+> Updated 2026-05-01 to add `Asana Connection Config` per Q1 of Session 2026-05-01.
 
 ## Modified entity: `Connection`
 
@@ -124,6 +126,37 @@ type Config struct {
 - If `AuthKind == "token"`: `Email` matches `*@*` pattern AND `APIToken` non-empty AND `SiteURL` is `https://*.atlassian.net`.
 - After Validate: `CloudID` non-empty in both modes (OAuth path resolves it via `accessible-resources`; token path resolves via `GET /rest/api/3/serverInfo`).
 
+## New entity: Asana Connection Config
+
+```go
+package asana
+
+type Config struct {
+    AuthKind            string   `json:"auth_kind"`              // "oauth" | "token"
+    DefaultWorkspaceGID string   `json:"default_workspace_gid"`  // Asana workspace GID, e.g. "123456789"
+    UserGID             string   `json:"user_gid,omitempty"`     // The user the credential acts as
+    UserName            string   `json:"user_name,omitempty"`    // Display-only
+    Scopes              []string `json:"scopes,omitempty"`
+
+    // AuthKind == "oauth": auth-code flow result.
+    OAuthToken   map[string]any `json:"oauth_token,omitempty"`   // {access_token, refresh_token, expiry, token_type}
+    ClientID     string `json:"client_id,omitempty"`
+    ClientSecret string `json:"client_secret,omitempty"`
+
+    // AuthKind == "token": Personal Access Token.
+    PAT string `json:"pat,omitempty"`                            // 1/... value, encrypted at rest
+}
+```
+
+**Validation rules**:
+- `AuthKind` must be one of `"oauth" | "token"`.
+- If `AuthKind == "oauth"`: `OAuthToken.access_token` non-empty AND (after Validate) `DefaultWorkspaceGID` non-empty AND `UserGID` non-empty.
+- If `AuthKind == "token"`: `PAT` must start with `1/` and (after Validate) `DefaultWorkspaceGID` non-empty AND `UserGID` non-empty.
+
+**Workspace resolution**: At connection creation time, the connector calls `GET /users/me?opt_fields=gid,name,workspaces.gid,workspaces.name`. The first workspace in the response (or, if the admin specified a `default_workspace_gid` at the form level, the matching one) is persisted as `DefaultWorkspaceGID`. Subsequent operations default to this workspace when the agent does not pass an explicit `workspace` parameter.
+
+**Refresh-token rotation**: For `AuthKind == "oauth"`, Asana rotates refresh tokens per OAuth 2.0 spec. The connector reuses `connections.injectRefreshCallback` per FR-016. If the callback's persist fails, the connection transitions to `reauth_required` immediately.
+
 ## Relationships
 
 - Each `Connection` references exactly one connector type via `ConnectorType` (existing FK semantics — string match into the registry).
@@ -140,9 +173,42 @@ The following fields on the `Config` structs above MUST never be logged, surface
 - Slack: `BotToken`, `ClientSecret`, `OAuthToken.access_token`, `OAuthToken.refresh_token`
 - Linear: `APIKey`, `ClientSecret`, `OAuthToken.access_token`, `OAuthToken.refresh_token`
 - Jira: `APIToken`, `ClientSecret`, `OAuthToken.access_token`, `OAuthToken.refresh_token`
+- Asana: `PAT`, `ClientSecret`, `OAuthToken.access_token`, `OAuthToken.refresh_token`
 
 The `Connection.Config` field is already `json:"-"` (omitted from default serialization). Per-connector test cases must assert that error wrapping does not concatenate the credential into the error message (a known foot-gun when wrapping with `%w` plus a `%v` token).
 
 ## Operation parameter and result shapes
 
-See [contracts/slack.md](./contracts/slack.md), [contracts/linear.md](./contracts/linear.md), and [contracts/jira.md](./contracts/jira.md) for the per-operation parameter and return-value contracts.
+See [contracts/slack.md](./contracts/slack.md), [contracts/linear.md](./contracts/linear.md), [contracts/jira.md](./contracts/jira.md), and [contracts/asana.md](./contracts/asana.md) for the per-operation parameter and return-value contracts.
+
+### Cross-cutting shape rules
+
+These rules apply to every contract; the per-connector files spell out the upstream-specific instances.
+
+**Pagination shape (FR-014)**: every `list_*` operation accepts:
+
+```
+cursor    string  optional   opaque value from previous response's next_cursor
+page_size int     optional   default 100, hard cap 100
+```
+
+and returns:
+
+```
+{
+  "items":       [ ... ],
+  "next_cursor": ""   // empty string or null = end of dataset
+}
+```
+
+The connector's `pagination.go` translates between this normalized shape and the upstream's native paging mechanism per the table in `research.md` § R13.
+
+**Rich-text dual representation (FR-015)** — Jira and Asana only:
+
+| Connector | Native field | Companion plain-text field | Rendering |
+|-----------|--------------|----------------------------|-----------|
+| Jira | `description` (ADF JSON tree) | `description_text` | ADF tree-walk, see `internal/connectors/jira/adf.go` |
+| Jira | `comment.body` (ADF JSON) | `comment.body_text` | same |
+| Asana | `notes` (HTML when html_notes is set, else plain) | `notes_text` | html-to-text helper, see `internal/connectors/asana/richtext.go` |
+
+The plain-text rendering is best-effort; the native field is canonical. Policies authors choose whichever representation fits their matching needs (e.g., regex against `description_text`, structural match against `description.content`).

@@ -1,6 +1,12 @@
-# Phase 0 Research: Slack, Linear, and Jira Connectors
+# Phase 0 Research: Slack, Linear, Jira, and Asana Connectors
 
 This document resolves the open questions implied by the spec and the technical context. Each entry follows the format **Decision / Rationale / Alternatives**.
+
+> Updated 2026-05-01 to incorporate the spec's Session 2026-05-01 clarifications:
+> Asana added (R12), pagination normalization (R13), rich-text round-trip (R14),
+> refresh-token rotation persistence semantics (R5 expanded). Slack scope strategy
+> locked to classic non-rotating bot scopes (R1 unchanged in substance, but the
+> "no rotation" decision is now load-bearing — see R5).
 
 ## R1. Slack authentication: OAuth install flow
 
@@ -82,21 +88,29 @@ The minimum bot-token scope set, derived from the curated operations:
 - *FSM / state-transition table*: rejected — three states with two trigger paths don't justify the abstraction (CLAUDE.md "no premature abstraction").
 - *Per-connection `last_error` text*: deferred — useful but not in scope for this clarification.
 
-## R5. Token refresh persistence for Slack/Linear/Jira
+## R5. Token refresh persistence for Linear, Jira, and Asana
 
-**Decision**: Reuse `connections.Service.injectRefreshCallback` exactly as Gmail does. Each connector's factory accepts the `_on_token_refresh` callback in config, wires it through a `persistingTokenSource` (the pattern at `internal/connectors/gmail/gmail.go:72-92`), and the callback writes the refreshed token back via `UpdateConfig`. No service-specific code needed.
+**Decision**: Reuse `connections.Service.injectRefreshCallback` exactly as Gmail does. Each connector's factory accepts the `_on_token_refresh` callback in config, wires it through a `persistingTokenSource` (the pattern at `internal/connectors/gmail/gmail.go:72-92`), and the callback writes the refreshed token back via `UpdateConfig`. **Persistence is mandatory before the refreshed access token is used for any subsequent upstream call**, because Atlassian, Linear, and Asana all rotate refresh tokens (the old refresh token is invalidated the moment the new one is issued — confirmed by Atlassian docs: *"Each time they are used, rotating refresh tokens issue a new limited life refresh token"*; Linear and Asana follow the same OAuth 2.0 rotation behavior). Slack does NOT rotate (classic bot scopes per Q2 2026-05-01).
 
-**Rationale**: Same OAuth library, same callback shape, same persistence path. Linear and Jira both issue refresh tokens; Slack's bot tokens don't expire (so no refresh needed there).
+**Failure semantics** (FR-016): If the persist itself fails (DB error, disk full, keyring unloaded mid-call), the connector MUST transition `status → reauth_required` immediately and surface a non-secret "reauth required" error to the agent. This is a one-line change to the existing callback at `internal/connections/connections.go` (`injectRefreshCallback` becomes status-aware on persist failure). Gmail benefits from the same change automatically.
 
-**Alternatives considered**: writing a custom refresh loop per connector — rejected, redundant.
+A regression test in `internal/connections/refresh_test.go` simulates a `db.Exec` failure during `UpdateConfig` and asserts the row ends in `reauth_required`. Each per-connector test suite (Linear, Jira, Asana) has a complementary test that drives a token refresh through the connector's HTTP middleware with a stubbed-failure persistence layer.
+
+**Rationale**: Same OAuth library, same callback shape, same persistence path. Once the upstream invalidates the old refresh token, the connection is functionally bricked unless the new one is durable. Surfacing `reauth_required` at the moment of the persist failure (instead of letting the next call attempt and fail with a stale refresh token) shortens the time-to-detection well within SC-007's 60-second target.
+
+**Alternatives considered**:
+- *Writing a custom refresh loop per connector*: rejected — redundant.
+- *Two-phase commit (write new refresh token to DB BEFORE using it for the upstream call)*: rejected — doesn't help, since upstream invalidates the old refresh on issue of the new regardless of what we write locally first.
+- *Leave status as `active` on persist failure and rely on the next call's auth-error path*: rejected — wastes one or more upstream calls and delays admin visibility.
 
 ## R6. Mock HTTP servers for tests
 
-**Decision**: Add three small `httptest.Server`-based mocks under `internal/testing/`:
+**Decision**: Add four small `httptest.Server`-based mocks under `internal/testing/`:
 
 - `internal/testing/mockslack/server.go`
 - `internal/testing/mocklinear/server.go`
 - `internal/testing/mockjira/server.go`
+- `internal/testing/mockasana/server.go`
 
 Each mock implements only the endpoints exercised by the connector's curated operations + `Validate`. The connector factory accepts a base URL override (config key `_base_url` or similar, prefixed with underscore to match the existing `_on_token_refresh` convention) so tests can inject the mock's URL. In production this key is absent and the connector falls back to the official endpoint.
 
@@ -108,19 +122,19 @@ Each mock implements only the endpoints exercised by the connector's curated ope
 
 ## R7. e2e (Playwright) coverage
 
-**Decision**: Extend `e2e/web-ui.spec.ts` with three new test cases per connector:
+**Decision**: Extend `e2e/web-ui.spec.ts` with three new test cases per connector (Slack, Linear, Jira, Asana):
 
 1. Add a connection via OAuth (mock OAuth provider in testserver, simulate the redirect with a synthesized state).
 2. Add a connection via direct token entry, with the testserver returning a successful `Validate`.
 3. Verify the connection's `status` column displays `active` after add, and transitions to `reauth_required` after the testserver's mock service starts returning 401.
 
-`e2e/testserver/main.go` registers the three new mock services on internal ports and wires them into the connector factory base-URL overrides for the duration of the test run.
+`e2e/testserver/main.go` registers the four new mock services on internal ports and wires them into the connector factory base-URL overrides for the duration of the test run.
 
 **Rationale**: Reproduces the user-visible flow end-to-end without burning real Slack/Linear/Jira accounts. The status-transition test directly verifies SC-007 and FR-009a.
 
 ## R8. Documentation pages
 
-**Decision**: Three new pages — `docs/connectors-slack.md`, `docs/connectors-linear.md`, `docs/connectors-jira.md` — each containing:
+**Decision**: Four new pages — `docs/connectors-slack.md`, `docs/connectors-linear.md`, `docs/connectors-jira.md`, `docs/connectors-asana.md` — each containing:
 
 1. External prerequisites (create a Slack app / Linear OAuth app / Jira OAuth app + scopes).
 2. Setup walkthrough for the OAuth path.
@@ -147,6 +161,7 @@ Format follows the existing per-connector docs style (no new toolchain).
 | Slack | response body `{ok: false, error: "invalid_auth" | "token_revoked" | "account_inactive" | "not_authed"}` |
 | Linear | HTTP 401, or GraphQL errors[0].extensions.code == `AUTHENTICATION_ERROR` |
 | Jira | HTTP 401 with WWW-Authenticate referencing OAuth/Basic, or HTTP 403 with `{errorMessages: [...]}` body containing token-revoked language |
+| Asana | HTTP 401 with body `{errors: [{message: "Not Authorized"}]}`, or HTTP 403 with body containing `"deleted token"` / `"invalid_grant"` |
 
 Anything else (5xx, 429, network errors) is `transient` and does not change connection status. The classifier is deliberately conservative — false positives flip a connection to `reauth_required` unnecessarily, which is correctable but annoying; false negatives leave a stale credential in `active` until the next call.
 
@@ -156,11 +171,90 @@ Anything else (5xx, 429, network errors) is `transient` and does not change conn
 
 These are explicitly **not** addressed in v1 and have no Phase 0 design notes:
 
-- Inbound webhook ingestion (Slack Events, Linear webhooks, Jira webhooks) — out of scope per Q3.
+- Inbound webhook ingestion (Slack Events, Linear webhooks, Jira webhooks, Asana webhooks) — out of scope per Q3.
 - Slack Enterprise Grid org-level installs — out of scope per spec Assumptions.
 - Slack user-token flows (other than the documented limitation noted in R1a for `search:read`) — out of scope.
+- Slack granular scopes with token rotation — out of scope per Q (2026-05-01); v1 uses classic non-rotating bot scopes only.
 - Jira Server / Data Center — out of scope per spec Assumptions.
+- Asana Enterprise SAML/SCIM provisioning, attachments upload/download — out of scope per spec Assumptions.
 - Per-token rate-limit accounting on top of upstream signals — out of scope per spec Assumptions.
 - Multi-tenant admin patterns (shared connections across users, team RBAC, billing) — out of scope per Q2 product positioning.
 
 These appear in the spec; they're listed here for completeness so the planner does not accidentally re-introduce them.
+
+## R12. Asana authentication: OAuth 2.0 + Personal Access Token
+
+**Decision**: Two peer auth methods, both first-class:
+
+- **OAuth 2.0**: standard auth-code flow against `https://app.asana.com/-/oauth_authorize` and `https://app.asana.com/-/oauth_token`. Scopes: default Asana OAuth grants full access to the authorizing user's data — Asana does not expose granular OAuth scopes for third-party apps in the same manner as Linear/Jira (the per-resource access control is enforced server-side by the user's existing Asana role/permissions). Refresh tokens are rotated per OAuth 2.0 spec; reuse `injectRefreshCallback` per R5.
+- **Personal Access Token (PAT)**: pasted by the admin (`1/...` prefix). Validated by issuing `GET https://app.asana.com/api/1.0/users/me`. On 200 with a non-null `data.gid`, persist with `auth_kind: "token"`. PATs do not expire on a fixed schedule but can be revoked at the source.
+
+OAuth-based connections also resolve and persist the `default_workspace_gid` at connection time (from the `users/me` response after token exchange) so that subsequent ops can default to the right workspace when the agent doesn't supply one explicitly.
+
+**Rationale**: The spec's Q1 clarification commits to both methods. PAT is the lowest-friction onboarding for individual-account users (Sieve's positioning per Q2). OAuth is required for admins acting on behalf of multiple Asana users in the future, even if v1 sticks to one-account-per-connection.
+
+**Alternatives considered**:
+- *OAuth-only*: rejected by Q1.
+- *App-OAuth-first with PAT as a fallback*: rejected — the spec calls them peer methods, not fallback paths.
+
+**API base URL**: `https://app.asana.com/api/1.0` for both auth methods. Overridable via `_base_url` for tests.
+
+**Curated operations**: list_workspaces, list_users, list_projects, list_tasks (project-scoped), get_task, create_task, update_task, add_comment. See `contracts/asana.md` for parameter and result shapes.
+
+**Rich-text fields**: Asana stores task notes in two fields — `notes` (plain text) and `html_notes` (HTML). When the admin's task contains rich text, the `html_notes` field is canonical. The connector exposes both `notes` (raw HTML when html_notes is set, else the plain `notes` value) and `notes_text` (rendered plain text from html_notes via a small html-to-text helper). See R14 for the rendering rule.
+
+## R13. Pagination normalization across connectors (FR-014)
+
+**Decision**: Every curated `list_*` operation accepts the input parameters:
+
+- `cursor` (string, optional) — opaque value; on first call, omitted; on subsequent calls, the value of the previous response's `next_cursor`.
+- `page_size` (int, optional) — default 100, hard cap 100. Values >100 are silently capped.
+
+And returns the response shape:
+
+```json
+{ "items": [ ... ], "next_cursor": "" }
+```
+
+Where `next_cursor == ""` (or null) signals the end of the dataset.
+
+**Per-connector translation** (lives in `internal/connectors/<name>/pagination.go`):
+
+| Service | Normalized cursor → upstream | Upstream end-of-pages → `next_cursor: ""` |
+|---------|------------------------------|--------------------------------------------|
+| Slack | upstream uses `cursor` (string) and `response_metadata.next_cursor` — pass-through verbatim | `response_metadata.next_cursor == ""` or absent |
+| Linear | upstream uses Relay `after` (string) and `pageInfo.endCursor` — pass `cursor` as `after` | `pageInfo.hasNextPage == false` |
+| Jira | upstream uses `startAt` (int) + `maxResults` (int); compute `next_cursor` = `strconv.Itoa(startAt + len(issues))` if `startAt + len < total` else `""`; on input parse cursor as int with fallback to 0 | `startAt + len(issues) >= total` |
+| Asana | upstream uses `offset` (string) + `limit` (int); pass `cursor` as `offset`; `next_page.offset` from response becomes `next_cursor` | `next_page == null` |
+
+The connector MUST NOT auto-paginate — exactly one upstream page per call so the policy pipeline can gate per page.
+
+**Rationale**: Cursor pass-through is the standard agent-tool pattern; agents and policies see one page at a time, which keeps payloads bounded and allows per-page response filtering (Principle V — Simplicity; no new abstraction). Normalizing the param names (`cursor`/`page_size`) means agents writing policies don't need four service-specific paging vocabularies. The translation tables are small and live in one file per connector.
+
+**Alternatives considered**:
+- *Auto-paginate up to N items*: rejected (Q3 2026-05-01, Option A) — risk of unbounded memory and audit-log volume.
+- *First-page-only*: rejected — silent data loss.
+- *Pass through native paging vocabulary per service*: rejected — burdens agents with per-service paging knowledge for marginal flexibility gain.
+
+## R14. Rich-text round-trip for Jira and Asana (FR-015)
+
+**Decision**: Operations on Jira and Asana that read or write long-form rich-text fields use a dual-representation contract.
+
+**Jira (ADF — Atlassian Document Format):**
+- *Reads* (`get_issue`, `search_issues` with `fields` including description/comments): the connector returns the issue object with `description` (raw ADF JSON tree from upstream) AND a synthesized `description_text` (best-effort plain-text rendering). Same dual shape for `comment.body` (ADF) and `comment.body_text` (plain text).
+- *Writes* (`create_issue`, `update_issue`, `add_comment`): agents pass plain text in the existing `description` / `body` parameter; the connector wraps it in a minimal ADF doc node tree before calling Jira (the existing `textToADF` helper).
+- *ADF-tree-walk-to-text*: a 30-line recursive helper in `internal/connectors/jira/adf.go`. Walk the `content` array, concatenate `text` nodes, insert `\n\n` between paragraph breaks, render `mention` nodes as `@<displayName>`, render `inlineCard` as the bare URL, render `codeBlock` as fenced text. Intentionally lossy on tables, panels, status lozenges (those keep the structural form in the native `description` field for agents that want them).
+
+**Asana (HTML in `html_notes`):**
+- *Reads*: `get_task` and `list_tasks` (when `opt_fields` requests `html_notes` or by default) return the task with `notes` (raw HTML when `html_notes` is set, else plain `notes`) AND a synthesized `notes_text` (best-effort plain-text rendering of `html_notes`). Same shape for `comment.html_text` ↔ `comment.html_text_text`.
+- *Writes* (`create_task`, `update_task`, `add_comment`): agents pass plain text in `notes`; the connector sends it as the upstream `notes` field. If the agent explicitly wants HTML formatting, they use the underscore-prefixed `_html_notes` parameter, which the connector forwards as `html_notes`. (Documented in `contracts/asana.md` as an advanced option.)
+- *HTML-to-text helper*: small wrapper in `internal/connectors/asana/richtext.go` over `golang.org/x/net/html` (already an indirect dep of `net/http`); strips tags, renders `<a>` as `text (href)`, collapses whitespace, preserves paragraph breaks.
+
+**Rationale**: Plain-text-only would lose mentions/attachments/code/tables (information policies care about). Native-only would force every agent that just wants "what does this issue say" to walk a JSON tree. Dual representation is two extra fields on the response shape and ~50 lines of helper code total; it follows constitutional Principle V ("three similar lines beat a premature abstraction").
+
+**Test coverage** lives in `internal/connectors/jira/adf_test.go` and `internal/connectors/asana/richtext_test.go` with table-driven cases for: empty doc, paragraphs, bullets, mentions, code blocks, links, malformed input.
+
+**Alternatives considered**:
+- *Plain text only* (lossy on reads): rejected per FR-015.
+- *Native rich-text only*: rejected — pushes the parsing burden onto every agent.
+- *Connector-configurable per-connection toggle*: rejected — doubles the contract surface for marginal benefit.

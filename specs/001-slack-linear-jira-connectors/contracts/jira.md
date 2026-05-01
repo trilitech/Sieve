@@ -15,22 +15,32 @@ Search issues with JQL.
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `jql` | string | yes | JQL query (e.g., `project = BOT AND status = "In Progress"`). |
-| `fields` | []string | no | Field list to return. Default: `summary,status,assignee,priority`. |
-| `start_at` | int | no | Pagination offset. Default: 0. |
-| `max_results` | int | no | Page size (1–100). Default: 50. |
+| `fields` | []string | no | Field list to return. Default: `summary,status,assignee,priority,description`. When `description` (or `comment`) is included, the connector adds the rich-text companion fields automatically. |
+| `cursor` | string | no | Normalized pagination cursor (FR-014). Connector translates to upstream `startAt`. |
+| `page_size` | int | no | Default 100, hard cap 100. Translated to upstream `maxResults`. |
 
-**Result**:
+**Result** (normalized per FR-014; rich-text companion fields per FR-015):
 
 ```json
 {
-  "issues": [
-    {"key": "BOT-42", "id": "10042", "fields": {"summary": "...", "status": {"name": "In Progress"}, "assignee": {...}}}
+  "items": [
+    {
+      "key": "BOT-42",
+      "id": "10042",
+      "fields": {
+        "summary": "...",
+        "status": {"name": "In Progress"},
+        "assignee": {"accountId": "...", "displayName": "..."},
+        "description": { "type": "doc", "version": 1, "content": [ ... ] },
+        "description_text": "Plain-text rendering of the ADF tree above."
+      }
+    }
   ],
-  "start_at": 0,
-  "max_results": 50,
-  "total": 142
+  "next_cursor": "100"
 }
 ```
+
+`next_cursor == ""` (or null) means the result set is exhausted. The connector internally tracks `total` against the running offset to compute the cursor; the agent never sees `startAt` or `total` directly.
 
 **ReadOnly**: true.
 
@@ -45,9 +55,33 @@ Fetch one issue.
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `issue_key` | string | yes | E.g., `BOT-42`. |
-| `fields` | []string | no | Field list. Default: all. |
+| `fields` | []string | no | Field list. Default: all. When the field list includes `description` or `comment`, the response includes the rich-text companion fields. |
 
-**Result**: full Jira issue object (`fields.summary`, `fields.description.content`, `fields.status`, `fields.assignee`, `fields.comment.comments`, etc.).
+**Result** (rich-text companion fields per FR-015):
+
+```json
+{
+  "key": "BOT-42",
+  "id": "10042",
+  "fields": {
+    "summary": "...",
+    "status": {"name": "..."},
+    "assignee": {"accountId": "...", "displayName": "..."},
+    "description":      { "type": "doc", "version": 1, "content": [ ... ] },
+    "description_text": "Best-effort plain-text rendering.",
+    "comment": {
+      "comments": [
+        {
+          "id": "10100",
+          "author": {"accountId": "...", "displayName": "..."},
+          "body":      { "type": "doc", "version": 1, "content": [ ... ] },
+          "body_text": "Best-effort plain-text rendering."
+        }
+      ]
+    }
+  }
+}
+```
 
 **ReadOnly**: true.
 
