@@ -1,0 +1,67 @@
+{{define "docs"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{if .Doc}}{{.Doc.Title}}{{else}}Documentation{{end}} - Sieve</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  {{if .Doc}}
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+          integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"
+          integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a"
+          crossorigin="anonymous"></script>
+  {{end}}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .prose pre { background: #1e293b; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }
+    .prose code { color: #e2e8f0; font-size: 0.875rem; }
+    .prose p code, .prose li code { background: #334155; padding: 0.125rem 0.375rem; border-radius: 0.25rem; }
+    .prose table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    .prose th, .prose td { border: 1px solid #334155; padding: 0.5rem; text-align: left; }
+    .prose th { background: #1e293b; }
+    .prose a { color: #818cf8; }
+    .prose a:hover { color: #a5b4fc; }
+    .prose h1 { font-size: 1.75rem; font-weight: 700; margin-top: 0; margin-bottom: 1rem; }
+    .prose h2 { font-size: 1.35rem; font-weight: 600; margin-top: 2rem; margin-bottom: 0.75rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
+    .prose h3 { font-size: 1.1rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    .prose p, .prose ul, .prose ol { margin-bottom: 1rem; line-height: 1.65; }
+    .prose ul { list-style: disc; padding-left: 1.5rem; }
+    .prose ol { list-style: decimal; padding-left: 1.5rem; }
+    .prose blockquote { border-left: 3px solid #475569; padding-left: 1rem; color: #94a3b8; margin: 1rem 0; }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  {{template "nav" .}}
+
+  <main class="ml-64 p-8">
+    <div class="max-w-4xl">
+      {{if .Doc}}
+        <a href="/docs" class="text-indigo-400 hover:text-indigo-300 text-sm">&larr; All docs</a>
+        <div id="content" class="prose prose-invert mt-4"></div>
+        <script>
+          const md = {{.Doc.Content}};
+          document.getElementById('content').innerHTML = DOMPurify.sanitize(marked.parse(md));
+        </script>
+      {{else}}
+        <h1 class="text-2xl font-bold text-white mb-6">Documentation</h1>
+        <ul class="space-y-2">
+          {{range .Docs}}
+          <li>
+            <a href="/docs/{{.Slug}}" class="block px-4 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors">
+              <span class="text-indigo-400 font-medium">{{.Title}}</span>
+              <span class="block text-xs text-slate-500 mt-1">{{.Slug}}.md</span>
+            </a>
+          </li>
+          {{end}}
+        </ul>
+      {{end}}
+    </div>
+  </main>
+</body>
+</html>
+{{end}}

@@ -35,6 +35,7 @@ import (
 	"html/template"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,25 +63,25 @@ var templateFS embed.FS
 
 // Server is the web UI server for the Sieve admin interface.
 type Server struct {
-	tokens               *tokens.Service
-	connections          *connections.Service
-	policies             *policies.Service
-	roles                *roles.Service
-	registry             *connector.Registry
-	approval             *approval.Queue
-	audit                *audit.Logger
-	settings             *settings.Service
-	scriptgen            *scriptgen.Service
-	templates            map[string]*template.Template
+	tokens                *tokens.Service
+	connections           *connections.Service
+	policies              *policies.Service
+	roles                 *roles.Service
+	registry              *connector.Registry
+	approval              *approval.Queue
+	audit                 *audit.Logger
+	settings              *settings.Service
+	scriptgen             *scriptgen.Service
+	templates             map[string]*template.Template
 	googleCredentialsFile string
 
-	oauthMu     sync.Mutex
+	oauthMu      sync.Mutex
 	oauthPending map[string]pendingOAuth // state -> pending connection info
 
 	githubApp *gitHubAppState // pending GitHub App manifest installs
 
 	stopCleanup     chan struct{} // closed by Close() to stop the cleanup goroutine
-	stopCleanupOnce sync.Once    // ensures Close() is safe under concurrent calls
+	stopCleanupOnce sync.Once     // ensures Close() is safe under concurrent calls
 }
 
 // funcMap returns the template function map used across all templates.
@@ -202,24 +203,24 @@ func NewServer(
 	scriptgenSvc *scriptgen.Service,
 ) *Server {
 	s := &Server{
-		tokens:               tokensSvc,
-		connections:          connsSvc,
-		policies:             policiesSvc,
-		roles:                rolesSvc,
-		registry:             registry,
-		approval:             approvalQ,
-		audit:                auditLog,
-		settings:             settingsSvc,
-		scriptgen:            scriptgenSvc,
-		templates:            make(map[string]*template.Template),
+		tokens:                tokensSvc,
+		connections:           connsSvc,
+		policies:              policiesSvc,
+		roles:                 rolesSvc,
+		registry:              registry,
+		approval:              approvalQ,
+		audit:                 auditLog,
+		settings:              settingsSvc,
+		scriptgen:             scriptgenSvc,
+		templates:             make(map[string]*template.Template),
 		googleCredentialsFile: googleCredentialsFile,
-		oauthPending:         make(map[string]pendingOAuth),
-		githubApp:            newGitHubAppState(),
-		stopCleanup:          make(chan struct{}),
+		oauthPending:          make(map[string]pendingOAuth),
+		githubApp:             newGitHubAppState(),
+		stopCleanup:           make(chan struct{}),
 	}
 
 	// Parse each page template together with the nav partial.
-	pages := []string{"connections", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit"}
+	pages := []string{"connections", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit", "docs"}
 	for _, page := range pages {
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
@@ -299,6 +300,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/models", s.handleListModels)
 
 	// Docs
+	mux.HandleFunc("GET /docs", s.handleDocsIndex)
+	mux.HandleFunc("GET /docs/", s.handleDocsIndex)
 	mux.HandleFunc("GET /docs/{name}", s.handleDocs)
 
 	return mux
@@ -1356,8 +1359,8 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 
 	pairs := map[string]string{
 		settings.KeyLLMConnection: r.FormValue("llm_connection"),
-		settings.KeyLLMModel:     r.FormValue("llm_model"),
-		settings.KeyLLMMaxTokens: r.FormValue("llm_max_tokens"),
+		settings.KeyLLMModel:      r.FormValue("llm_model"),
+		settings.KeyLLMMaxTokens:  r.FormValue("llm_max_tokens"),
 	}
 
 	for k, v := range pairs {
@@ -1562,54 +1565,77 @@ func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"path": "./" + path})
 }
 
+type docEntry struct {
+	Slug    string
+	Title   string
+	Content string
+}
+
+func listDocs() ([]docEntry, error) {
+	entries, err := os.ReadDir("docs")
+	if err != nil {
+		return nil, err
+	}
+	var docs []docEntry
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		slug := strings.TrimSuffix(e.Name(), ".md")
+		title := docTitle("docs/" + e.Name())
+		if title == "" {
+			title = slug
+		}
+		docs = append(docs, docEntry{Slug: slug, Title: title})
+	}
+	sort.Slice(docs, func(i, j int) bool { return strings.ToLower(docs[i].Title) < strings.ToLower(docs[j].Title) })
+	return docs, nil
+}
+
+func (s *Server) handleDocsIndex(w http.ResponseWriter, r *http.Request) {
+	docs, err := listDocs()
+	if err != nil {
+		http.Error(w, "docs directory not found", http.StatusNotFound)
+		return
+	}
+	s.render(w, "docs", map[string]any{
+		"Active": "docs",
+		"Docs":   docs,
+	})
+}
+
+// docTitle returns the first markdown H1 from path, or "" if none is found.
+func docTitle(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "#"))
+		}
+	}
+	return ""
+}
+
 func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-
-	// Read the markdown file from the docs directory.
 	content, err := os.ReadFile(fmt.Sprintf("docs/%s.md", name))
 	if err != nil {
 		http.Error(w, "doc not found", http.StatusNotFound)
 		return
 	}
-
-	// Serve as a simple styled page with a markdown renderer.
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Sieve - %s</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>
-    body { font-family: 'Inter', sans-serif; }
-    .prose pre { background: #1e293b; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }
-    .prose code { color: #e2e8f0; font-size: 0.875rem; }
-    .prose p code { background: #334155; padding: 0.125rem 0.375rem; border-radius: 0.25rem; }
-    .prose table { width: 100%%; border-collapse: collapse; }
-    .prose th, .prose td { border: 1px solid #334155; padding: 0.5rem; text-align: left; }
-    .prose th { background: #1e293b; }
-    .prose a { color: #818cf8; }
-    .prose h1 { font-size: 1.5rem; font-weight: 700; margin-top: 2rem; }
-    .prose h2 { font-size: 1.25rem; font-weight: 600; margin-top: 1.5rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
-    .prose h3 { font-size: 1.1rem; font-weight: 600; margin-top: 1rem; }
-  </style>
-</head>
-<body class="bg-slate-900 text-slate-200 min-h-screen p-8">
-  <div class="max-w-4xl mx-auto">
-    <a href="/tokens" class="text-indigo-400 hover:text-indigo-300 text-sm">&larr; Back to tokens</a>
-    <div id="content" class="prose prose-invert mt-4"></div>
-  </div>
-  <script>
-    const md = %s;
-    document.getElementById('content').innerHTML = marked.parse(md);
-  </script>
-</body>
-</html>`, name, string(mustJSON(string(content))))
-}
-
-func mustJSON(s string) []byte {
-	b, _ := json.Marshal(s)
-	return b
+	title := docTitle(fmt.Sprintf("docs/%s.md", name))
+	if title == "" {
+		title = name
+	}
+	s.render(w, "docs", map[string]any{
+		"Active": "docs",
+		"Doc": docEntry{
+			Slug:    name,
+			Title:   title,
+			Content: string(content),
+		},
+	})
 }

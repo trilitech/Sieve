@@ -54,6 +54,18 @@ const (
 )
 
 func main() {
+	// Subcommand dispatch must run BEFORE flag.Parse and BEFORE keyring
+	// intake — `mcp-launch` is a stdio bridge that talks to a separately
+	// running Sieve over HTTP, so it has no business prompting for a
+	// passphrase or opening the database.
+	if len(os.Args) > 1 && os.Args[1] == "mcp-launch" {
+		if err := runMCPLaunch(os.Args[2:]); err != nil {
+			log.SetFlags(0)
+			log.Fatalf("sieve mcp-launch: %v", err)
+		}
+		return
+	}
+
 	var (
 		dbPath          = flag.String("db", defaultDBPath, "path to the persistent sieve database file")
 		webAddr         = flag.String("web", defaultWebAddr, "host:port for the admin web UI")
@@ -63,6 +75,12 @@ func main() {
 			"path to the Google OAuth client_secret*.json (for the Google Account connector). "+
 				"Empty = auto-discover *client_secret*.json in cwd. Optional.")
 	)
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags]\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "       %s mcp-launch [flags]   stdio→HTTP MCP bridge for Claude Desktop\n\n", os.Args[0])
+		fmt.Fprintln(flag.CommandLine.Output(), "Flags:")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	if err := run(*dbPath, *webAddr, *apiAddr, *setup, *googleCredsPath); err != nil {

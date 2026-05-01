@@ -12,14 +12,45 @@ desktop/installed applications are [not treated as secrets](https://developers.g
 > which you embed in the source code of your application. In this context,
 > the client secret is obviously not treated as a secret."
 
-The client ID identifies the *app*, not your *account*. Your actual account
-access is protected by the OAuth consent flow — you explicitly approve what
-the app can do each time you connect. The credentials file can safely be
-committed to a private repo or shared with collaborators.
+The client ID identifies the *app*, not your *account*. Your actual account access is protected by the OAuth consent flow — you explicitly approve what the app can do each time you connect. The credentials file can safely be committed to a private repo or shared with collaborators.
 
 That said, Sieve's `.gitignore` excludes it by default to keep things clean.
 
-## Step by step
+## Google Cloud API Quick setup (gcloud CLI)
+
+If you have the [`gcloud` CLI](https://cloud.google.com/sdk/docs/install) installed, the first half of the setup (project + API enablement) is one CLI command. The second half (OAuth consent screen + Desktop OAuth client) needs to be done in the browser — the stable `gcloud` commands don't yet support creating those for external/desktop apps.
+
+```bash
+# 1. One-time auth
+gcloud auth login
+
+# 2. Create a project (or reuse one) and select it
+gcloud projects create sieve-oauth --name="Sieve"
+gcloud config set project sieve-oauth
+
+# 3. Enable every API Sieve supports (drop any you don't need)
+gcloud services enable \
+  gmail.googleapis.com \
+  drive.googleapis.com \
+  calendar-json.googleapis.com \
+  people.googleapis.com \
+  sheets.googleapis.com \
+  docs.googleapis.com
+```
+
+Notes:
+
+- Calendar's service name is `calendar-json.googleapis.com`, not
+  `calendar.googleapis.com` — easy to get wrong.
+- Project IDs must be globally unique; pick your own if `sieve-oauth` is
+  taken.
+- Verify with `gcloud services list --enabled`.
+
+Then jump to **[Step 4](#4-configure-the-oauth-consent-screen)** below to
+finish the browser-only parts (consent screen, OAuth client, download JSON,
+wire it into `sieve.yaml`).
+
+## Step by step (browser)
 
 ### 1. Go to Google Cloud Console
 
@@ -34,6 +65,7 @@ accounts you can connect later).
 - Click **New Project**
 - Name it something like "Sieve"
 - Click **Create**
+- Note the Project ID on the Welcome Page of the project. 
 
 ### 3. Enable the APIs
 
@@ -52,6 +84,9 @@ Click each one, then click **Enable**.
 
 You can skip any you don't plan to use — Sieve will only access services
 you've enabled here.
+
+> Tip: prefer one command over six clicks? See
+> [Quick setup (gcloud CLI)](#quick-setup-gcloud-cli) above.
 
 ### 4. Configure the OAuth consent screen
 

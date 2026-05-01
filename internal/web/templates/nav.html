@@ -29,10 +29,10 @@
           <li><a href="/connections?type=cloud" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-cloud"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Cloud</a></li>
           <li><a href="/connections?type=llm" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-llm"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">LLM API</a></li>
           <li><a href="/connections?type=proxy" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Proxy (HTTP &amp; MCP)</a></li>
+          <li><a href="/connections?type=github" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-github"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitHub</a></li>
           <li class="pt-1.5 mt-1.5 border-t border-slate-700/50">
             <span class="block px-3 py-0.5 text-[10px] text-slate-600 uppercase tracking-wider">Coming Soon</span>
           </li>
-          <li><span class="block px-3 py-1 text-xs text-slate-600 cursor-default">GitHub</span></li>
           <li><span class="block px-3 py-1 text-xs text-slate-600 cursor-default">Slack</span></li>
           <li><span class="block px-3 py-1 text-xs text-slate-600 cursor-default">Linear</span></li>
           <li><span class="block px-3 py-1 text-xs text-slate-600 cursor-default">Jira</span></li>
@@ -150,11 +150,19 @@
     </ul>
   </div>
   <div class="p-4 border-t border-slate-700">
-    <p class="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2 px-3">Docs</p>
+    <a href="/docs" class="block text-xs font-medium text-slate-500 hover:text-indigo-400 uppercase tracking-wider mb-2 px-3 transition-colors">Docs</a>
     <ul class="space-y-1 px-3">
-      <li><a href="/docs/google-oauth-setup" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">Google OAuth Setup</a></li>
+      <li><a href="/docs/cli-reference" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">CLI Reference</a></li>
+      <li><a href="/docs/concepts" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">Concepts</a></li>
+      <li><a href="/docs/connections-guide" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">Connections Guide</a></li>
+      <li><a href="/docs/credential-encryption" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">Credential Encryption</a></li>
+      <li><a href="/docs/github-connector" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">GitHub Connector</a></li>
       <li><a href="/docs/gmail-api" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">Gmail REST API</a></li>
+      <li><a href="/docs/google-oauth-setup" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">Google OAuth Setup</a></li>
+      <li><a href="/docs/mcp-integration" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">MCP Integration</a></li>
+      <li><a href="/docs/policy-rules-reference" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">Policy Rules Reference</a></li>
       <li><a href="/docs/policy-scripts" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">Policy Scripts</a></li>
+      <li><a href="/docs/user-stories" class="text-xs text-slate-400 hover:text-indigo-400 transition-colors">User Stories</a></li>
     </ul>
   </div>
 </nav>

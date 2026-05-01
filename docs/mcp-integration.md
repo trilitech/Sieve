@@ -490,13 +490,13 @@ This shows a complete MCP interaction from initialization through tool discovery
 
 ## Claude Code configuration
 
-To connect Claude Code to Sieve, add a `.mcp.json` file to your project root (or `~/.claude/mcp.json` for global configuration):
+Claude Code speaks Sieve's transport directly. Add a `.mcp.json` file to your project root (or `~/.claude/mcp.json` for global configuration):
 
 ```json
 {
   "mcpServers": {
     "sieve": {
-      "type": "sse",
+      "type": "http",
       "url": "http://localhost:19817/mcp",
       "headers": {
         "Authorization": "Bearer sieve_tok_xxxxx"
@@ -509,6 +509,82 @@ To connect Claude Code to Sieve, add a `.mcp.json` file to your project root (or
 The `sieve token create` command prints this configuration snippet automatically.
 
 Once configured, Claude Code will discover Sieve's tools via `tools/list` and use them when relevant to the conversation. All tool calls pass through Sieve's policy pipeline transparently.
+
+## Claude Desktop configuration
+
+Claude Desktop's `claude_desktop_config.json` only supports **stdio** transports, so it can't talk to Sieve over HTTP directly. The `sieve` binary ships a `mcp-launch` subcommand that acts as a thin stdio→HTTP bridge and pulls the bearer token from the macOS Keychain — so the token never lives in plaintext on disk.
+
+### Setup (3 steps, ~1 minute)
+
+**1. Install `sieve` to a directory on Claude Desktop's PATH.**
+
+Claude Desktop is launched by macOS launchd, which has a minimal `PATH` that does **not** include arbitrary build directories — even if `which sieve` works in your terminal. Use `go install` so the binary lands at `~/go/bin/sieve`, which Claude Desktop sees by default:
+
+```bash
+go install ./cmd/sieve
+```
+
+(If you'd rather not install, you can use the absolute path to your built binary as `command` in step 3 — e.g. `"command": "/path/to/sieve"`.)
+
+**2. Mint a token and store it in Keychain.**
+
+Mint a token at [http://localhost:19816/tokens](http://localhost:19816/tokens) — it's shown exactly once. Save it to Keychain:
+
+```bash
+security add-generic-password -a "$USER" -s sieve-token -w 'sieve_tok_xxxxx'
+```
+
+**3. Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:**
+
+```json
+{
+  "mcpServers": {
+    "sieve": {
+      "command": "sieve",
+      "args": ["mcp-launch"]
+    }
+  }
+}
+```
+
+Fully quit Claude Desktop (⌘Q, not just close window) and reopen.
+
+### Verify it worked
+
+In Claude Desktop, look at the 🔌 connector menu — you should see "sieve" listed. Or ask the model: *"What sieve tools do you have?"* — it should list connector tools (`list_emails`, etc.) plus Sieve's built-in tools (`list_connections`, `get_my_policy`, `propose_policy`, …).
+
+If something's wrong, the live log is at `~/Library/Logs/Claude/mcp-server-sieve.log`.
+
+### Troubleshooting
+
+| Log shows | Cause | Fix |
+|---|---|---|
+| `Failed to spawn process: No such file or directory` | `sieve` isn't on Claude Desktop's `PATH` (it doesn't inherit your shell PATH). | `go install ./cmd/sieve`, or use an absolute path in `command`. |
+| `sieve mcp-launch: no token: store one in macOS Keychain…` | Keychain entry missing or under a different service name. | Run the `security add-generic-password` command above. To verify: `security find-generic-password -a "$USER" -s sieve-token -w` should print the token. |
+| `sieve mcp-launch: post to http://127.0.0.1:19817/mcp: connection refused` | Sieve isn't running, or it's bound to a different port. | Start `sieve` (or check `--api` flag). |
+| `invalid token: …` | Token doesn't exist in Sieve, or has been revoked. | Mint a new token at `/tokens` and update the Keychain entry. |
+
+### Multiple tokens / clients
+
+Mint a separate token per client (recommended — see [concepts.md](concepts.md)) and pass the Keychain service name explicitly so they coexist:
+
+```bash
+security add-generic-password -a "$USER" -s sieve-token-desktop -w 'sieve_tok_xxxxx'
+```
+
+```json
+"args": ["mcp-launch", "--keychain", "sieve-token-desktop"]
+```
+
+### Without Keychain
+
+For non-macOS hosts or scripted deployments, fall back to a token file (recommend `chmod 600`):
+
+```json
+"args": ["mcp-launch", "--token-file", "/etc/sieve/desktop-token"]
+```
+
+The bridge prefers Keychain; `--token-file` is only consulted if Keychain lookup returns no entry. There is no environment-variable fallback by design — see [credential-encryption.md](credential-encryption.md) for the rationale.
 
 ## Agent Workflow: Proposing Policy Changes
 
