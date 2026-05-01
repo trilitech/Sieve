@@ -277,6 +277,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /connections/{id}/reauth", s.handleConnectionReauth)
 	mux.HandleFunc("GET /connections/{id}/edit", s.handleConnectionEditPage)
 	mux.HandleFunc("POST /connections/{id}/edit", s.handleConnectionEditSave)
+	mux.HandleFunc("POST /connections/{id}/disable", s.handleConnectionDisable)
+	mux.HandleFunc("POST /connections/{id}/enable", s.handleConnectionEnable)
 	mux.HandleFunc("GET /oauth/callback", s.handleOAuthCallback)
 
 	// GitHub-specific setup flows
@@ -631,6 +633,42 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 
 	url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 	http.Redirect(w, r, url, http.StatusFound)
+}
+
+// handleConnectionDisable transitions a connection's status to "disabled".
+// Operator-driven hard stop: agent operations will be denied with HTTP 403
+// until handleConnectionEnable returns the row to "active". Differs from
+// reauth_required in two ways: (1) the operator chose this state
+// explicitly; (2) re-auth flows do NOT clear it — only the explicit
+// Enable button does. Gated by rejectIfAgentToken (FR-013).
+func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.connections.SetStatus(id, connections.StatusDisabled); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
+// handleConnectionEnable transitions a connection's status to "active".
+// Used to clear an operator-set "disabled" state; for "reauth_required"
+// the operator should complete a fresh OAuth flow or re-enter a token,
+// which the per-connector reauth handler resolves by calling SetStatus
+// after a successful credential refresh. Gated by rejectIfAgentToken
+// (FR-013).
+func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.connections.SetStatus(id, connections.StatusActive); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
 // --- OAuth handlers ---

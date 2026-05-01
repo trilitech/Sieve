@@ -492,7 +492,9 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		}
 	}
 
-	// Execute via connector.
+	// Execute via connector. Map connection-state sentinels to structured
+	// IsError tool-call results so agents see a stable, non-secret error
+	// code (per FR-009 / FR-009a) rather than the raw error text.
 	c, err := s.connections.GetConnector(connID)
 	if err != nil {
 		// Surface keyring-state errors as transient JSON-RPC errors so
@@ -512,6 +514,10 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 				ID:      id,
 				Error:   &JSONRPCError{Code: -32000, Message: "rotation in progress, retry shortly"},
 			}
+		}
+		if resp := connectionStateError(id, err); resp != nil {
+			s.logAudit(tok, connID, opName, call.Arguments, "deny("+errorCode(err)+")", "", time.Since(start).Milliseconds())
+			return resp
 		}
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -601,6 +607,7 @@ func (s *Server) handleListConnections(id any, tok *tokens.Token, start time.Tim
 			"id":        conn.ID,
 			"connector": conn.ConnectorType,
 			"name":      conn.DisplayName,
+			"status":    conn.Status,
 		})
 	}
 
@@ -1069,4 +1076,49 @@ func (s *Server) writeError(w http.ResponseWriter, id any, code int, message str
 		ID:      id,
 		Error:   &JSONRPCError{Code: code, Message: message},
 	})
+}
+
+// connectionStateError translates connections.ErrReauthRequired and
+// connections.ErrConnectionDisabled into a structured IsError tool-call
+// result (MCP's mechanism for tool-level errors, distinct from JSON-RPC
+// transport errors). Returns nil for unrecognised errors so callers can
+// fall through to their existing handling.
+//
+// FR-009 / FR-009a: agents must receive a stable error code without
+// leaking credentials or upstream response details.
+func connectionStateError(id any, err error) *JSONRPCResponse {
+	switch {
+	case errors.Is(err, connections.ErrReauthRequired):
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      id,
+			Result: ToolCallResult{
+				Content: []ContentBlock{{Type: "text", Text: "reauth_required: connection requires reauthentication"}},
+				IsError: true,
+			},
+		}
+	case errors.Is(err, connections.ErrConnectionDisabled):
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      id,
+			Result: ToolCallResult{
+				Content: []ContentBlock{{Type: "text", Text: "disabled: connection is disabled"}},
+				IsError: true,
+			},
+		}
+	}
+	return nil
+}
+
+// errorCode returns a short stable identifier for known sentinel errors,
+// suitable for audit-log decision tags.
+func errorCode(err error) string {
+	switch {
+	case errors.Is(err, connections.ErrReauthRequired):
+		return "reauth_required"
+	case errors.Is(err, connections.ErrConnectionDisabled):
+		return "disabled"
+	default:
+		return "error"
+	}
 }

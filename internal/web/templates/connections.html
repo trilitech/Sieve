@@ -30,6 +30,7 @@
               <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Alias</th>
               <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Service</th>
               <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Display Name</th>
+              <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Status</th>
               <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Added</th>
               <th class="text-right text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3"></th>
             </tr>
@@ -60,6 +61,17 @@
                 </span>
               </td>
               <td class="px-6 py-4 text-sm text-slate-300">{{.DisplayName}}</td>
+              <td class="px-6 py-4">
+                {{if eq .Status "active"}}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20">Active</span>
+                {{else if eq .Status "reauth_required"}}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20" title="The upstream credential was revoked or rotated. Re-install OAuth or update the token to recover.">Reauth required</span>
+                {{else if eq .Status "disabled"}}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-slate-500/10 text-slate-300 ring-1 ring-slate-500/30" title="An admin disabled this connection. Agent operations will be denied until it is re-enabled.">Disabled</span>
+                {{else}}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/20">{{.Status}}</span>
+                {{end}}
+              </td>
               <td class="px-6 py-4 text-sm text-slate-400">{{timeAgo .CreatedAt}}</td>
               <td class="px-6 py-4 text-right whitespace-nowrap">
                 {{if and .NeedsReauth (eq .ConnectorType "google")}}
@@ -74,6 +86,24 @@
                    class="inline-block mr-3 text-sm text-indigo-300 hover:text-indigo-200 font-medium transition-colors">
                   Edit
                 </a>
+                {{if eq .Status "disabled"}}
+                <form method="POST" action="/connections/{{.ID}}/enable" class="inline mr-3">
+                  <button type="submit"
+                          class="text-sm text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
+                    Enable
+                  </button>
+                </form>
+                {{else}}
+                <form method="POST" action="/connections/{{.ID}}/disable"
+                      hx-post="/connections/{{.ID}}/disable"
+                      hx-confirm="Disable connection '{{.ID}}'? Agent operations will fail until you re-enable it."
+                      class="inline mr-3">
+                  <button type="submit"
+                          class="text-sm text-amber-400 hover:text-amber-300 font-medium transition-colors">
+                    Disable
+                  </button>
+                </form>
+                {{end}}
                 <form method="POST" action="/connections/{{.ID}}/delete"
                       hx-post="/connections/{{.ID}}/delete"
                       hx-confirm="Delete connection '{{.ID}}'? This cannot be undone."

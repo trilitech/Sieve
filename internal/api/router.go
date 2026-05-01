@@ -151,6 +151,7 @@ func (rt *Router) listConnections(w http.ResponseWriter, r *http.Request) {
 		ID          string `json:"id"`
 		Connector   string `json:"connector"`
 		DisplayName string `json:"display_name"`
+		Status      string `json:"status"`
 	}
 
 	connIDs := role.ConnectionIDs()
@@ -165,6 +166,7 @@ func (rt *Router) listConnections(w http.ResponseWriter, r *http.Request) {
 			ID:          conn.ID,
 			Connector:   conn.ConnectorType,
 			DisplayName: conn.DisplayName,
+			Status:      conn.Status,
 		})
 	}
 
@@ -645,23 +647,44 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
-// writeConnectionError centralizes the locked-state response. If err is the
-// keyring-not-loaded sentinel, return 503; if err is the rotation-in-progress
-// sentinel, return 503 with a Retry-After header so retry-aware agent SDKs
-// back off cleanly during the brief rotation window. Otherwise fall through
-// to the caller-supplied default status. Routed through one helper so every
-// credential-touching endpoint produces an identical body.
+// writeStructuredError writes a JSON error response with separate `error`
+// (machine-readable code) and `message` (human-readable detail) fields.
+// Used by sentinel-mapping for ErrReauthRequired / ErrConnectionDisabled
+// per FR-009 / FR-009a so callers can branch on a stable error code
+// without parsing the message text.
+func writeStructuredError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
+}
+
+// writeConnectionError centralizes connection-state response mapping.
+// Sentinel priority:
+//   - secrets.ErrKeyringNotLoaded         → 503 "service locked"
+//   - secrets.ErrKeyringRotating          → 503 + Retry-After so retry-aware
+//     agent SDKs back off cleanly during the brief rotation window
+//   - connections.ErrReauthRequired       → 403 {"error":"reauth_required",...}
+//   - connections.ErrConnectionDisabled   → 403 {"error":"disabled",...}
+//
+// Otherwise falls through to the caller-supplied default. Routed through
+// one helper so every credential-touching endpoint produces identical
+// bodies.
 func writeConnectionError(w http.ResponseWriter, defaultStatus int, defaultMessage string, err error) {
-	if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+	switch {
+	case errors.Is(err, secrets.ErrKeyringNotLoaded):
 		writeError(w, http.StatusServiceUnavailable, "service locked: passphrase required")
-		return
-	}
-	if errors.Is(err, secrets.ErrKeyringRotating) {
+	case errors.Is(err, secrets.ErrKeyringRotating):
 		w.Header().Set("Retry-After", "5")
 		writeError(w, http.StatusServiceUnavailable, "rotation in progress, retry shortly")
-		return
+	case errors.Is(err, connections.ErrReauthRequired):
+		writeStructuredError(w, http.StatusForbidden, "reauth_required",
+			"connection requires reauthentication; complete a fresh OAuth flow or update the token")
+	case errors.Is(err, connections.ErrConnectionDisabled):
+		writeStructuredError(w, http.StatusForbidden, "disabled",
+			"connection is disabled; an admin must re-enable it before agents can use it")
+	default:
+		writeError(w, defaultStatus, defaultMessage)
 	}
-	writeError(w, defaultStatus, defaultMessage)
 }
 
 // writeReauthError emits the structured response that points an agent (and

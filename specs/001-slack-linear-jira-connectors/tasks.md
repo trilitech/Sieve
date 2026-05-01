@@ -55,13 +55,13 @@ Single-Go-service layout already in place. New code lives under `internal/connec
 
 ### Status surfacing on API/Web/MCP
 
-- [ ] T011 Surface `status` in JSON responses for the connections list endpoint in `internal/api/router.go` (verify the existing handler serializes `Connection` with the new field — adjust any explicit field allow-list)
-- [ ] T012 Surface `status` in admin UI handlers in `internal/web/server.go` (`handleConnections` JSON + connection-detail handlers); add a status-badge render in `internal/web/templates/connections.html` (or whichever template currently renders the connections list)
-- [ ] T013 Add admin endpoints `POST /connections/{id}/disable` and `POST /connections/{id}/enable` in `internal/web/server.go`, both gated by the existing `rejectIfAgentToken` middleware; calls `Service.SetStatus`
-- [ ] T014 [P] Add `TestServer_DisableConnection_RejectsAgentToken` and `TestServer_DisableEnable_HappyPath` in `internal/web/server_test.go`
-- [ ] T015 Map `ErrReauthRequired` → HTTP 403 `{"error": "reauth_required", "message": "..."}` and `ErrConnectionDisabled` → HTTP 403 `{"error": "disabled", "message": "..."}` in `internal/api/router.go` and `internal/mcp/server.go` so all four new connectors inherit the behavior automatically without per-connector code
-- [ ] T016 [P] Add `TestRouter_ReauthRequired_Returns403` and `TestRouter_Disabled_Returns403` in `internal/api/router_test.go` using a test connector that always returns the sentinel
-- [ ] T017 [P] Add `TestMCP_ReauthRequired_Surface` covering the same in `internal/mcp/server_test.go`
+- [X] T011 Surface `status` in JSON responses for the connections list endpoint in `internal/api/router.go` (verify the existing handler serializes `Connection` with the new field — adjust any explicit field allow-list)
+- [X] T012 Surface `status` in admin UI handlers in `internal/web/server.go` (`handleConnections` JSON + connection-detail handlers); add a status-badge render in `internal/web/templates/connections.html` (or whichever template currently renders the connections list)
+- [X] T013 Add admin endpoints `POST /connections/{id}/disable` and `POST /connections/{id}/enable` in `internal/web/server.go`, both gated by the existing `rejectIfAgentToken` middleware; calls `Service.SetStatus`
+- [X] T014 [P] Add `TestServer_DisableConnection_RejectsAgentToken` and `TestServer_DisableEnable_HappyPath` in `internal/web/server_test.go`
+- [X] T015 Map `ErrReauthRequired` → HTTP 403 `{"error": "reauth_required", "message": "..."}` and `ErrConnectionDisabled` → HTTP 403 `{"error": "disabled", "message": "..."}` in `internal/api/router.go` and `internal/mcp/server.go` so all four new connectors inherit the behavior automatically without per-connector code
+- [X] T016 [P] Add `TestRouter_ReauthRequired_Returns403` and `TestRouter_Disabled_Returns403` in `internal/api/router_test.go` using a test connector that always returns the sentinel
+- [X] T017 [P] Add `TestMCP_ReauthRequired_Surface` covering the same in `internal/mcp/server_test.go`
 
 **Checkpoint**: Foundation ready. `go test ./internal/database ./internal/connections ./internal/api ./internal/mcp ./internal/web` is green. SC-008 (existing connections migrate to `active`) is verified by T007. FR-016 regression coverage is verified by T010. User story implementation can begin.
 
