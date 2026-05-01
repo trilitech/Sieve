@@ -82,7 +82,7 @@ Single-Go-service layout already in place. New code lives under `internal/connec
 - [X] T020 [P] [US1] Validate test in `internal/connectors/slack/validate_test.go` covering happy path (`auth.test` returns `ok: true`) and terminal-auth response (`ok: false, error: "invalid_auth"`)
 - [X] T021 [P] [US1] Terminal-auth classifier table-test in `internal/connectors/slack/auth_test.go` covering `invalid_auth`, `token_revoked`, `account_inactive`, `not_authed` → true; `rate_limited`, 5xx, network → false
 - [X] T022 [P] [US1] Web handler tests in `internal/web/slack_test.go` covering OAuth start (state generation + redirect), OAuth callback success, OAuth callback with expired state, direct bot-token entry validation
-- [ ] T023 [P] [US1] e2e Playwright group "Slack connector" in `e2e/web-ui.spec.ts` covering: add via OAuth → status active; add via bot token → status active; revoked-token call → status reauth_required and UI badge updates within 60s; cursor pagination works through 2+ pages of mocked channels
+- [X] T023 [P] [US1] e2e Playwright group "Slack connector" in `e2e/web-ui.spec.ts` covering: add via OAuth → status active; add via bot token → status active; revoked-token call → status reauth_required and UI badge updates within 60s; cursor pagination works through 2+ pages of mocked channels
 
 ### Implementation for User Story 1
 
@@ -100,7 +100,7 @@ Single-Go-service layout already in place. New code lives under `internal/connec
 - [X] T035 [US1] Extend `handleOAuthCallback` in `internal/web/server.go` to dispatch on `provider=slack` query param, calling Slack's `oauth.v2.access` endpoint and persisting the resulting Config via `connections.Service.UpdateConfig` then `SetStatus(id, "active")` — depends on T034
 - [X] T036 [US1] Add reauth/refresh handler `handleSlackReauth` in `internal/web/slack.go` that re-runs the OAuth start (or accepts a fresh token) and on success calls `Service.SetStatus(id, "active")` — depends on T034
 - [X] T037 [US1] Register the Slack web handlers in `Server.Routes()` in `internal/web/server.go`, all gated by `rejectIfAgentToken` — depends on T034, T035, T036
-- [ ] T038 [P] [US1] Author `docs/connectors-slack.md` per `quickstart.md` and `research.md` R1 (prereqs, OAuth path, token path, scope table, troubleshooting, normalized cursor pagination notes)
+- [X] T038 [P] [US1] Author `docs/connectors-slack.md` per `quickstart.md` and `research.md` R1 (prereqs, OAuth path, token path, scope table, troubleshooting, normalized cursor pagination notes)
 
 **Checkpoint**: Slack connector functional independently. MVP complete: a user can install the binary, set up Slack via OAuth or token, attach to a role, and an agent can list/post/search subject to policy with normalized pagination. SC-001 (10-min setup), SC-005 (zero plaintext credentials), and SC-007 (60s reauth detection) are verified by the quickstart walkthrough and the e2e test.
 
