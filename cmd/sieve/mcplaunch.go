@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"runtime"
 	"strings"
 	"time"
@@ -48,8 +49,14 @@ func runMCPLaunch(args []string) error {
 // (when applicable) and falling back to a file path.
 func loadToken(keychainService, tokenFile string) (string, error) {
 	if runtime.GOOS == "darwin" && keychainService != "" {
+		// user.Current() works under LaunchAgent / non-interactive contexts
+		// where $USER may be empty; falls back to $USER if it errors.
+		username := os.Getenv("USER")
+		if u, err := user.Current(); err == nil && u.Username != "" {
+			username = u.Username
+		}
 		out, err := exec.Command("security", "find-generic-password",
-			"-a", os.Getenv("USER"), "-s", keychainService, "-w").Output()
+			"-a", username, "-s", keychainService, "-w").Output()
 		if err == nil {
 			tok := strings.TrimSpace(string(out))
 			if tok != "" {

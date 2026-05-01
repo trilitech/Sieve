@@ -75,6 +75,12 @@ func main() {
 			"path to the Google OAuth client_secret*.json (for the Google Account connector). "+
 				"Empty = auto-discover *client_secret*.json in cwd. Optional.")
 	)
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags]\n", os.Args[0])
+		fmt.Fprintf(flag.CommandLine.Output(), "       %s mcp-launch [flags]   stdio→HTTP MCP bridge for Claude Desktop\n\n", os.Args[0])
+		fmt.Fprintln(flag.CommandLine.Output(), "Flags:")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	if err := run(*dbPath, *webAddr, *apiAddr, *setup, *googleCredsPath); err != nil {
