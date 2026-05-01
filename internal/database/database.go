@@ -87,6 +87,7 @@ func (db *DB) migrate() error {
 		dek_wrapped       BLOB NOT NULL,
 		dek_nonce         BLOB NOT NULL,
 		enc_version       INTEGER NOT NULL,
+		status            TEXT NOT NULL DEFAULT 'active',
 		created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
 		needs_reauth      INTEGER NOT NULL DEFAULT 0,
 		reauth_reason     TEXT
@@ -178,12 +179,27 @@ func (db *DB) migrate() error {
 				dek_wrapped       BLOB NOT NULL,
 				dek_nonce         BLOB NOT NULL,
 				enc_version       INTEGER NOT NULL,
+				status            TEXT NOT NULL DEFAULT 'active',
 				created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
 				needs_reauth      INTEGER NOT NULL DEFAULT 0,
 				reauth_reason     TEXT
 			);
 		`); err != nil {
 			return fmt.Errorf("recreate connections table: %w", err)
+		}
+	}
+
+	// Migration: add `status` column to connections table for installs that
+	// created the encrypted schema before status existed. Idempotent —
+	// CREATE TABLE above handles fresh DBs; this ALTER handles in-flight
+	// upgrades. Pre-existing rows take the DEFAULT 'active'.
+	hasStatus, err := columnExists(db, "connections", "status")
+	if err != nil {
+		return fmt.Errorf("check connections.status: %w", err)
+	}
+	if !hasStatus {
+		if _, err := db.Exec(`ALTER TABLE connections ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`); err != nil {
+			return fmt.Errorf("add connections.status column: %w", err)
 		}
 	}
 

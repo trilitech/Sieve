@@ -41,12 +41,12 @@ Single-Go-service layout already in place. New code lives under `internal/connec
 
 ### Status field
 
-- [ ] T003 Add idempotent migration `ALTER TABLE connections ADD COLUMN status TEXT NOT NULL DEFAULT 'active'` (gated by `columnExists("connections", "status")`) to `migrate()` in `internal/database/database.go`
-- [ ] T004 Add `Status string` field to the `Connection` struct in `internal/connections/connections.go`, update every SELECT and INSERT in that file (`Add`, `Get`, `GetWithConfig`, `List`, `InitAll`) to include the column, and add a package-level `validateStatus(s string) error` helper accepting only `active`, `reauth_required`, `disabled`
-- [ ] T005 Add `Service.SetStatus(id, status string) error` method in `internal/connections/connections.go` performing `UPDATE connections SET status = ? WHERE id = ?` after validation; does not require keyring
-- [ ] T006 Define `ErrReauthRequired` and `ErrConnectionDisabled` sentinels in `internal/connections/connections.go` and short-circuit them at the top of `Service.GetConnector` based on the loaded row's status (block any non-`active` status before instantiating the live connector)
-- [ ] T007 [P] Add `TestMigrate_StatusColumn_FreshDB` and `TestMigrate_StatusColumn_PreExistingRowsDefaultActive` in `internal/database/database_test.go`
-- [ ] T008 [P] Add `TestService_SetStatus_HappyPath`, `TestService_SetStatus_RejectsUnknownValue`, and `TestService_GetConnector_BlocksOnReauthRequired`, `TestService_GetConnector_BlocksOnDisabled` in `internal/connections/connections_test.go`
+- [X] T003 Add idempotent migration `ALTER TABLE connections ADD COLUMN status TEXT NOT NULL DEFAULT 'active'` (gated by `columnExists("connections", "status")`) to `migrate()` in `internal/database/database.go`
+- [X] T004 Add `Status string` field to the `Connection` struct in `internal/connections/connections.go`, update every SELECT and INSERT in that file (`Add`, `Get`, `GetWithConfig`, `List`, `InitAll`) to include the column, and add a package-level `validateStatus(s string) error` helper accepting only `active`, `reauth_required`, `disabled`
+- [X] T005 Add `Service.SetStatus(id, status string) error` method in `internal/connections/connections.go` performing `UPDATE connections SET status = ? WHERE id = ?` after validation; does not require keyring
+- [X] T006 Define `ErrReauthRequired` and `ErrConnectionDisabled` sentinels in `internal/connections/connections.go` and short-circuit them at the top of `Service.GetConnector` based on the loaded row's status (block any non-`active` status before instantiating the live connector)
+- [X] T007 [P] Add `TestMigrate_StatusColumn_FreshDB` and `TestMigrate_StatusColumn_PreExistingRowsDefaultActive` in `internal/database/database_test.go`
+- [X] T008 [P] Add `TestService_SetStatus_HappyPath`, `TestService_SetStatus_RejectsUnknownValue`, and `TestService_GetConnector_BlocksOnReauthRequired`, `TestService_GetConnector_BlocksOnDisabled` in `internal/connections/connections_test.go`
 
 ### Refresh-token rotation persistence (FR-016)
 
