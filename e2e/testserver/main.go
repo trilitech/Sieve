@@ -19,6 +19,7 @@ import (
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
+	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
@@ -68,6 +69,7 @@ func main() {
 	mock := mockconn.New("mock")
 	registry.Register(mock.Meta(), mock.Factory())
 	registry.Register(githubconn.Meta(), githubconn.Factory())
+	registry.Register(slackconn.Meta(), slackconn.Factory())
 
 	// Create all services.
 	connSvc := connections.NewService(db, registry, keyring)

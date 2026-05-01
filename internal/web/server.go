@@ -283,6 +283,10 @@ func (s *Server) Handler() http.Handler {
 
 	// GitHub-specific setup flows
 	mux.HandleFunc("POST /connections/github/pat", s.handleGitHubPAT)
+	// Slack connector flows.
+	mux.HandleFunc("POST /connections/slack/oauth/start", s.handleSlackOAuthStart)
+	mux.HandleFunc("POST /connections/slack/token", s.handleSlackToken)
+	mux.HandleFunc("POST /connections/slack/{id}/reauth", s.handleSlackReauth)
 	mux.HandleFunc("POST /connections/github/app/start", s.handleGitHubAppStart)
 	mux.HandleFunc("GET /connections/github/app/created", s.handleGitHubAppCreated)
 	mux.HandleFunc("GET /connections/github/app/installed", s.handleGitHubAppInstalled)
@@ -725,6 +729,13 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	if !ok {
 		http.Error(w, "invalid or expired state — try adding the connection again", http.StatusBadRequest)
+		return
+	}
+
+	// Per-connector dispatch. Slack lands in slackOAuthExchange (web/slack.go);
+	// google falls through to the existing path below.
+	if pending.ConnectorType == "slack" {
+		s.completeSlackOAuth(w, r, pending, code)
 		return
 	}
 

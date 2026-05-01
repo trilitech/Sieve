@@ -64,6 +64,7 @@ import (
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
+	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 	"github.com/trilitech/Sieve/internal/connectors/gmail"
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
@@ -458,6 +459,7 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	registry.Register(httpproxy.Meta, httpproxy.Factory)
 	registry.Register(mcpproxy.Meta, mcpproxy.Factory)
 	registry.Register(githubconn.Meta(), githubconn.Factory())
+	registry.Register(slackconn.Meta(), slackconn.Factory())
 
 	// --- Services ---
 	connSvc := connections.NewService(db, registry, keyring)
