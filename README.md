@@ -133,6 +133,11 @@ docker compose run --rm -it sieve --setup        # one-time keyring init
 docker compose run --rm -it --service-ports sieve  # start (TTY passphrase prompt)
 ```
 
+For non-interactive deployments (systemd, CI, `docker compose up -d`), the
+TTY prompt won't work — point Sieve at a passphrase file with
+`SIEVE_PASSPHRASE_FILE=/path/to/file` (env var stays out of the process'
+secrets). See [docs/credential-encryption.md](docs/credential-encryption.md).
+
 The Docker image comes with a batteries-included Python environment (requests, httpx, pandas, numpy, anthropic, openai, tiktoken, beautifulsoup4, pydantic) for policy scripts.
 
 ## Connect services

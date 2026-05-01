@@ -28,7 +28,10 @@ import (
 // Token sources are tried in order: macOS Keychain, --token-file. There is
 // deliberately no env-var fallback (consistent with secrets.Acquire).
 func runMCPLaunch(args []string) error {
-	fs := flag.NewFlagSet("mcp-launch", flag.ExitOnError)
+	// ContinueOnError so a bad flag returns up to the caller (which
+	// log.Fatalf's) instead of os.Exit'ing inside the parser. Keeps the
+	// error format consistent with the rest of `sieve mcp-launch: …`.
+	fs := flag.NewFlagSet("mcp-launch", flag.ContinueOnError)
 	url := fs.String("url", "http://127.0.0.1:19817/mcp", "Sieve MCP endpoint")
 	keychainService := fs.String("keychain", "sieve-token",
 		"macOS Keychain generic-password service name to read the token from")
@@ -42,7 +45,7 @@ func runMCPLaunch(args []string) error {
 	if err != nil {
 		return err
 	}
-	return bridge(*url, token, os.Stdin, os.Stdout)
+	return bridge(*url, token, os.Stdin, os.Stdout, os.Stderr)
 }
 
 // loadToken returns the Sieve bearer token, trying macOS Keychain first
@@ -82,7 +85,13 @@ func loadToken(keychainService, tokenFile string) (string, error) {
 // endpoint and writes responses back to out. It returns when in is closed
 // or an unrecoverable error occurs. Notifications (requests with no `id`
 // field) are forwarded but their responses are suppressed, per JSON-RPC.
-func bridge(url, token string, in io.Reader, out io.Writer) error {
+//
+// If the upstream returns a non-2xx response, the body is unlikely to be
+// valid JSON-RPC (e.g. the auth middleware returns plain-text 401). In that
+// case the raw body is logged to errOut for diagnostics and a synthesized
+// JSON-RPC error response is written to out so Claude Desktop's protocol
+// stream stays in sync.
+func bridge(url, token string, in io.Reader, out, errOut io.Writer) error {
 	client := &http.Client{Timeout: 60 * time.Second}
 
 	scanner := bufio.NewScanner(in)
@@ -121,6 +130,15 @@ func bridge(url, token string, in io.Reader, out io.Writer) error {
 			return fmt.Errorf("read response: %w", readErr)
 		}
 
+		if resp.StatusCode >= 400 {
+			fmt.Fprintf(errOut, "sieve mcp-launch: upstream %d: %s\n",
+				resp.StatusCode, truncate(strings.TrimSpace(string(body)), 500))
+			if !isNotification {
+				body = jsonrpcError(probe.ID, fmt.Sprintf("sieve upstream %d: %s",
+					resp.StatusCode, truncate(strings.TrimSpace(string(body)), 200)))
+			}
+		}
+
 		if isNotification {
 			continue
 		}
@@ -133,4 +151,29 @@ func bridge(url, token string, in io.Reader, out io.Writer) error {
 		}
 	}
 	return scanner.Err()
+}
+
+// jsonrpcError builds a JSON-RPC 2.0 error response. id is forwarded
+// verbatim from the originating request (pass nil to emit "id":null).
+// Code -32000 is JSON-RPC's "implementation-defined server error" range.
+func jsonrpcError(id *json.RawMessage, message string) []byte {
+	resp := struct {
+		JSONRPC string           `json:"jsonrpc"`
+		ID      *json.RawMessage `json:"id"`
+		Error   struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}{JSONRPC: "2.0", ID: id}
+	resp.Error.Code = -32000
+	resp.Error.Message = message
+	b, _ := json.Marshal(resp)
+	return b
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
