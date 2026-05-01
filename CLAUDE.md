@@ -81,6 +81,7 @@ Scripts (Python by default, any language works) read JSON from stdin, write a JS
 - `internal/testing/mockconnector` is the connector you wire up in tests when you need deterministic responses without hitting Google/AWS/etc. `internal/testing/testenv.New` automatically sets up a loaded keyring with a fixed test passphrase (`test-passphrase`) using cheap argon2 params; tests using `testenv.Env.Connections` get encrypted read/write "for free". The e2e testserver (`e2e/testserver/main.go`) takes `--test-passphrase` (default `e2e-test-passphrase`) for the same reason.
 - Don't add plaintext credential fields to the `connections` schema. If a new credential type needs storing, route it through `connections.Config` so it flows through the existing envelope-encryption path.
 - Don't add env-var-based passphrase intake. Env leaks through `/proc/<pid>/environ`, `ps`, and crash dumps. `SIEVE_PASSPHRASE_FILE` is fine (points at a file); `SIEVE_PASSPHRASE` is not.
+- Slack connector specifics: classic non-rotating bot scopes only in v1 (per spec clarification 2026-05-01) — there's no `_on_token_refresh` wiring on the Slack `Connector`, only on Gmail/Linear/Jira/Asana. `search_messages` is exposed for policy-binding stability but always returns `{"error": "operation_not_enabled"}` because Slack's `search.*` API requires a user-token install (deferred). Slack OAuth client credentials are read from env vars (`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`) — that's fine because they're not the keyring passphrase; the env-var ban above strictly scopes the keyring KEK. If `SLACK_CLIENT_ID` is unset, the OAuth path is hidden in the UI and only the direct bot-token entry path is offered. The `connections.status` field is non-secret and is returned without keyring decryption — `Service.Get`/`List`/`SetStatus` all work with the keyring unloaded; only `GetWithConfig`/`Add`/`UpdateConfig` require it. Operator setup walkthrough: `docs/connectors-slack.md`. Quick reference: `docs/connections-guide.md` § Slack Workspace.
 
 <!-- SPECKIT START -->
 Active plan: [specs/001-slack-linear-jira-connectors/plan.md](specs/001-slack-linear-jira-connectors/plan.md)
@@ -90,7 +91,7 @@ Spec: [specs/001-slack-linear-jira-connectors/spec.md](specs/001-slack-linear-ji
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **Sieve** (2786 symbols, 7442 relationships, 239 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **Sieve** (2788 symbols, 7444 relationships, 239 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

@@ -42,9 +42,12 @@ These agents need access to your services (email, chat, financial data) but:
    an LLM prompt, or a chain of evaluators.
 3. **Approval workflows.** Some actions can require human approval via the
    web UI before Sieve executes them.
-4. **Connector architecture.** Gmail is the first connector. Slack, bank
-   APIs, calendar, etc. plug in via the same interface. Each connector
-   defines its operations; the policy engine is connector-agnostic.
+4. **Connector architecture.** Gmail was the first connector; Slack
+   followed. Linear, Jira Cloud, Asana, bank APIs, etc. plug in via the
+   same interface. Each connector defines its operations; the policy
+   engine is connector-agnostic. See [`docs/connectors-slack.md`](docs/connectors-slack.md)
+   for an example of a curated connector with OAuth + direct-token
+   install paths.
 5. **Multi-connection.** A single Sieve instance manages many connections
    (accounts/workspaces/API keys) across providers. Each token is scoped
    to specific connections.
@@ -56,8 +59,9 @@ These agents need access to your services (email, chat, financial data) but:
 
 ## 3. Non-goals (v1)
 
-- Connectors beyond Gmail. The connector interface ships in v1 but Gmail
-  is the only implementation. Slack, bank, etc. come next.
+- The full connector catalogue. Gmail and Slack ship in v1; GitHub, MCP
+  proxy, and HTTP proxy round out the v1 set. Linear, Jira Cloud, and
+  Asana are spec'd but not yet implemented.
 - End-to-end encryption of content at rest inside Sieve.
 - Multi-user / multi-tenant. This runs on your machine for your accounts.
 
