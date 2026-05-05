@@ -471,6 +471,11 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		"ConnLabels":  connLabels,
 		"Catalog":     catalog,
 		"ConnType":    connType,
+		// Per-connector UI capability flags. Slack OAuth requires
+		// operator-supplied client credentials (env vars); when absent,
+		// the UI hides the OAuth button and shows only the bot-token
+		// paste form. Mirrors the runtime check in handleSlackOAuthStart.
+		"SlackOAuthConfigured": slackOAuthClientID() != "" && slackOAuthClientSecret() != "",
 	}
 	s.render(w, "connections", data)
 }
@@ -543,6 +548,21 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Redirect(w, r, "/connections", http.StatusSeeOther)
+		return
+	}
+
+	// Slack must use the dedicated /connections/slack/{oauth/start,token,...}
+	// routes which validate against Slack before persisting. Falling
+	// through to the generic "save directly" branch below would store a
+	// connection with empty config — the row would appear in the UI but
+	// every operation would fail because the live connector can't be
+	// instantiated without auth_kind set.
+	if connectorType == "slack" {
+		http.Error(w,
+			"Slack connections must be added via the Slack-specific install flow "+
+				"(POST /connections/slack/oauth/start or /connections/slack/token). "+
+				"The generic add endpoint cannot validate Slack credentials.",
+			http.StatusBadRequest)
 		return
 	}
 

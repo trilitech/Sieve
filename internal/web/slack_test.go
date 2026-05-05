@@ -300,6 +300,108 @@ func TestHandleOAuthCallback_SlackHappyPath(t *testing.T) {
 	}
 }
 
+// slackUITestServer brings up a fully-templated Server (via NewServer)
+// for tests that need to render the connections page. Use the lighter
+// slackTestServer helper for handler-only tests — that path skips
+// template parsing and the OAuth-cleanup goroutine.
+func slackUITestServer(t *testing.T) (http.Handler, *testenv.Env) {
+	t.Helper()
+	env := testenv.New(t)
+	env.Registry.Register(slackconn.Meta(), slackconn.Factory())
+	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
+	srv := NewServer(
+		env.Tokens, env.Connections, env.Policies, env.Roles, env.Registry,
+		env.Approval, env.Audit, "", env.Settings, scriptgenSvc,
+	)
+	t.Cleanup(func() { srv.Close() })
+	return srv.Handler(), env
+}
+
+// TestConnectionsPage_SlackCard_OAuthEnabled asserts the connections
+// page renders the Slack card with both a working OAuth-install form
+// (POSTs to /connections/slack/oauth/start) AND the bot-token paste
+// form (POSTs to /connections/slack/token) when SLACK_CLIENT_ID and
+// SLACK_CLIENT_SECRET are set. The previous regression — the user
+// report behind this fix — was that the Slack tile fell through to
+// the generic /connections/add form, persisting an empty config.
+func TestConnectionsPage_SlackCard_OAuthEnabled(t *testing.T) {
+	t.Setenv("SLACK_CLIENT_ID", "test-client-id")
+	t.Setenv("SLACK_CLIENT_SECRET", "test-client-secret")
+	handler, _ := slackUITestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `action="/connections/slack/oauth/start"`) {
+		t.Errorf("Slack card missing OAuth-start form (action=/connections/slack/oauth/start)")
+	}
+	if !strings.Contains(body, `action="/connections/slack/token"`) {
+		t.Errorf("Slack card missing bot-token form (action=/connections/slack/token)")
+	}
+	// The Slack card must NOT have a generic /connections/add form
+	// with connector_type=slack — that's the broken fallthrough this
+	// fix closes. Look for the specific bad pattern.
+	if strings.Contains(body, `<input type="hidden" name="connector_type" value="slack">`) {
+		t.Errorf("Slack card should not render the generic /connections/add hidden input — it must use the Slack-specific routes")
+	}
+}
+
+// TestConnectionsPage_SlackCard_OAuthDisabled asserts that when
+// SLACK_CLIENT_ID is absent, the OAuth-install form is hidden but the
+// bot-token paste form is still rendered, plus a hint pointing the
+// admin at the env vars they need to set.
+func TestConnectionsPage_SlackCard_OAuthDisabled(t *testing.T) {
+	t.Setenv("SLACK_CLIENT_ID", "")
+	t.Setenv("SLACK_CLIENT_SECRET", "")
+	handler, _ := slackUITestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	if strings.Contains(body, `action="/connections/slack/oauth/start"`) {
+		t.Errorf("OAuth-start form should be hidden when SLACK_CLIENT_ID is unset")
+	}
+	if !strings.Contains(body, `action="/connections/slack/token"`) {
+		t.Errorf("Bot-token form must still be available without OAuth credentials")
+	}
+	if !strings.Contains(body, "SLACK_CLIENT_ID") {
+		t.Errorf("expected hint mentioning SLACK_CLIENT_ID env var when OAuth is disabled")
+	}
+}
+
+// TestHandleConnectionAdd_RejectsSlack closes the regression: the
+// generic /connections/add path used to silently create an empty-
+// config Slack row when the template fell through to its hidden
+// connector_type=slack input. Now it returns 400 with a clear
+// message pointing at the Slack-specific routes.
+func TestHandleConnectionAdd_RejectsSlack(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	form := url.Values{
+		"id":             {"sneaky"},
+		"display_name":   {"Sneaky"},
+		"connector_type": {"slack"},
+	}
+	rec := formPost(handler, "/connections/add", form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if exists, _ := env.Connections.Exists("sneaky"); exists {
+		t.Fatal("connection should NOT be persisted when using the wrong route")
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "/connections/slack/oauth/start") && !strings.Contains(body, "/connections/slack/token") {
+		t.Errorf("rejection message should point operator at the slack-specific routes, got: %s", body)
+	}
+}
+
 // TestHandleSlackReauth_TokenPath — re-pasting a fresh bot token on
 // a reauth_required row clears the status by validating + UpdateConfig.
 func TestHandleSlackReauth_TokenPath(t *testing.T) {
