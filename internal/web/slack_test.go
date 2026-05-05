@@ -351,10 +351,17 @@ func TestConnectionsPage_SlackCard_OAuthEnabled(t *testing.T) {
 	}
 }
 
-// TestConnectionsPage_SlackCard_OAuthDisabled asserts that when
-// SLACK_CLIENT_ID is absent, the OAuth-install form is hidden but the
-// bot-token paste form is still rendered, plus a hint pointing the
-// admin at the env vars they need to set.
+// TestConnectionsPage_SlackCard_OAuthDisabled asserts that when no
+// Slack OAuth credentials are configured (neither in settings nor in
+// env vars), the card replaces the install button with an in-UI
+// configure form. The bot-token paste form remains available as a
+// parallel install path.
+//
+// Critically: the configure form must POST to
+// /connections/slack/oauth/configure (the new in-UI setup endpoint),
+// NOT instruct the operator to set env vars and restart. Earlier
+// versions of this code surfaced an env-var hint instead — that UX
+// regression is what the user reported on 2026-05-04.
 func TestConnectionsPage_SlackCard_OAuthDisabled(t *testing.T) {
 	t.Setenv("SLACK_CLIENT_ID", "")
 	t.Setenv("SLACK_CLIENT_SECRET", "")
@@ -366,13 +373,131 @@ func TestConnectionsPage_SlackCard_OAuthDisabled(t *testing.T) {
 	body := rec.Body.String()
 
 	if strings.Contains(body, `action="/connections/slack/oauth/start"`) {
-		t.Errorf("OAuth-start form should be hidden when SLACK_CLIENT_ID is unset")
+		t.Errorf("OAuth-start form should be hidden when credentials are unset")
+	}
+	if !strings.Contains(body, `action="/connections/slack/oauth/configure"`) {
+		t.Errorf("expected in-UI configure form (action=/connections/slack/oauth/configure) when OAuth is unset")
+	}
+	if !strings.Contains(body, `name="client_id"`) || !strings.Contains(body, `name="client_secret"`) {
+		t.Errorf("configure form must accept both client_id and client_secret inputs")
 	}
 	if !strings.Contains(body, `action="/connections/slack/token"`) {
 		t.Errorf("Bot-token form must still be available without OAuth credentials")
 	}
-	if !strings.Contains(body, "SLACK_CLIENT_ID") {
-		t.Errorf("expected hint mentioning SLACK_CLIENT_ID env var when OAuth is disabled")
+}
+
+// TestHandleSlackOAuthConfigure_HappyPath asserts that pasting valid-
+// looking client_id + client_secret persists them via settings and
+// redirects back to the connections page. Subsequent GETs show the
+// install button instead of the configure form — no restart required.
+func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
+	// Clear env so settings is the only source.
+	t.Setenv("SLACK_CLIENT_ID", "")
+	t.Setenv("SLACK_CLIENT_SECRET", "")
+	handler, env := slackUITestServer(t)
+
+	rec := formPost(handler, "/connections/slack/oauth/configure", url.Values{
+		"client_id":     {"1234567890.0987654321"},
+		"client_secret": {"abcdef0123456789abcdef0123456789"},
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	// Persisted in settings.
+	cid, _ := env.Settings.Get("slack_client_id")
+	csec, _ := env.Settings.Get("slack_client_secret")
+	if cid != "1234567890.0987654321" {
+		t.Errorf("client_id not persisted: %q", cid)
+	}
+	if csec != "abcdef0123456789abcdef0123456789" {
+		t.Errorf("client_secret not persisted: %q", csec)
+	}
+
+	// Subsequent /connections render shows the install button, no
+	// configure form.
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/connections", nil))
+	body := rec2.Body.String()
+	if !strings.Contains(body, `action="/connections/slack/oauth/start"`) {
+		t.Errorf("install button should appear after configure")
+	}
+	if strings.Contains(body, `action="/connections/slack/oauth/configure"`) {
+		t.Errorf("configure form should be hidden after credentials are set")
+	}
+}
+
+// TestHandleSlackOAuthConfigure_ValidatesShape rejects obviously
+// malformed credentials before persisting. We don't try to actually
+// hit Slack here — that would require the OAuth flow to start, which
+// only happens when the install button is clicked.
+func TestHandleSlackOAuthConfigure_ValidatesShape(t *testing.T) {
+	handler, _ := slackUITestServer(t)
+
+	cases := []struct {
+		name string
+		form url.Values
+	}{
+		{"missing client_id", url.Values{"client_secret": {"abcdef0123456789abcdef"}}},
+		{"missing client_secret", url.Values{"client_id": {"123.456"}}},
+		{"client_id without dot", url.Values{"client_id": {"plainstring"}, "client_secret": {"abcdef0123456789abcdef"}}},
+		{"client_id too short", url.Values{"client_id": {"1.2"}, "client_secret": {"abcdef0123456789abcdef"}}},
+		{"client_secret too short", url.Values{"client_id": {"1234567890.0987654321"}, "client_secret": {"short"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := formPost(handler, "/connections/slack/oauth/configure", tc.form)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestHandleSlackOAuthConfigure_RejectsAgentToken — the configure
+// endpoint stores OAuth secrets, so it MUST reject agent tokens
+// (FR-013). A stolen agent token must not be able to swap the
+// operator's Slack app credentials.
+func TestHandleSlackOAuthConfigure_RejectsAgentToken(t *testing.T) {
+	handler, _ := slackUITestServer(t)
+	form := url.Values{
+		"client_id":     {"1234567890.0987654321"},
+		"client_secret": {"abcdef0123456789abcdef0123456789"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/connections/slack/oauth/configure", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer sieve_tok_attacker")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for agent token, got %d", rec.Code)
+	}
+}
+
+// TestHandleSlackOAuthClearConfig wipes persisted creds. After clear
+// the configure form returns and the install button disappears.
+func TestHandleSlackOAuthClearConfig(t *testing.T) {
+	t.Setenv("SLACK_CLIENT_ID", "")
+	t.Setenv("SLACK_CLIENT_SECRET", "")
+	handler, env := slackUITestServer(t)
+
+	// Pre-populate.
+	if err := env.Settings.Set("slack_client_id", "1234567890.0987654321"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := env.Settings.Set("slack_client_secret", "abcdef0123456789abcdef0123456789"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rec := formPost(handler, "/connections/slack/oauth/clear", url.Values{})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rec.Code)
+	}
+	if v, _ := env.Settings.Get("slack_client_id"); v != "" {
+		t.Errorf("client_id not cleared: %q", v)
+	}
+	if v, _ := env.Settings.Get("slack_client_secret"); v != "" {
+		t.Errorf("client_secret not cleared: %q", v)
 	}
 }
 

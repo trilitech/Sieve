@@ -284,6 +284,8 @@ func (s *Server) Handler() http.Handler {
 	// GitHub-specific setup flows
 	mux.HandleFunc("POST /connections/github/pat", s.handleGitHubPAT)
 	// Slack connector flows.
+	mux.HandleFunc("POST /connections/slack/oauth/configure", s.handleSlackOAuthConfigure)
+	mux.HandleFunc("POST /connections/slack/oauth/clear", s.handleSlackOAuthClearConfig)
 	mux.HandleFunc("POST /connections/slack/oauth/start", s.handleSlackOAuthStart)
 	mux.HandleFunc("POST /connections/slack/token", s.handleSlackToken)
 	mux.HandleFunc("POST /connections/slack/{id}/reauth", s.handleSlackReauth)
@@ -472,10 +474,12 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		"Catalog":     catalog,
 		"ConnType":    connType,
 		// Per-connector UI capability flags. Slack OAuth requires
-		// operator-supplied client credentials (env vars); when absent,
-		// the UI hides the OAuth button and shows only the bot-token
-		// paste form. Mirrors the runtime check in handleSlackOAuthStart.
-		"SlackOAuthConfigured": slackOAuthClientID() != "" && slackOAuthClientSecret() != "",
+		// operator-supplied client credentials. The UI shows different
+		// content depending on whether they're configured: the install
+		// button when set, the configure-form when not. Same lookup
+		// chain (settings → env) the install handler uses, so the
+		// flag and runtime behavior never diverge.
+		"SlackOAuthConfigured": s.slackOAuthClientID() != "" && s.slackOAuthClientSecret() != "",
 	}
 	s.render(w, "connections", data)
 }

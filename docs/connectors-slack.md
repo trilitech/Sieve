@@ -22,18 +22,7 @@ All `list_*` operations follow Sieve's normalized `{items, next_cursor}` paginat
 
 ### Option 1 — OAuth install (recommended)
 
-Best when you want Sieve to manage the Slack app's bot token end to end.
-
-**Prereqs.** Set Slack OAuth client credentials before starting Sieve:
-
-```bash
-export SLACK_CLIENT_ID="…"
-export SLACK_CLIENT_SECRET="…"
-```
-
-These come from your Slack app's **Basic Information** page (<https://api.slack.com/apps>). They are the OAuth app credentials, **not** the bot token.
-
-**Setup steps.**
+Best when you want Sieve to manage the Slack app's bot token end to end. **No env vars or restart required** — paste your Slack app's credentials directly into the Sieve UI.
 
 1. Create a Slack app at <https://api.slack.com/apps> → **Create New App** → **From scratch**.
 2. Under **OAuth & Permissions**, add the bot scopes for the operations you want to expose. The minimum set covering the curated operations is:
@@ -45,10 +34,15 @@ These come from your Slack app's **Basic Information** page (<https://api.slack.
 
    Add `channels:join` if you want the bot to join channels it's invited to.
 3. Add the redirect URL `http://<your-sieve-host>:19816/oauth/callback`. This is the Sieve admin port — never expose this to agents.
-4. Install the app to your workspace once via the **Install App** page (or skip and let Sieve drive the install via OAuth — see step 6).
-5. From **Basic Information**, copy the Client ID and Client Secret into your environment.
-6. In Sieve's admin UI, click **Add Connection** → **Slack** → **Install via OAuth**. Approve in Slack.
-7. The redirect lands you back on Sieve with the connection in `status: active`.
+4. From your Slack app's **Basic Information** page, copy the **Client ID** and **Client Secret**.
+5. Open Sieve's connections page, find the **Slack** card. The card shows a **Set up Slack OAuth** form when no credentials are configured.
+6. Paste the Client ID and Client Secret, click **Save Slack OAuth credentials**. Sieve persists them and the page reloads.
+7. The card now shows the **Install via OAuth** button. Enter a Connection Alias and Display Name, click the button. Slack opens in a new tab — approve the install.
+8. The redirect lands you back on Sieve with the connection in `status: active`.
+
+**Alternative: pre-set via environment variables.** If you'd rather configure via deployment automation, set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in Sieve's environment before startup. The settings table takes precedence, so a value pasted in the UI overrides any env var. Either path is supported; the UI is just the lower-friction default.
+
+**Resetting credentials.** Below the install button, a small "Reset Slack OAuth credentials" link wipes the persisted client_id / client_secret from the settings table. Use this when rotating the Slack app or moving to a different OAuth app.
 
 ### Option 2 — Direct bot-token entry
 

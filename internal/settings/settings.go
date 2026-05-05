@@ -16,7 +16,26 @@ const (
 	KeyLLMConnection = "llm_connection" // connection ID to use for LLM calls (e.g., "anthropic")
 	KeyLLMModel      = "llm_model"      // model name (e.g., "claude-sonnet-4-20250514")
 	KeyLLMMaxTokens  = "llm_max_tokens" // max tokens for generation (e.g., "4096")
+
+	// Slack OAuth app credentials. Operator-supplied via the
+	// connections page (or pre-set via SLACK_CLIENT_ID /
+	// SLACK_CLIENT_SECRET env vars as a fallback). Public client_id
+	// and the client_secret live in the same SQLite row class as
+	// LLM API keys — DB file is chmod 0600 and never has
+	// world-readable bits. Same exposure level as the operator's
+	// `*client_secret*.json` file Google's connector reads.
+	KeySlackClientID     = "slack_client_id"
+	KeySlackClientSecret = "slack_client_secret"
 )
+
+// Delete removes a setting by key. No-op if the key is absent.
+func (s *Service) Delete(key string) error {
+	_, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, key)
+	if err != nil {
+		return fmt.Errorf("delete setting %q: %w", key, err)
+	}
+	return nil
+}
 
 // Service provides access to the settings store.
 type Service struct {
