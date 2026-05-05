@@ -35,7 +35,6 @@ import (
 	"html/template"
 	"net/http"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -303,6 +302,7 @@ func (s *Server) Handler() http.Handler {
 	// Docs
 	mux.HandleFunc("GET /docs", s.handleDocsIndex)
 	mux.HandleFunc("GET /docs/", s.handleDocsIndex)
+	mux.HandleFunc("GET /docs/category/{id}", s.handleDocsCategory)
 	mux.HandleFunc("GET /docs/{name}", s.handleDocs)
 
 	return mux
@@ -1674,42 +1674,65 @@ func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"path": "./" + path})
 }
 
-type docEntry struct {
-	Slug    string
-	Title   string
-	Content string
-}
-
-func listDocs() ([]docEntry, error) {
+// listDocSlugs returns the slugs of every .md file in docs/, in any order.
+// Used as the filesystem input to BuildIndex.
+func listDocSlugs() ([]string, error) {
 	entries, err := os.ReadDir("docs")
 	if err != nil {
 		return nil, err
 	}
-	var docs []docEntry
+	var out []string
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
-		slug := strings.TrimSuffix(e.Name(), ".md")
-		title := docTitle("docs/" + e.Name())
-		if title == "" {
-			title = slug
-		}
-		docs = append(docs, docEntry{Slug: slug, Title: title})
+		out = append(out, strings.TrimSuffix(e.Name(), ".md"))
 	}
-	sort.Slice(docs, func(i, j int) bool { return strings.ToLower(docs[i].Title) < strings.ToLower(docs[j].Title) })
-	return docs, nil
+	return out, nil
+}
+
+func docTitleForSlug(slug string) string {
+	t := docTitle(fmt.Sprintf("docs/%s.md", slug))
+	if t == "" {
+		return slug
+	}
+	return t
+}
+
+func readDocBody(slug string) (string, error) {
+	b, err := os.ReadFile(fmt.Sprintf("docs/%s.md", slug))
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// buildDocsIndex composes the filesystem-derived slug list with the live
+// manifest and the search corpus into a renderable navigation index.
+func (s *Server) buildDocsIndex() (DocNavIndex, error) {
+	slugs, err := listDocSlugs()
+	if err != nil {
+		return DocNavIndex{}, err
+	}
+	m := Manifest()
+	idx := BuildIndex(m, slugs, docTitleForSlug)
+	corpus, err := BuildSearchIndex(idx, m, readDocBody)
+	if err == nil {
+		idx.SearchIndexJSON = template.JS(corpus)
+	}
+	return idx, nil
 }
 
 func (s *Server) handleDocsIndex(w http.ResponseWriter, r *http.Request) {
-	docs, err := listDocs()
+	idx, err := s.buildDocsIndex()
 	if err != nil {
 		http.Error(w, "docs directory not found", http.StatusNotFound)
 		return
 	}
+	idx.Breadcrumbs = []Breadcrumb{{Label: "Documentation"}}
 	s.render(w, "docs", map[string]any{
 		"Active": "docs",
-		"Docs":   docs,
+		"Index":  idx,
 	})
 }
 
@@ -1730,21 +1753,84 @@ func docTitle(path string) string {
 
 func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	content, err := os.ReadFile(fmt.Sprintf("docs/%s.md", name))
+	body, err := readDocBody(name)
 	if err != nil {
 		http.Error(w, "doc not found", http.StatusNotFound)
 		return
 	}
-	title := docTitle(fmt.Sprintf("docs/%s.md", name))
-	if title == "" {
-		title = name
+
+	idx, err := s.buildDocsIndex()
+	if err != nil {
+		http.Error(w, "docs directory not found", http.StatusNotFound)
+		return
+	}
+
+	title := docTitleForSlug(name)
+	m := Manifest()
+	catID := categoryFor(name, m)
+
+	current := DocPage{
+		Slug:        name,
+		Title:       title,
+		Description: m.Descriptions[name],
+		CategoryID:  catID,
+		Hidden:      m.Hidden[name],
+		Body:        body,
+	}
+	idx.Current = &current
+
+	// Resolve breadcrumb category label from the index (so the operator sees
+	// the same category title rendered everywhere). Falls back to the manifest
+	// if the category was pruned (zero visible pages, e.g. only this hidden
+	// page lives in it).
+	catLabel, catHref := categoryLabelAndHref(idx, m, catID)
+	idx.Breadcrumbs = []Breadcrumb{
+		{Label: "Documentation", Href: "/docs"},
+		{Label: catLabel, Href: catHref},
+		{Label: title},
+	}
+
+	s.render(w, "docs", map[string]any{
+		"Active": "docs",
+		"Index":  idx,
+	})
+}
+
+func (s *Server) handleDocsCategory(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	idx, err := s.buildDocsIndex()
+	if err != nil {
+		http.Error(w, "docs directory not found", http.StatusNotFound)
+		return
+	}
+	view := idx.findCategory(id)
+	if view == nil {
+		http.Error(w, "category not found", http.StatusNotFound)
+		return
+	}
+	cat := view.Category
+	idx.CurrentCategory = &cat
+	idx.Breadcrumbs = []Breadcrumb{
+		{Label: "Documentation", Href: "/docs"},
+		{Label: cat.Title},
 	}
 	s.render(w, "docs", map[string]any{
 		"Active": "docs",
-		"Doc": docEntry{
-			Slug:    name,
-			Title:   title,
-			Content: string(content),
-		},
+		"Index":  idx,
 	})
+}
+
+func categoryLabelAndHref(idx DocNavIndex, m DocManifest, id string) (string, string) {
+	if v := idx.findCategory(id); v != nil {
+		return v.Category.Title, fmt.Sprintf("/docs/category/%s", v.Category.ID)
+	}
+	for _, c := range m.Categories {
+		if c.ID == id {
+			return c.Title, fmt.Sprintf("/docs/category/%s", c.ID)
+		}
+	}
+	if id == m.FallbackID {
+		return m.FallbackTitle, fmt.Sprintf("/docs/category/%s", m.FallbackID)
+	}
+	return "Documentation", "/docs"
 }

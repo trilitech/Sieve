@@ -4,9 +4,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{if .Doc}}{{.Doc.Title}}{{else}}Documentation{{end}} - Sieve</title>
+  <title>{{if .Index.Current}}{{.Index.Current.Title}}{{else if .Index.CurrentCategory}}{{.Index.CurrentCategory.Title}}{{else}}Documentation{{end}} &middot; Sieve</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  {{if .Doc}}
+  {{if .Index.Current}}
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
           integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
           crossorigin="anonymous"></script>
@@ -20,48 +20,370 @@
     body { font-family: 'Inter', sans-serif; }
     .prose pre { background: #1e293b; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }
     .prose code { color: #e2e8f0; font-size: 0.875rem; }
-    .prose p code, .prose li code { background: #334155; padding: 0.125rem 0.375rem; border-radius: 0.25rem; }
+    .prose p code, .prose li code, .prose td code { background: #334155; padding: 0.125rem 0.375rem; border-radius: 0.25rem; }
     .prose table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
     .prose th, .prose td { border: 1px solid #334155; padding: 0.5rem; text-align: left; }
     .prose th { background: #1e293b; }
     .prose a { color: #818cf8; }
     .prose a:hover { color: #a5b4fc; }
     .prose h1 { font-size: 1.75rem; font-weight: 700; margin-top: 0; margin-bottom: 1rem; }
-    .prose h2 { font-size: 1.35rem; font-weight: 600; margin-top: 2rem; margin-bottom: 0.75rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
-    .prose h3 { font-size: 1.1rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    .prose h2 { font-size: 1.35rem; font-weight: 600; margin-top: 2rem; margin-bottom: 0.75rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; scroll-margin-top: 1rem; }
+    .prose h3 { font-size: 1.1rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; scroll-margin-top: 1rem; }
     .prose p, .prose ul, .prose ol { margin-bottom: 1rem; line-height: 1.65; }
     .prose ul { list-style: disc; padding-left: 1.5rem; }
     .prose ol { list-style: decimal; padding-left: 1.5rem; }
     .prose blockquote { border-left: 3px solid #475569; padding-left: 1rem; color: #94a3b8; margin: 1rem 0; }
+    .prose .heading-anchor { opacity: 0; margin-left: 0.5rem; color: #475569; text-decoration: none; font-weight: 400; transition: opacity .15s, color .15s; }
+    .prose h2:hover .heading-anchor, .prose h3:hover .heading-anchor { opacity: 1; }
+    .prose .heading-anchor:hover { color: #818cf8; }
+    .toc-link { display: block; padding: 0.25rem 0.5rem; border-left: 2px solid transparent; color: #94a3b8; font-size: 0.8125rem; line-height: 1.4; }
+    .toc-link:hover { color: #cbd5e1; }
+    .toc-link.toc-h3 { padding-left: 1.25rem; font-size: 0.75rem; }
+    .toc-link[data-active="true"] { color: #a5b4fc; border-left-color: #818cf8; background: rgba(99,102,241,.08); }
+    mark { background: rgba(250, 204, 21, .25); color: #fde68a; padding: 0 0.125rem; border-radius: 0.125rem; }
   </style>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen">
   {{template "nav" .}}
 
-  <main class="ml-64 p-8">
-    <div class="max-w-4xl">
-      {{if .Doc}}
-        <a href="/docs" class="text-indigo-400 hover:text-indigo-300 text-sm">&larr; All docs</a>
-        <div id="content" class="prose prose-invert mt-4"></div>
-        <script>
-          const md = {{.Doc.Content}};
-          document.getElementById('content').innerHTML = DOMPurify.sanitize(marked.parse(md));
-        </script>
-      {{else}}
-        <h1 class="text-2xl font-bold text-white mb-6">Documentation</h1>
-        <ul class="space-y-2">
-          {{range .Docs}}
-          <li>
-            <a href="/docs/{{.Slug}}" class="block px-4 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors">
-              <span class="text-indigo-400 font-medium">{{.Title}}</span>
-              <span class="block text-xs text-slate-500 mt-1">{{.Slug}}.md</span>
-            </a>
-          </li>
+  <main class="ml-64 p-6 lg:p-8">
+    <div class="mx-auto max-w-7xl">
+
+      <!-- Breadcrumbs -->
+      {{if .Index.Breadcrumbs}}
+      <nav aria-label="Breadcrumb" class="mb-4 flex items-center gap-2 text-sm text-slate-400 flex-wrap">
+        {{range $i, $b := .Index.Breadcrumbs}}
+          {{if $i}}<span class="text-slate-600">&rsaquo;</span>{{end}}
+          {{if $b.Href}}
+            <a href="{{$b.Href}}" class="hover:text-indigo-400">{{$b.Label}}</a>
+          {{else}}
+            <span class="text-slate-200">{{$b.Label}}</span>
           {{end}}
-        </ul>
+        {{end}}
+      </nav>
       {{end}}
+
+      <!-- Search -->
+      <div class="mb-6 relative">
+        <input id="docs-search" type="search" autocomplete="off" placeholder="Search documentation"
+               class="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500/60">
+        <div id="docs-results" hidden
+             class="absolute z-30 left-0 right-0 mt-2 bg-slate-800 border border-slate-700 rounded-lg shadow-xl max-h-96 overflow-y-auto"></div>
+      </div>
+
+      <div class="lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] xl:grid-cols-[14rem_minmax(0,1fr)_14rem] lg:gap-8">
+
+        <!-- Category rail -->
+        <aside class="hidden lg:block">
+          <nav class="sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto pr-2">
+            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2 px-2">Documentation</p>
+            <a href="/docs" class="block px-2 py-1 text-sm rounded hover:bg-slate-800 hover:text-white {{if and (not .Index.Current) (not .Index.CurrentCategory)}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-300{{end}}">All categories</a>
+            {{range .Index.Categories}}
+              <div class="mt-4">
+                <a href="/docs/category/{{.Category.ID}}" class="block px-2 py-1 text-xs font-semibold uppercase tracking-wider rounded hover:text-white {{if and $.Index.CurrentCategory (eq $.Index.CurrentCategory.ID .Category.ID)}}text-indigo-400{{else}}text-slate-400{{end}}">{{.Category.Title}}</a>
+                <ul class="mt-1 space-y-0.5">
+                  {{range .Pages}}
+                    <li>
+                      <a href="/docs/{{.Slug}}" class="block px-2 py-1 text-sm rounded transition-colors {{if and $.Index.Current (eq $.Index.Current.Slug .Slug)}}bg-indigo-500/20 text-indigo-400 font-medium{{else}}text-slate-300 hover:bg-slate-800 hover:text-white{{end}}">{{.Title}}</a>
+                    </li>
+                  {{end}}
+                </ul>
+              </div>
+            {{end}}
+          </nav>
+        </aside>
+
+        <!-- Article / landing area -->
+        <div class="min-w-0">
+          {{if .Index.Current}}
+            {{template "doc-detail" .Index}}
+          {{else if .Index.CurrentCategory}}
+            {{template "doc-category" .Index}}
+          {{else}}
+            {{template "doc-home" .Index}}
+          {{end}}
+        </div>
+
+        <!-- TOC (only meaningful on detail view) -->
+        {{if .Index.Current}}
+        <aside id="toc-aside" class="hidden xl:block">
+          <nav class="sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto">
+            <p class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-2 px-2">On this page</p>
+            <div id="toc-list"></div>
+          </nav>
+        </aside>
+        {{end}}
+
+      </div>
     </div>
   </main>
+
+  {{if .Index.SearchIndexJSON}}
+  <script type="application/json" id="docs-search-index">{{.Index.SearchIndexJSON}}</script>
+  {{end}}
+
+  {{if .Index.Current}}
+  <script>
+    (function(){
+      const md = {{.Index.Current.Body}};
+      const article = document.getElementById('content');
+      article.innerHTML = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['target','rel'] });
+
+      // Slugify must mirror Go ExtractHeadings.slugify exactly.
+      function slugify(s){
+        let out = '';
+        let prevDash = true;
+        for (const ch of s) {
+          if (ch >= 'a' && ch <= 'z') { out += ch; prevDash = false; }
+          else if (ch >= 'A' && ch <= 'Z') { out += ch.toLowerCase(); prevDash = false; }
+          else if (ch >= '0' && ch <= '9') { out += ch; prevDash = false; }
+          else if (!prevDash) { out += '-'; prevDash = true; }
+        }
+        return out.replace(/^-+|-+$/g, '');
+      }
+
+      // Assign IDs to H2/H3, build TOC, attach hover anchors.
+      const headings = article.querySelectorAll('h2, h3');
+      const toc = document.getElementById('toc-list');
+      const tocAside = document.getElementById('toc-aside');
+      const seen = {};
+      const tocEntries = [];
+      headings.forEach(h => {
+        const text = h.textContent.trim();
+        let id = slugify(text);
+        if (!id) return;
+        seen[id] = (seen[id] || 0) + 1;
+        if (seen[id] > 1) id = id + '-' + seen[id];
+        h.id = id;
+
+        const anchor = document.createElement('a');
+        anchor.href = '#' + id;
+        anchor.className = 'heading-anchor';
+        anchor.setAttribute('aria-label', 'Link to this section');
+        anchor.textContent = '#';
+        anchor.addEventListener('click', function(e){
+          e.preventDefault();
+          history.replaceState(null, '', '#' + id);
+          h.scrollIntoView();
+          if (navigator.clipboard) navigator.clipboard.writeText(window.location.href).catch(()=>{});
+        });
+        h.appendChild(anchor);
+
+        if (toc) {
+          const a = document.createElement('a');
+          a.href = '#' + id;
+          a.textContent = text;
+          a.className = 'toc-link toc-' + h.tagName.toLowerCase();
+          a.dataset.target = id;
+          toc.appendChild(a);
+          tocEntries.push({el: a, target: h});
+        }
+      });
+
+      // Hide TOC if there are fewer than two H2s (FR-010).
+      const h2Count = article.querySelectorAll('h2').length;
+      if (tocAside && h2Count < 2) tocAside.hidden = true;
+
+      // Scrollspy via IntersectionObserver.
+      if (tocEntries.length > 0 && 'IntersectionObserver' in window) {
+        const linkByID = {};
+        tocEntries.forEach(e => linkByID[e.target.id] = e.el);
+        const visible = new Set();
+        const obs = new IntersectionObserver(function(entries){
+          entries.forEach(en => {
+            if (en.isIntersecting) visible.add(en.target.id);
+            else visible.delete(en.target.id);
+          });
+          tocEntries.forEach(e => e.el.removeAttribute('data-active'));
+          if (visible.size > 0) {
+            // Highlight the topmost visible heading.
+            let topID = null, topY = Infinity;
+            visible.forEach(id => {
+              const el = document.getElementById(id);
+              if (!el) return;
+              const r = el.getBoundingClientRect();
+              if (r.top < topY) { topY = r.top; topID = id; }
+            });
+            if (topID && linkByID[topID]) linkByID[topID].setAttribute('data-active', 'true');
+          }
+        }, { rootMargin: '0px 0px -70% 0px', threshold: 0 });
+        article.querySelectorAll('h2, h3').forEach(h => obs.observe(h));
+      }
+
+      // Rewrite cross-doc .md links into /docs/{slug}.
+      article.querySelectorAll('a[href]').forEach(a => {
+        const href = a.getAttribute('href');
+        if (!href) return;
+        // Skip external + anchor-only links.
+        if (/^[a-z]+:\/\//i.test(href) || href.startsWith('#') || href.startsWith('mailto:')) return;
+        const m = href.match(/^(?:\.?\/)?([^?#]+?)\.md(#.*)?$/);
+        if (m) {
+          const slug = m[1].split('/').pop();
+          a.setAttribute('href', '/docs/' + slug + (m[2] || ''));
+        }
+      });
+    })();
+  </script>
+  {{end}}
+
+  <script>
+    (function(){
+      const input = document.getElementById('docs-search');
+      const results = document.getElementById('docs-results');
+      const corpusEl = document.getElementById('docs-search-index');
+      if (!input || !results || !corpusEl) return;
+
+      let corpus = null;
+      try { corpus = JSON.parse(corpusEl.textContent); }
+      catch (e) {
+        input.placeholder = 'Search unavailable';
+        input.disabled = true;
+        return;
+      }
+      if (!corpus || !Array.isArray(corpus.pages)) return;
+
+      const escapeHTML = s => s.replace(/[&<>"']/g, ch => (
+        {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]
+      ));
+      function highlight(text, q) {
+        const lc = text.toLowerCase();
+        const i = lc.indexOf(q);
+        if (i === -1) return escapeHTML(text);
+        return escapeHTML(text.slice(0, i)) +
+               '<mark>' + escapeHTML(text.slice(i, i+q.length)) + '</mark>' +
+               escapeHTML(text.slice(i+q.length));
+      }
+      function snippet(body, q) {
+        const lc = body.toLowerCase();
+        const i = lc.indexOf(q);
+        if (i === -1) return body.slice(0, 120);
+        const start = Math.max(0, i - 40);
+        const end = Math.min(body.length, i + q.length + 60);
+        return (start > 0 ? '\u2026' : '') + body.slice(start, end) + (end < body.length ? '\u2026' : '');
+      }
+
+      function search(rawQuery) {
+        const q = rawQuery.trim().toLowerCase();
+        if (q.length < 2) {
+          results.hidden = true;
+          results.innerHTML = '';
+          return;
+        }
+        const hits = [];
+        for (const page of corpus.pages) {
+          const titleLC = page.title.toLowerCase();
+          const descLC = (page.description || '').toLowerCase();
+          if (titleLC.includes(q)) { hits.push({page, where: 'title', section: null, score: 1}); continue; }
+          if (descLC.includes(q))  { hits.push({page, where: 'description', section: null, score: 2}); continue; }
+          let bestSection = null, bestScore = 5;
+          for (const sec of page.sections) {
+            if (sec.heading && sec.heading.toLowerCase().includes(q)) {
+              if (3 < bestScore) { bestScore = 3; bestSection = sec; }
+            } else if (sec.body && sec.body.toLowerCase().includes(q)) {
+              if (4 < bestScore) { bestScore = 4; bestSection = sec; }
+            }
+          }
+          if (bestSection) hits.push({page, where: 'section', section: bestSection, score: bestScore});
+        }
+        hits.sort((a,b) => a.score - b.score);
+
+        if (hits.length === 0) {
+          results.innerHTML = '<div class="px-4 py-3 text-sm text-slate-500">No documentation matches &ldquo;' + escapeHTML(rawQuery) + '&rdquo;.</div>';
+          results.hidden = false;
+          return;
+        }
+
+        const html = hits.slice(0, 20).map(h => {
+          const url = h.section && h.section.anchor
+            ? '/docs/' + h.page.slug + '#' + h.section.anchor
+            : '/docs/' + h.page.slug;
+          let titleHTML = highlight(h.page.title, q);
+          let excerpt;
+          if (h.where === 'title' || h.where === 'description') {
+            excerpt = highlight(snippet(h.page.description || '', q), q);
+          } else if (h.section.heading && h.section.heading.toLowerCase().includes(q)) {
+            excerpt = highlight(h.section.heading, q);
+          } else {
+            excerpt = highlight(snippet(h.section.body, q), q);
+          }
+          return '<a href="' + url + '" class="block px-4 py-3 border-b border-slate-700 last:border-0 hover:bg-slate-700/50">' +
+                 '<div class="flex items-baseline justify-between gap-3">' +
+                   '<span class="text-sm font-medium text-indigo-400">' + titleHTML + '</span>' +
+                   '<span class="text-[11px] uppercase tracking-wider text-slate-500">' + escapeHTML(h.page.category) + '</span>' +
+                 '</div>' +
+                 '<div class="text-xs text-slate-400 mt-1">' + excerpt + '</div>' +
+                 '</a>';
+        }).join('');
+        results.innerHTML = html;
+        results.hidden = false;
+      }
+
+      let timer = null;
+      input.addEventListener('input', function(){
+        clearTimeout(timer);
+        timer = setTimeout(() => search(input.value), 50);
+      });
+      input.addEventListener('focus', function(){
+        if (input.value.trim().length >= 2) results.hidden = false;
+      });
+      document.addEventListener('click', function(e){
+        if (!results.contains(e.target) && e.target !== input) results.hidden = true;
+      });
+      input.addEventListener('keydown', function(e){
+        if (e.key === 'Escape') { input.value = ''; results.hidden = true; }
+      });
+    })();
+  </script>
 </body>
 </html>
+{{end}}
+
+{{define "doc-detail"}}
+  <a href="/docs" class="text-indigo-400 hover:text-indigo-300 text-sm">&larr; All documentation</a>
+  <article id="content" class="prose prose-invert mt-4 max-w-none"></article>
+{{end}}
+
+{{define "doc-category"}}
+  <h1 class="text-2xl font-bold text-white mb-2">{{.CurrentCategory.Title}}</h1>
+  {{if .CurrentCategory.Description}}<p class="text-sm text-slate-400 mb-6">{{.CurrentCategory.Description}}</p>{{end}}
+  {{$id := .CurrentCategory.ID}}
+  {{range .Categories}}{{if eq .Category.ID $id}}
+    <ul class="space-y-2">
+      {{range .Pages}}
+        <li>
+          <a href="/docs/{{.Slug}}" class="block px-4 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors">
+            <span class="text-indigo-400 font-medium">{{.Title}}</span>
+            {{if .Description}}<span class="block text-xs text-slate-400 mt-1">{{.Description}}</span>{{end}}
+          </a>
+        </li>
+      {{end}}
+    </ul>
+  {{end}}{{end}}
+{{end}}
+
+{{define "doc-home"}}
+  <h1 class="text-2xl font-bold text-white mb-2">Documentation</h1>
+  <p class="text-sm text-slate-400 mb-8">Operating, configuring, and integrating Sieve.</p>
+  <div class="space-y-10">
+    {{range .Categories}}
+      <section>
+        <div class="flex items-baseline justify-between mb-3">
+          <h2 class="text-lg font-semibold text-white">
+            <a href="/docs/category/{{.Category.ID}}" class="hover:text-indigo-400">{{.Category.Title}}</a>
+          </h2>
+        </div>
+        {{if .Category.Description}}<p class="text-sm text-slate-400 mb-3">{{.Category.Description}}</p>{{end}}
+        <ul class="grid gap-2 sm:grid-cols-2">
+          {{range .Pages}}
+            <li>
+              <a href="/docs/{{.Slug}}" class="block h-full px-4 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-colors">
+                <span class="text-indigo-400 font-medium">{{.Title}}</span>
+                {{if .Description}}<span class="block text-xs text-slate-400 mt-1">{{.Description}}</span>{{end}}
+              </a>
+            </li>
+          {{end}}
+        </ul>
+      </section>
+    {{end}}
+  </div>
 {{end}}
