@@ -13,3 +13,6 @@ data/
 node_modules/
 test-results/
 .specify/
+specs/
+.DS_Store
+*.DS_Store

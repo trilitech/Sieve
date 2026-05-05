@@ -132,6 +132,48 @@ func TestKeyringNotLoadedSurfaces(t *testing.T) {
 	}
 }
 
+// TestKeyringRotatingSurfaces verifies that operations needing decryption
+// return secrets.ErrKeyringRotating while a rotation is in progress, so
+// callers can map directly to a 503 + Retry-After response.
+func TestKeyringRotatingSurfaces(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.New(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	registry := connector.NewRegistry()
+	mock := mockconn.New("mock")
+	registry.Register(mock.Meta(), mock.Factory())
+
+	keyring := testKeyring(t, db)
+	svc := connections.NewService(db, registry, keyring)
+
+	// Add a row first so GetWithConfig can find one when the keyring is
+	// loaded, then flip the rotating flag and verify all four sites fail
+	// fast with the typed sentinel.
+	if err := svc.Add("rot", "mock", "R", map[string]any{"k": "v"}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	keyring.SetRotatingForTest(true)
+	t.Cleanup(func() { keyring.SetRotatingForTest(false) })
+
+	if err := svc.Add("rot2", "mock", "R2", map[string]any{}); !errors.Is(err, secrets.ErrKeyringRotating) {
+		t.Fatalf("Add during rotation: want ErrKeyringRotating, got %v", err)
+	}
+	if _, err := svc.GetWithConfig("rot"); !errors.Is(err, secrets.ErrKeyringRotating) {
+		t.Fatalf("GetWithConfig during rotation: want ErrKeyringRotating, got %v", err)
+	}
+	if err := svc.UpdateConfig("rot", map[string]any{}); !errors.Is(err, secrets.ErrKeyringRotating) {
+		t.Fatalf("UpdateConfig during rotation: want ErrKeyringRotating, got %v", err)
+	}
+	if err := svc.InitAll(); !errors.Is(err, secrets.ErrKeyringRotating) {
+		t.Fatalf("InitAll during rotation: want ErrKeyringRotating, got %v", err)
+	}
+}
+
 // TestTamperedCiphertextFailsClosed corrupts the ciphertext column on disk
 // and confirms decryption returns an error rather than malformed data.
 func TestTamperedCiphertextFailsClosed(t *testing.T) {

@@ -76,21 +76,25 @@ func (s *Service) Add(id, connectorType, displayName string, config map[string]a
 	if !s.registry.HasType(connectorType) {
 		return &connector.ErrUnknownConnector{Type: connectorType}
 	}
-	if !s.keyring.IsLoaded() {
-		return secrets.ErrKeyringNotLoaded
-	}
 
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	blob, err := secrets.Encrypt(s.keyring.KEK(), configJSON)
-	if err != nil {
-		return fmt.Errorf("encrypt config: %w", err)
+	var blob *secrets.EncryptedBlob
+	if err := s.keyring.WithKEK(func(kek []byte) error {
+		b, err := secrets.Encrypt(kek, configJSON)
+		if err != nil {
+			return fmt.Errorf("encrypt config: %w", err)
+		}
+		blob = b
+		return nil
+	}); err != nil {
+		return err
 	}
 
-	_, err = s.db.DB.Exec(
+	if _, err := s.db.DB.Exec(
 		`INSERT INTO connections (
 			id, connector_type, display_name,
 			config_ciphertext, config_nonce,
@@ -101,8 +105,7 @@ func (s *Service) Add(id, connectorType, displayName string, config map[string]a
 		blob.Ciphertext, blob.Nonce,
 		blob.WrappedDEK, blob.DEKNonce, blob.Version,
 		time.Now().UTC(),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("insert connection: %w", err)
 	}
 
@@ -141,8 +144,14 @@ func (s *Service) Get(id string) (*Connection, error) {
 }
 
 // GetWithConfig returns a connection including its config (for internal use).
-// Requires the keyring to be loaded; returns secrets.ErrKeyringNotLoaded if not.
+// Requires the keyring to be loaded; returns secrets.ErrKeyringNotLoaded if
+// no passphrase has been supplied, or secrets.ErrKeyringRotating if a
+// rotation is in progress (the caller should retry).
 func (s *Service) GetWithConfig(id string) (*Connection, error) {
+	// Fail-fast keyring precondition check before the DB read so that a
+	// caller hitting a locked keyring gets the typed sentinel even when
+	// the requested row does not exist. The actual decrypt below holds
+	// the keyring mutex via WithKEK.
 	if !s.keyring.IsLoaded() {
 		return nil, secrets.ErrKeyringNotLoaded
 	}
@@ -172,12 +181,17 @@ func (s *Service) GetWithConfig(id string) (*Connection, error) {
 		c.ReauthReason = *reauthReason
 	}
 
-	configJSON, err := secrets.Decrypt(s.keyring.KEK(), &blob)
-	if err != nil {
-		return nil, fmt.Errorf("decrypt config for %q: %w", id, err)
-	}
-	if err := json.Unmarshal(configJSON, &c.Config); err != nil {
-		return nil, fmt.Errorf("unmarshal config: %w", err)
+	if err := s.keyring.WithKEK(func(kek []byte) error {
+		configJSON, err := secrets.Decrypt(kek, &blob)
+		if err != nil {
+			return fmt.Errorf("decrypt config for %q: %w", id, err)
+		}
+		if err := json.Unmarshal(configJSON, &c.Config); err != nil {
+			return fmt.Errorf("unmarshal config: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return &c, nil
@@ -215,18 +229,21 @@ func (s *Service) List() ([]Connection, error) {
 // Rotates the per-record DEK on every write — random 32 bytes is cheap and
 // avoids carrying state about whether the row's existing DEK is reusable.
 func (s *Service) UpdateConfig(id string, config map[string]any) error {
-	if !s.keyring.IsLoaded() {
-		return secrets.ErrKeyringNotLoaded
-	}
-
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	blob, err := secrets.Encrypt(s.keyring.KEK(), configJSON)
-	if err != nil {
-		return fmt.Errorf("encrypt config: %w", err)
+	var blob *secrets.EncryptedBlob
+	if err := s.keyring.WithKEK(func(kek []byte) error {
+		b, encErr := secrets.Encrypt(kek, configJSON)
+		if encErr != nil {
+			return fmt.Errorf("encrypt config: %w", encErr)
+		}
+		blob = b
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	// Clearing needs_reauth in the same statement as the config update is
@@ -398,7 +415,9 @@ func (s *Service) GetConnector(id string) (connector.Connector, error) {
 }
 
 // InitAll loads all connections from DB and creates live connector instances.
-// Requires the keyring to be loaded; returns secrets.ErrKeyringNotLoaded if not.
+// Requires the keyring to be loaded; returns secrets.ErrKeyringNotLoaded if
+// no passphrase has been supplied, or secrets.ErrKeyringRotating if a
+// rotation is in progress (the caller should retry).
 func (s *Service) InitAll() error {
 	if !s.keyring.IsLoaded() {
 		return secrets.ErrKeyringNotLoaded
@@ -426,14 +445,18 @@ func (s *Service) InitAll() error {
 			return fmt.Errorf("scan connection: %w", err)
 		}
 
-		configJSON, err := secrets.Decrypt(s.keyring.KEK(), &blob)
-		if err != nil {
-			return fmt.Errorf("decrypt config for %q: %w", id, err)
-		}
-
 		var config map[string]any
-		if err := json.Unmarshal(configJSON, &config); err != nil {
-			return fmt.Errorf("unmarshal config for %q: %w", id, err)
+		if err := s.keyring.WithKEK(func(kek []byte) error {
+			configJSON, decErr := secrets.Decrypt(kek, &blob)
+			if decErr != nil {
+				return fmt.Errorf("decrypt config for %q: %w", id, decErr)
+			}
+			if jsonErr := json.Unmarshal(configJSON, &config); jsonErr != nil {
+				return fmt.Errorf("unmarshal config for %q: %w", id, jsonErr)
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 
 		s.injectRefreshCallback(id, config)

@@ -44,6 +44,7 @@ import (
 	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/database"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
@@ -71,6 +72,9 @@ type Server struct {
 	audit                 *audit.Logger
 	settings              *settings.Service
 	scriptgen             *scriptgen.Service
+	keyring               *secrets.Keyring
+	db                    *database.DB
+	webAddr               string // host:port the admin UI listens on (Origin allow-list)
 	templates             map[string]*template.Template
 	googleCredentialsFile string
 
@@ -78,6 +82,13 @@ type Server struct {
 	oauthPending map[string]pendingOAuth // state -> pending connection info
 
 	githubApp *gitHubAppState // pending GitHub App manifest installs
+
+	// Passphrase-rotation lockout state (per-process; per FR-021).
+	// Wired into handleRotatePassphrase in Phase 4. The zero values mean
+	// "no failures recorded, not locked".
+	rotateMu        sync.Mutex
+	rotateFailures  int       // consecutive wrong-current-passphrase count
+	rotateLockedTil time.Time // zero = not locked; otherwise = cooldown end
 
 	stopCleanup     chan struct{} // closed by Close() to stop the cleanup goroutine
 	stopCleanupOnce sync.Once     // ensures Close() is safe under concurrent calls
@@ -189,6 +200,11 @@ func funcMap() template.FuncMap {
 // NewServer creates a new web UI server. It starts a background goroutine for
 // OAuth cleanup; callers MUST call (*Server).Close() when the server is no
 // longer needed (e.g. via defer or t.Cleanup) to stop the goroutine.
+//
+// keyring, db, and webAddr are required by the passphrase-rotation handler
+// (POST /settings/rotate-passphrase). keyring drives the actual rotation;
+// db is the SQL handle threaded into Keyring.Rotate; webAddr is the
+// allow-list value for the rotation form's Origin/Referer CSRF check.
 func NewServer(
 	tokensSvc *tokens.Service,
 	connsSvc *connections.Service,
@@ -200,6 +216,9 @@ func NewServer(
 	googleCredentialsFile string,
 	settingsSvc *settings.Service,
 	scriptgenSvc *scriptgen.Service,
+	keyring *secrets.Keyring,
+	db *database.DB,
+	webAddr string,
 ) *Server {
 	s := &Server{
 		tokens:                tokensSvc,
@@ -211,6 +230,9 @@ func NewServer(
 		audit:                 auditLog,
 		settings:              settingsSvc,
 		scriptgen:             scriptgenSvc,
+		keyring:               keyring,
+		db:                    db,
+		webAddr:               webAddr,
 		templates:             make(map[string]*template.Template),
 		googleCredentialsFile: googleCredentialsFile,
 		oauthPending:          make(map[string]pendingOAuth),
@@ -291,6 +313,7 @@ func (s *Server) Handler() http.Handler {
 	// Settings
 	mux.HandleFunc("GET /settings", s.handleSettings)
 	mux.HandleFunc("POST /settings", s.handleSettingsSave)
+	mux.HandleFunc("POST /settings/rotate-passphrase", s.handleRotatePassphrase)
 
 	// Script generation API
 	mux.HandleFunc("POST /api/generate-script", s.handleGenerateScript)
@@ -1449,13 +1472,25 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		maxTokens = "4096"
 	}
 
+	rotationSuccess := r.URL.Query().Get("rotated") == "1"
+	rotationCount := 0
+	if rotationSuccess {
+		// Best-effort parse; a missing or bogus count just shows zero,
+		// which the template can guard against.
+		if n, err := strconv.Atoi(r.URL.Query().Get("count")); err == nil && n >= 0 {
+			rotationCount = n
+		}
+	}
+
 	data := map[string]any{
-		"Active":        "settings",
-		"Connections":   llmConns,
-		"LLMConnection": allSettings[settings.KeyLLMConnection],
-		"LLMModel":      allSettings[settings.KeyLLMModel],
-		"LLMMaxTokens":  maxTokens,
-		"Success":       r.URL.Query().Get("saved") == "1",
+		"Active":          "settings",
+		"Connections":     llmConns,
+		"LLMConnection":   allSettings[settings.KeyLLMConnection],
+		"LLMModel":        allSettings[settings.KeyLLMModel],
+		"LLMMaxTokens":    maxTokens,
+		"Success":         r.URL.Query().Get("saved") == "1",
+		"RotationSuccess": rotationSuccess,
+		"RotationCount":   rotationCount,
 	}
 	s.render(w, "settings", data)
 }
@@ -1501,6 +1536,11 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
 			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, secrets.ErrKeyringRotating) {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "rotation in progress, retry shortly", http.StatusServiceUnavailable)
 			return
 		}
 		http.Error(w, "connection not found", http.StatusNotFound)

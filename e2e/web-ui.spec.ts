@@ -1533,3 +1533,62 @@ test.describe('Documentation IA', () => {
     expect(resp?.status()).toBe(404);
   });
 });
+
+// ─── Passphrase rotation ─────────────────────────────────────────────────────
+// Spec 003 — UI passphrase rotation. The e2e testserver boots with passphrase
+// "e2e-test-passphrase" (see e2e/testserver/main.go). The first test rotates
+// to "rotated-via-ui" and asserts that an agent credential call against the
+// running instance still succeeds without restart. Subsequent tests in this
+// describe block run against the post-rotation state; the testserver keeps
+// the new in-memory KEK so credential calls keep working.
+
+test.describe('Passphrase rotation', () => {
+  test('Rotate passphrase from settings page', async ({ page }) => {
+    // Open the settings page and confirm the rotation form is rendered
+    // alongside the existing LLM Configuration card.
+    await page.goto(`${s.web_url}/settings`);
+    await expect(page.locator('#rotate-passphrase-form')).toBeVisible();
+    await expect(page.locator('input#current_passphrase')).toBeVisible();
+    await expect(page.locator('input#new_passphrase')).toBeVisible();
+    await expect(page.locator('input#new_passphrase_confirm')).toBeVisible();
+
+    // Fill the form and submit. Use the testserver default passphrase
+    // ("e2e-test-passphrase"); rotate to a fresh value.
+    await page.fill('input#current_passphrase', 'e2e-test-passphrase');
+    await page.fill('input#new_passphrase', 'rotated-via-ui');
+    await page.fill('input#new_passphrase_confirm', 'rotated-via-ui');
+    await Promise.all([
+      page.waitForURL(/\/settings\?rotated=1&count=\d+/),
+      page.click('#rotate-passphrase-submit'),
+    ]);
+
+    // Success card MUST be visible and reference the records-rewrapped
+    // count. The seed test environment has at least one connection, so
+    // count >= 1.
+    const successText = await page.locator('div').filter({ hasText: /Passphrase rotated\.\s+\d+\s+credential record/ }).first().textContent();
+    expect(successText).toMatch(/Passphrase rotated\.\s+\d+\s+credential record/);
+
+    // Exercise an existing agent-side credential flow against the post-
+    // rotation keyring to confirm requests still succeed without restart.
+    // The seed token and a list-emails call against the mock connector
+    // are wired by the testserver — apiCall returns the JSON response.
+    const emails = await apiCall(s, 'GET', `/api/v1/connections/test-conn/ops/list_emails`, undefined, s.seed_token);
+    expect(emails).toBeTruthy();
+  });
+
+  test('Submit with confirmation mismatch shows error and does not rotate', async ({ page }) => {
+    await page.goto(`${s.web_url}/settings`);
+    // Use the post-rotation passphrase as the current; pick deliberately
+    // mismatched new + confirm fields.
+    await page.fill('input#current_passphrase', 'rotated-via-ui');
+    await page.fill('input#new_passphrase', 'attempt-A');
+    await page.fill('input#new_passphrase_confirm', 'attempt-B');
+    await page.click('#rotate-passphrase-submit');
+    // The page re-renders at /settings/rotate-passphrase with the chip;
+    // assert the confirmation-mismatch message is visible and that the
+    // URL did NOT enter the success-redirect state.
+    await expect(page).not.toHaveURL(/rotated=1/);
+    const body = await page.textContent('body');
+    expect(body).toContain('new passphrase and confirmation do not match');
+  });
+});

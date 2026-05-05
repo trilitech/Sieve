@@ -57,8 +57,17 @@ func NewLogger(db *database.DB) *Logger {
 	return &Logger{db: db}
 }
 
-// Log inserts a new entry into the audit log.
-func (l *Logger) Log(req *LogRequest) error {
+// execer is the subset of *sql.DB / *sql.Tx that audit log inserts use.
+// Both *sql.DB and *sql.Tx satisfy it — Log uses the embedded *sql.DB
+// while LogTx uses an externally-managed *sql.Tx so the audit row commits
+// or rolls back atomically with the caller's other writes (e.g., a
+// passphrase rotation).
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// doInsert is the shared insert path used by both Log and LogTx.
+func (l *Logger) doInsert(e execer, req *LogRequest) error {
 	var paramsJSON sql.NullString
 	if req.Params != nil {
 		b, err := json.Marshal(req.Params)
@@ -70,7 +79,7 @@ func (l *Logger) Log(req *LogRequest) error {
 
 	respSummary := sql.NullString{String: req.ResponseSummary, Valid: req.ResponseSummary != ""}
 
-	_, err := l.db.Exec(`
+	_, err := e.Exec(`
 		INSERT INTO audit_log (token_id, token_name, connection_id, operation, params, policy_result, response_summary, duration_ms)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.TokenID,
@@ -86,6 +95,77 @@ func (l *Logger) Log(req *LogRequest) error {
 		return fmt.Errorf("insert audit log: %w", err)
 	}
 	return nil
+}
+
+// Log inserts a new entry into the audit log using a fresh implicit
+// transaction.
+func (l *Logger) Log(req *LogRequest) error {
+	return l.doInsert(l.db, req)
+}
+
+// LogTx inserts a new entry into the audit log using the supplied
+// transaction. Used when the audit row must commit or rollback atomically
+// with other writes — e.g., the keyring.rotate row written inside the
+// rotation transaction in secrets.Keyring.Rotate.
+func (l *Logger) LogTx(tx *sql.Tx, req *LogRequest) error {
+	return l.doInsert(tx, req)
+}
+
+// RotationAuditor adapts a Logger to the secrets.RotationAuditor interface
+// so that secrets.Keyring.Rotate can write its audit row inside the
+// rotation transaction without internal/secrets importing internal/audit.
+//
+// The surface ("ui" or "cli") is recorded on every successful rotation row
+// so audit consumers can distinguish operator-initiated UI rotations from
+// scripted CLI rotations.
+type RotationAuditor struct {
+	logger  *Logger
+	surface string
+}
+
+// AsRotationAuditor returns an adapter satisfying the
+// secrets.RotationAuditor interface (declared in internal/secrets) via
+// Go's structural typing — internal/audit does not import internal/secrets.
+func (l *Logger) AsRotationAuditor(surface string) *RotationAuditor {
+	return &RotationAuditor{logger: l, surface: surface}
+}
+
+// LogRotation writes a keyring.rotate audit row using the supplied
+// transaction. Sentinel actor values (token_id="system", connection_id="-")
+// match data-model.md. Method signature matches secrets.RotationAuditor.
+func (a *RotationAuditor) LogRotation(tx *sql.Tx, recordsRewrapped int, durationMs int64) error {
+	return a.logger.LogTx(tx, &LogRequest{
+		TokenID:      "system",
+		TokenName:    "system",
+		ConnectionID: "-",
+		Operation:    "keyring.rotate",
+		Params: map[string]any{
+			"surface":           a.surface,
+			"records_rewrapped": recordsRewrapped,
+		},
+		PolicyResult: "success",
+		DurationMs:   durationMs,
+	})
+}
+
+// LogRotationLockout writes one keyring.rotate_lockout audit row using a
+// fresh transaction. Called outside any rotation transaction at the moment
+// the consecutive-failure counter triggers a lockout, per FR-022. surface
+// is "ui" for the admin-form lockout (the only surface with a lockout
+// today). threshold is the consecutive-failure count that triggered the
+// lockout.
+func (l *Logger) LogRotationLockout(surface string, threshold int) error {
+	return l.Log(&LogRequest{
+		TokenID:      "system",
+		TokenName:    "system",
+		ConnectionID: "-",
+		Operation:    "keyring.rotate_lockout",
+		Params: map[string]any{
+			"surface":   surface,
+			"threshold": threshold,
+		},
+		PolicyResult: "lockout_trigger",
+	})
 }
 
 // List returns audit log entries matching the given filter.

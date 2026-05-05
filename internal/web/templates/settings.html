@@ -29,6 +29,18 @@
       </div>
       {{end}}
 
+      {{if .RotationSuccess}}
+      <div class="mb-6 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-4 py-3">
+        <p class="text-sm text-emerald-400">Passphrase rotated. {{.RotationCount}} credential record{{if ne .RotationCount 1}}s{{end}} re-wrapped.</p>
+      </div>
+      {{end}}
+
+      {{if .RotationError}}
+      <div class="mb-6 rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3">
+        <p class="text-sm text-red-400">{{.RotationError}}</p>
+      </div>
+      {{end}}
+
       <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
         <div class="px-6 py-4 border-b border-slate-700">
           <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">LLM Configuration</h2>
@@ -75,6 +87,48 @@
             </button>
           </div>
         </form>
+      </div>
+
+      <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden mt-8">
+        <div class="px-6 py-4 border-b border-slate-700">
+          <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Security</h2>
+          <p class="text-xs text-slate-400 mt-1">Rotate the encryption passphrase that protects stored credentials. Sieve does not need to be restarted; agent calls in flight during the rotation receive a transient retry-safe error.</p>
+        </div>
+
+        <form id="rotate-passphrase-form" method="POST" action="/settings/rotate-passphrase" class="p-6 space-y-5">
+          <div>
+            <label for="current_passphrase" class="block text-sm font-medium text-slate-300 mb-1.5">Current passphrase</label>
+            <input type="password" id="current_passphrase" name="current_passphrase" autocomplete="new-password" required
+                   class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          </div>
+          <div>
+            <label for="new_passphrase" class="block text-sm font-medium text-slate-300 mb-1.5">New passphrase</label>
+            <input type="password" id="new_passphrase" name="new_passphrase" autocomplete="new-password" required
+                   class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          </div>
+          <div>
+            <label for="new_passphrase_confirm" class="block text-sm font-medium text-slate-300 mb-1.5">Confirm new passphrase</label>
+            <input type="password" id="new_passphrase_confirm" name="new_passphrase_confirm" autocomplete="new-password" required
+                   class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+          </div>
+          <div class="pt-2">
+            <button id="rotate-passphrase-submit" type="submit"
+                    class="inline-flex items-center px-4 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50">
+              Rotate passphrase
+            </button>
+          </div>
+        </form>
+        <script>
+          (function () {
+            var form = document.getElementById('rotate-passphrase-form');
+            var btn = document.getElementById('rotate-passphrase-submit');
+            if (!form || !btn) { return; }
+            form.addEventListener('submit', function () {
+              btn.disabled = true;
+              btn.textContent = 'Rotating…';
+            });
+          })();
+        </script>
       </div>
     </div>
   </main>
