@@ -188,6 +188,16 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 		}
 	}()
 
+	// --- Hourly reauth sweeper ---
+	// Polls each connection's Validate() so the needs_reauth flag stays
+	// fresh without waiting for an agent to hit a dead connection. On
+	// success, clears any stale flag (auto-recovery from transient blips).
+	// The flip-on-failure path is owned by the connector's token source —
+	// this loop just lights up the lamp earlier.
+	sweepCtx, sweepCancel := context.WithCancel(context.Background())
+	defer sweepCancel()
+	go reauthSweeper(sweepCtx, connSvc)
+
 	// --- Wait for signal or fatal listener error ---
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -221,5 +231,72 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 func zero(b []byte) {
 	for i := range b {
 		b[i] = 0
+	}
+}
+
+// reauthSweepInterval is the spacing between Validate() rounds. An hour is
+// the right magnitude: long enough that we don't pound Google/GitHub for
+// idle Sieves, short enough that a revoked token usually trips the flag
+// before the next agent call. Made small (and overridable) only as needed.
+const reauthSweepInterval = time.Hour
+
+// reauthSweeper runs Validate() against every connection on a periodic
+// loop. The loop honors ctx so a SIGTERM during shutdown stops it.
+//
+//	connector returns ErrNeedsReauth → MarkNeedsReauth (idempotent if already set).
+//	connector returns nil but the flag is set    → ClearNeedsReauth (auto-recover).
+//	connector returns some other error           → leave the flag alone (could be
+//	                                               a transient network blip; not
+//	                                               our place to declare it dead).
+//
+// First sweep runs after one interval, not at startup, so the server isn't
+// hammering external APIs in its first second of life.
+func reauthSweeper(ctx context.Context, connSvc *connections.Service) {
+	ticker := time.NewTicker(reauthSweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runReauthSweep(ctx, connSvc)
+		}
+	}
+}
+
+func runReauthSweep(ctx context.Context, connSvc *connections.Service) {
+	conns, err := connSvc.List()
+	if err != nil {
+		log.Printf("reauth sweep: list connections: %v", err)
+		return
+	}
+	for _, c := range conns {
+		conn, err := connSvc.GetConnector(c.ID)
+		if err != nil {
+			// Stale credentials, missing client_id, etc. Already-flagged
+			// connections will surface this on every call — the sweeper
+			// shouldn't double-mark.
+			continue
+		}
+		// Validate is meant to be a cheap "are we authorized?" check.
+		// Time-bound it so a stuck upstream doesn't wedge the sweeper.
+		validateCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err = conn.Validate(validateCtx)
+		cancel()
+
+		switch {
+		case errors.Is(err, connector.ErrNeedsReauth):
+			// onRefreshFailure inside the connector has already flipped the
+			// flag in the DB; this is just the safety net for connectors
+			// that don't wire the callback.
+			if !c.NeedsReauth {
+				_ = connSvc.MarkNeedsReauth(c.ID, "validate detected refresh failure")
+				log.Printf("reauth sweep: connection %q flagged: needs re-authentication", c.ID)
+			}
+		case err == nil && c.NeedsReauth:
+			_ = connSvc.ClearNeedsReauth(c.ID)
+			log.Printf("reauth sweep: connection %q recovered, clearing needs_reauth flag", c.ID)
+		}
 	}
 }

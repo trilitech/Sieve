@@ -253,6 +253,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /connections", s.handleConnections)
 	mux.HandleFunc("POST /connections/add", s.handleConnectionAdd)
 	mux.HandleFunc("POST /connections/{id}/delete", s.handleConnectionDelete)
+	mux.HandleFunc("POST /connections/{id}/reauth", s.handleConnectionReauth)
 	mux.HandleFunc("GET /oauth/callback", s.handleOAuthCallback)
 
 	// GitHub-specific setup flows
@@ -444,11 +445,19 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 // pendingOAuth holds info for a connection being added via OAuth.
+//
+// IsReauth distinguishes a fresh-add flow (insert a new connection record on
+// success) from a re-authentication of an existing connection (update the
+// existing record's config and clear needs_reauth). The handler picks one or
+// the other based on this flag — keeping it explicit avoids accidentally
+// overwriting an existing connection during a normal Add, or duplicating one
+// during a Re-auth.
 type pendingOAuth struct {
 	ID            string
 	ConnectorType string
 	DisplayName   string
 	CreatedAt     time.Time
+	IsReauth      bool
 }
 
 func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
@@ -550,6 +559,55 @@ func (s *Server) handleConnectionDelete(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
+// handleConnectionReauth kicks off the OAuth flow for an existing connection
+// whose refresh token has been invalidated. The flow re-uses the same Google
+// OAuth start (AccessTypeOffline + ApprovalForce so we get a fresh refresh
+// token, even if the user's account already grants this app). On callback,
+// we'll UpdateConfig on the existing record (which atomically clears
+// needs_reauth) instead of inserting a new one.
+//
+// Limited to Google connections today; GitHub PAT/App connections have their
+// own setup flow and would need a separate re-auth surface if their tokens
+// expire.
+func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	conn, err := s.connections.Get(id)
+	if err != nil {
+		http.Error(w, "connection not found", http.StatusNotFound)
+		return
+	}
+	if conn.ConnectorType != "google" {
+		http.Error(w, "re-auth not supported for connector type "+conn.ConnectorType, http.StatusBadRequest)
+		return
+	}
+
+	conf, err := s.googleOAuthConfig(r.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	stateBytes := make([]byte, 16)
+	if _, err := rand.Read(stateBytes); err != nil {
+		http.Error(w, "failed to generate state", http.StatusInternalServerError)
+		return
+	}
+	state := hex.EncodeToString(stateBytes)
+
+	s.oauthMu.Lock()
+	s.oauthPending[state] = pendingOAuth{
+		ID:            id,
+		ConnectorType: conn.ConnectorType,
+		DisplayName:   conn.DisplayName,
+		CreatedAt:     time.Now(),
+		IsReauth:      true,
+	}
+	s.oauthMu.Unlock()
+
+	url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
 // --- OAuth handlers ---
 
 func (s *Server) googleOAuthConfig(host string) (*oauth2.Config, error) {
@@ -649,15 +707,66 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		"client_secret": conf.ClientSecret,
 	}
 
-	// NOW save the connection — only after OAuth succeeded and we have
-	// verified credentials. This is the commit point: if anything above
-	// failed, no connection record exists and the user can try again cleanly.
-	if err := s.connections.Add(pending.ID, pending.ConnectorType, pending.DisplayName, connConfig); err != nil {
-		http.Error(w, fmt.Sprintf("failed to save connection: %v", err), http.StatusInternalServerError)
-		return
+	// Commit point. For a fresh add, INSERT; for a re-auth, UPDATE the
+	// existing record (which atomically clears needs_reauth in the same
+	// statement). If anything above failed, no DB write happens — the user
+	// retries from the connections page either way.
+	if pending.IsReauth {
+		// Identity guard: if the operator picked a different Google account
+		// in the consent screen than the one the connection was originally
+		// bound to, refuse the swap. Otherwise the display_name still says
+		// e.g. "C1.org gmail" but the underlying mailbox is now the user's
+		// personal account — and any policy keyed on email is silently
+		// wrong. Better to abort and make them retry with the right account.
+		existing, gerr := s.connections.GetWithConfig(pending.ID)
+		if gerr != nil {
+			http.Error(w, fmt.Sprintf("re-auth: load existing connection: %v", gerr), http.StatusInternalServerError)
+			return
+		}
+		if err := matchesReauthIdentity(existing, profile.EmailAddress); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := s.connections.UpdateConfig(pending.ID, connConfig); err != nil {
+			http.Error(w, fmt.Sprintf("failed to update connection: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		if err := s.connections.Add(pending.ID, pending.ConnectorType, pending.DisplayName, connConfig); err != nil {
+			http.Error(w, fmt.Sprintf("failed to save connection: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
+// matchesReauthIdentity returns nil if the OAuth consent that just completed
+// is for the same Google account the connection was originally bound to, or
+// a descriptive error if it isn't. Comparison is case-insensitive (Google
+// addresses are case-insensitive in the local part too in practice).
+//
+// The check exists because the re-auth flow uses oauth2.ApprovalForce — the
+// operator is shown the Google account chooser and could pick a different
+// one. Without this guard, an honest mistake silently rebinds the connection
+// to a different mailbox while the display_name and bindings keep pointing
+// at the old identity.
+//
+// If the existing config has no email at all (a state we don't currently
+// produce, but might in tests or after a future schema change), allow the
+// update — there's nothing to compare against.
+func matchesReauthIdentity(existing *connections.Connection, newEmail string) error {
+	existingEmail, _ := existing.Config["email"].(string)
+	if existingEmail == "" {
+		return nil
+	}
+	if !strings.EqualFold(existingEmail, newEmail) {
+		return fmt.Errorf(
+			"re-auth identity mismatch: connection is bound to %q but you signed in as %q. Click Re-authenticate again and pick %q in the Google account chooser. (To switch a connection to a different Google account, delete it and add it fresh.)",
+			existingEmail, newEmail, existingEmail,
+		)
+	}
+	return nil
 }
 
 // oauthPendingCleanupLoop runs until Close() is called, deleting oauthPending

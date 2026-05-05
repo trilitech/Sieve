@@ -25,6 +25,7 @@ package gmail
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -65,19 +66,49 @@ type GoogleConnector struct {
 	email          string
 }
 
-// persistingTokenSource wraps an oauth2.TokenSource and calls a callback
-// whenever a new token is obtained (i.e., after a refresh). This allows
-// the refreshed credentials to be persisted back to the database so they
-// survive server restarts without triggering another refresh cycle.
+// persistingTokenSource wraps an oauth2.TokenSource and calls callbacks for
+// the two outcomes that matter to Sieve's persistence layer:
+//
+//   - onRefresh: a refresh succeeded. Persist the new token to the DB so
+//     server restarts don't burn a fresh refresh on every startup.
+//   - onRefreshFailure: a refresh failed irrecoverably (invalid_grant et al.).
+//     Mark the connection needs_reauth so the UI surfaces it and future
+//     calls return a structured error instead of opaque 500s.
 type persistingTokenSource struct {
-	base     oauth2.TokenSource
-	lastHash string // hash of last seen access_token to detect changes
-	onRefresh func(token *oauth2.Token)
+	base             oauth2.TokenSource
+	lastHash         string // last seen access_token, to detect actual refreshes
+	onRefresh        func(token *oauth2.Token)
+	onRefreshFailure func(reason string)
+}
+
+// reauthErrorCodes lists the OAuth2 RetrieveError.ErrorCode values that
+// indicate the refresh token itself is dead — re-authentication is the only
+// fix. Other errors (network blips, 5xx upstream, malformed responses) are
+// transient and shouldn't flip the needs_reauth flag.
+var reauthErrorCodes = map[string]bool{
+	"invalid_grant":       true, // user revoked, refresh expired/rotated, or password change
+	"unauthorized_client": true, // client config changed after the token was issued
+	"invalid_client":      true, // client_id/secret no longer valid for this token
 }
 
 func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
 	tok, err := p.base.Token()
 	if err != nil {
+		// Inspect the error: if it's an OAuth refresh failure with a code
+		// that means "the refresh token is dead", flip needs_reauth and
+		// return the wrapped sentinel so callers (router, sweeper, MCP)
+		// can map it to a structured "please re-authenticate" response.
+		var rerr *oauth2.RetrieveError
+		if errors.As(err, &rerr) && reauthErrorCodes[rerr.ErrorCode] {
+			if p.onRefreshFailure != nil {
+				reason := rerr.ErrorCode
+				if rerr.ErrorDescription != "" {
+					reason = rerr.ErrorCode + ": " + rerr.ErrorDescription
+				}
+				p.onRefreshFailure(reason)
+			}
+			return nil, fmt.Errorf("%w: %s", connector.ErrNeedsReauth, rerr.ErrorCode)
+		}
 		return nil, err
 	}
 	// Detect if the token changed (refresh happened).
@@ -126,13 +157,16 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		}
 		base := oauthConf.TokenSource(context.Background(), token)
 
-		// Wrap with persistence callback if provided. This allows the
-		// connections service to persist refreshed tokens back to the DB.
+		// Wrap with persistence callbacks if provided. The connections
+		// service registers both: onRefresh persists rotated tokens,
+		// onRefreshFailure flips the needs_reauth flag.
 		onRefresh, _ := config["_on_token_refresh"].(func(*oauth2.Token))
+		onRefreshFailure, _ := config["_on_token_refresh_failure"].(func(string))
 		tokenSource = &persistingTokenSource{
-			base:      base,
-			lastHash:  token.AccessToken,
-			onRefresh: onRefresh,
+			base:             base,
+			lastHash:         token.AccessToken,
+			onRefresh:        onRefresh,
+			onRefreshFailure: onRefreshFailure,
 		}
 	} else {
 		tokenSource = oauth2.StaticTokenSource(token)
