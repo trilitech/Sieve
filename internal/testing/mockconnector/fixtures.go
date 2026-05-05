@@ -3,10 +3,10 @@
 package mockconnector
 
 // GmailListEmails returns a realistic Gmail list_emails response matching the
-// SearchResult format from internal/gmail/client.go. Contains emails from
-// different senders, with different labels, subjects, and body content so
-// policy filter tests can verify from-matching, label-matching, content
-// exclusion, and redaction.
+// SearchResult/EmailStub format from internal/gmail/client.go. Stubs only —
+// no body, no attachments, no body_html. Mirrors what real Gmail-MCP servers
+// return from search/list operations. Tests that need to filter on body
+// content should use GmailReadEmail and the read_email operation instead.
 func GmailListEmails() map[string]any {
 	return map[string]any{
 		"emails": []any{
@@ -16,11 +16,9 @@ func GmailListEmails() map[string]any {
 				"from":      "alice@company.com",
 				"to":        []string{"me@company.com"},
 				"subject":   "Q3 Revenue Report",
-				"body":      "Revenue for Q3 was $4.2M. SSN on file: 123-45-6789. Contact: alice@company.com",
 				"labels":    []string{"INBOX", "project-x"},
 				"snippet":   "Revenue for Q3 was $4.2M...",
 				"date":      "2026-03-15T10:30:00Z",
-				"has_attachment": false,
 			},
 			map[string]any{
 				"id":        "msg-002",
@@ -28,11 +26,9 @@ func GmailListEmails() map[string]any {
 				"from":      "bob@external.com",
 				"to":        []string{"me@company.com"},
 				"subject":   "CONFIDENTIAL: Merger Details",
-				"body":      "CONFIDENTIAL: The merger with Acme Corp will close on April 1. Credit card: 4111-1111-1111-1111",
 				"labels":    []string{"INBOX"},
 				"snippet":   "CONFIDENTIAL: The merger with Acme...",
 				"date":      "2026-03-14T09:00:00Z",
-				"has_attachment": true,
 			},
 			map[string]any{
 				"id":        "msg-003",
@@ -40,11 +36,9 @@ func GmailListEmails() map[string]any {
 				"from":      "newsletter@spam.com",
 				"to":        []string{"me@company.com"},
 				"subject":   "You won a prize!",
-				"body":      "Click here to claim your prize. This is definitely not spam.",
 				"labels":    []string{"SPAM"},
 				"snippet":   "Click here to claim...",
 				"date":      "2026-03-13T15:00:00Z",
-				"has_attachment": false,
 			},
 			map[string]any{
 				"id":        "msg-004",
@@ -52,11 +46,9 @@ func GmailListEmails() map[string]any {
 				"from":      "cfo@company.com",
 				"to":        []string{"me@company.com"},
 				"subject":   "Salary Adjustments - PRIVATE",
-				"body":      "Employee salaries: Alice $150K, Bob $140K. SSN: 987-65-4321. PRIVATE information.",
 				"labels":    []string{"INBOX", "finance"},
 				"snippet":   "Employee salaries...",
 				"date":      "2026-03-12T11:00:00Z",
-				"has_attachment": false,
 			},
 			map[string]any{
 				"id":        "msg-005",
@@ -64,11 +56,9 @@ func GmailListEmails() map[string]any {
 				"from":      "devops@company.com",
 				"to":        []string{"me@company.com"},
 				"subject":   "Deployment complete",
-				"body":      "Deployed v2.1.0 to production. All health checks passing.",
 				"labels":    []string{"INBOX", "project-x"},
 				"snippet":   "Deployed v2.1.0 to production...",
 				"date":      "2026-03-11T16:00:00Z",
-				"has_attachment": false,
 			},
 		},
 		"total":           float64(5),

@@ -161,73 +161,83 @@ func TestE2E_Story225_ExcludeByKeyword(t *testing.T) {
 }
 
 // --- Story 226: Redact SSN patterns from email content ---
+// Bodies live on read_email, not list_emails — list returns stubs. So SSN
+// redaction is exercised against read_email, where the body is fetched.
 func TestE2E_Story226_RedactSSN(t *testing.T) {
 	url, tok := setupWithFixtures(t, map[string]any{
 		"rules": []any{
 			map[string]any{
-				"match":          map[string]any{"operations": []any{"list_emails"}},
-				"action":         "filter",
+				"match":           map[string]any{"operations": []any{"read_email"}},
+				"action":          "filter",
 				"redact_patterns": []any{`\d{3}-\d{2}-\d{4}`},
 			},
 		},
 		"default_action": "deny",
 	})
 
-	status, body := apiPost(t, url+"/api/v1/connections/gmail-conn/ops/list_emails", tok, `{}`)
+	status, body := apiPost(t, url+"/api/v1/connections/gmail-conn/ops/read_email", tok, `{"message_id":"msg-001"}`)
 	if status != 200 {
 		t.Fatalf("expected 200, got %d", status)
 	}
 
-	// The response JSON should have SSNs redacted.
 	respJSON, _ := json.Marshal(body)
 	respStr := string(respJSON)
 
 	if strings.Contains(respStr, "123-45-6789") {
 		t.Fatal("SSN 123-45-6789 should have been redacted")
 	}
-	if strings.Contains(respStr, "987-65-4321") {
-		t.Fatal("SSN 987-65-4321 should have been redacted")
-	}
 	if !strings.Contains(respStr, "[REDACTED]") {
 		t.Fatal("expected [REDACTED] placeholder in response")
 	}
 
-	// All 5 emails should still be present (redaction doesn't remove items).
-	emails := body["emails"].([]any)
-	if len(emails) != 5 {
-		t.Fatalf("expected 5 emails (redaction not exclusion), got %d", len(emails))
+	// Email itself still returned.
+	if body["id"] != "msg-001" {
+		t.Fatalf("expected id=msg-001 preserved, got %v", body["id"])
 	}
 }
 
 // --- Story 228: Both exclude and redact on the same rule ---
+// Exercised across two ops since stubs don't carry bodies: filter_exclude on
+// list_emails matches "PRIVATE" in the subject (still in the stub) and drops
+// msg-004; redact_patterns on read_email then strips the SSN from the body.
 func TestE2E_Story228_ExcludeAndRedact(t *testing.T) {
 	url, tok := setupWithFixtures(t, map[string]any{
 		"rules": []any{
 			map[string]any{
-				"match":           map[string]any{"operations": []any{"list_emails"}},
+				"match":          map[string]any{"operations": []any{"list_emails"}},
+				"action":         "filter",
+				"filter_exclude": "PRIVATE",
+			},
+			map[string]any{
+				"match":           map[string]any{"operations": []any{"read_email"}},
 				"action":          "filter",
-				"filter_exclude":  "PRIVATE",
 				"redact_patterns": []any{`\d{3}-\d{2}-\d{4}`},
 			},
 		},
 		"default_action": "deny",
 	})
 
-	status, body := apiPost(t, url+"/api/v1/connections/gmail-conn/ops/list_emails", tok, `{}`)
+	status, listBody := apiPost(t, url+"/api/v1/connections/gmail-conn/ops/list_emails", tok, `{}`)
 	if status != 200 {
-		t.Fatalf("expected 200, got %d", status)
+		t.Fatalf("list_emails: expected 200, got %d", status)
 	}
-
-	emails := body["emails"].([]any)
-	// msg-004 excluded (contains "PRIVATE"), remaining 4 emails have SSNs redacted.
+	emails := listBody["emails"].([]any)
 	if len(emails) != 4 {
-		t.Fatalf("expected 4 emails, got %d", len(emails))
+		t.Fatalf("expected 4 emails after PRIVATE exclusion, got %d", len(emails))
+	}
+	for _, e := range emails {
+		if e.(map[string]any)["id"] == "msg-004" {
+			t.Fatal("msg-004 (PRIVATE in subject) should have been excluded from list")
+		}
 	}
 
-	respJSON, _ := json.Marshal(body)
-	respStr := string(respJSON)
-	if strings.Contains(respStr, "123-45-6789") {
-		t.Fatal("SSN should have been redacted in remaining emails")
+	status, readBody := apiPost(t, url+"/api/v1/connections/gmail-conn/ops/read_email", tok, `{"message_id":"msg-001"}`)
+	if status != 200 {
+		t.Fatalf("read_email: expected 200, got %d", status)
+	}
+	respStr, _ := json.Marshal(readBody)
+	if strings.Contains(string(respStr), "123-45-6789") {
+		t.Fatal("SSN should have been redacted in the read_email response")
 	}
 }
 
@@ -413,11 +423,12 @@ func TestE2E_Story368_ToFilter(t *testing.T) {
 }
 
 // --- Story 227: Redact credit card numbers ---
+// Credit-card numbers live in the body, which is only fetched by read_email.
 func TestE2E_Story227_RedactCreditCards(t *testing.T) {
 	url, tok := setupWithFixtures(t, map[string]any{
 		"rules": []any{
 			map[string]any{
-				"match":           map[string]any{"operations": []any{"list_emails"}},
+				"match":           map[string]any{"operations": []any{"read_email"}},
 				"action":          "filter",
 				"redact_patterns": []any{`\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}`},
 			},
@@ -425,7 +436,7 @@ func TestE2E_Story227_RedactCreditCards(t *testing.T) {
 		"default_action": "deny",
 	})
 
-	status, body := apiPost(t, url+"/api/v1/connections/gmail-conn/ops/list_emails", tok, `{}`)
+	status, body := apiPost(t, url+"/api/v1/connections/gmail-conn/ops/read_email", tok, `{"message_id":"msg-001"}`)
 	if status != 200 {
 		t.Fatalf("expected 200, got %d", status)
 	}
@@ -433,11 +444,11 @@ func TestE2E_Story227_RedactCreditCards(t *testing.T) {
 	respJSON, _ := json.Marshal(body)
 	respStr := string(respJSON)
 
-	if strings.Contains(respStr, "4111-1111-1111-1111") {
-		t.Fatal("credit card number should have been redacted")
-	}
 	if strings.Contains(respStr, "4532-1234-5678-9012") {
-		t.Fatal("second credit card should have been redacted from read_email fixture")
+		t.Fatal("credit card in read_email body should have been redacted")
+	}
+	if !strings.Contains(respStr, "[REDACTED]") {
+		t.Fatal("expected [REDACTED] placeholder in response")
 	}
 }
 
@@ -507,22 +518,22 @@ func TestE2E_Story169_AllowListReadDenySend(t *testing.T) {
 	if len(emails) != 5 {
 		t.Fatalf("expected 5 emails, got %d", len(emails))
 	}
-	// Verify realistic fields on first email.
+	// Verify stub fields on first email (list returns stubs — no body here).
 	first := emails[0].(map[string]any)
 	if first["from"] == nil || first["from"] == "" {
-		t.Fatal("expected 'from' field on email")
+		t.Fatal("expected 'from' field on email stub")
 	}
 	if first["to"] == nil {
-		t.Fatal("expected 'to' field on email")
+		t.Fatal("expected 'to' field on email stub")
 	}
 	if first["subject"] == nil || first["subject"] == "" {
-		t.Fatal("expected 'subject' field on email")
+		t.Fatal("expected 'subject' field on email stub")
 	}
-	if first["body"] == nil || first["body"] == "" {
-		t.Fatal("expected 'body' field on email")
+	if _, hasBody := first["body"]; hasBody {
+		t.Fatal("list_emails stub should NOT include 'body' — call read_email for bodies")
 	}
 
-	// read_email → 200, verify single email fields.
+	// read_email → 200, verify single email fields including body.
 	status, body = apiPost(t, url+"/api/v1/connections/gmail-conn/ops/read_email", tok, `{"message_id":"msg-001"}`)
 	if status != 200 {
 		t.Fatalf("expected 200 for read_email, got %d: %v", status, body)
@@ -535,6 +546,9 @@ func TestE2E_Story169_AllowListReadDenySend(t *testing.T) {
 	}
 	if body["from"] != "alice@company.com" {
 		t.Fatalf("expected from 'alice@company.com', got %v", body["from"])
+	}
+	if body["body"] == nil || body["body"] == "" {
+		t.Fatal("expected non-empty 'body' on read_email response")
 	}
 
 	// send_email → 403.
@@ -672,13 +686,14 @@ func TestE2E_Story88_230_CompositePolicyRedactAndDeny(t *testing.T) {
 
 	env.Mock.SetResponse("list_emails", mockconn.GmailListEmails())
 
-	// Policy A: allows list_emails with SSN redaction.
-	polA, err := env.Policies.Create("allow-list-redact", "rules", map[string]any{
+	// Policy A: allows list_emails with a content filter that drops "spam".
+	// (SSN-style body redaction lives on read_email now — list returns stubs.)
+	polA, err := env.Policies.Create("allow-list-filter", "rules", map[string]any{
 		"rules": []any{
 			map[string]any{
-				"match":           map[string]any{"operations": []any{"list_emails"}},
-				"action":          "filter",
-				"redact_patterns": []any{`\d{3}-\d{2}-\d{4}`},
+				"match":          map[string]any{"operations": []any{"list_emails"}},
+				"action":         "filter",
+				"filter_exclude": "spam",
 			},
 		},
 		"default_action": "deny",
@@ -724,22 +739,18 @@ func TestE2E_Story88_230_CompositePolicyRedactAndDeny(t *testing.T) {
 	srv := httptest.NewServer(router.Handler())
 	t.Cleanup(srv.Close)
 
-	// list_emails → 200 with SSNs redacted.
+	// list_emails → 200 with the spammy email filtered out.
 	status, body := apiPost(t, srv.URL+"/api/v1/connections/gmail-conn/ops/list_emails", tokResult.PlaintextToken, `{}`)
 	if status != 200 {
 		t.Fatalf("expected 200 for list_emails, got %d: %v", status, body)
 	}
-
-	respJSON, _ := json.Marshal(body)
-	respStr := string(respJSON)
-	if strings.Contains(respStr, "123-45-6789") {
-		t.Fatal("SSN 123-45-6789 should have been redacted")
-	}
-	if strings.Contains(respStr, "987-65-4321") {
-		t.Fatal("SSN 987-65-4321 should have been redacted")
-	}
-	if !strings.Contains(respStr, "[REDACTED]") {
-		t.Fatal("expected [REDACTED] placeholder in response")
+	emails := body["emails"].([]any)
+	for _, e := range emails {
+		em := e.(map[string]any)
+		emailJSON, _ := json.Marshal(em)
+		if strings.Contains(strings.ToLower(string(emailJSON)), "spam") {
+			t.Fatalf("email %v should have been excluded by composite policy filter", em["id"])
+		}
 	}
 
 	// send_email → 403.

@@ -9,19 +9,23 @@ const GmailTemplate = `
 Available operations: list_emails, read_email, read_thread, create_draft, update_draft,
 send_email, send_draft, reply, add_label, remove_label, archive, list_labels, get_attachment
 
-### Email object fields (available in post-phase response):
+### Email stub (returned by list_emails — headers only, NO body):
 - id: string
 - thread_id: string
 - from: string (email address)
 - to: []string
 - cc: []string
 - subject: string
-- body: string (plain text)
-- body_html: string
 - date: string (RFC3339)
 - labels: []string (e.g., ["INBOX", "IMPORTANT", "project-x"])
-- snippet: string (preview text)
+- snippet: string (short preview text)
+
+### Full email (returned by read_email and read_thread — includes body):
+- All stub fields, plus:
+- body: string (plain text)
+- body_html: string
 - has_attachment: bool
+- attachments: []{id, filename, mime_type, size}
 
 ### Pre-phase metadata (same as params):
 - For list_emails: {"query": "search string", "max_results": int}
@@ -30,8 +34,9 @@ send_email, send_draft, reply, add_label, remove_label, archive, list_labels, ge
 
 ### Post-phase metadata:
 - {"phase": "post", "response": "<JSON string of email or list>"}
-- For list_emails response: {"emails": [...email objects...], "total": int, "next_page_token": "..."}
-- For read_email response: single email object
+- For list_emails response: {"emails": [...stubs...], "total": int, "next_page_token": "..."}
+  (stubs only — to inspect a body in a script, look at read_email responses instead)
+- For read_email response: single full email object with body
 
 ### Example script (filter emails by sender domain):
 ` + "```python" + `

@@ -11,7 +11,8 @@ import (
 	"google.golang.org/api/gmail/v1"
 )
 
-// Email represents a parsed Gmail message.
+// Email represents a parsed Gmail message with full body and attachment data.
+// Returned by GetEmail and GetThread (the read-style operations).
 type Email struct {
 	ID            string    `json:"id"`
 	ThreadID      string    `json:"thread_id"`
@@ -26,6 +27,23 @@ type Email struct {
 	Snippet       string    `json:"snippet"`
 	HasAttachment bool              `json:"has_attachment"`
 	Attachments   []AttachmentMeta  `json:"attachments,omitempty"`
+}
+
+// EmailStub is the lightweight shape returned by ListEmails. It deliberately
+// omits body, body_html, and attachment data so list responses fit in agent
+// context windows. Mirrors the convention used by every popular Gmail MCP
+// server: list returns stubs, get returns the full payload. To read a body,
+// follow up with GetEmail (the "read_email" operation).
+type EmailStub struct {
+	ID       string    `json:"id"`
+	ThreadID string    `json:"thread_id"`
+	From     string    `json:"from,omitempty"`
+	To       []string  `json:"to,omitempty"`
+	Cc       []string  `json:"cc,omitempty"`
+	Subject  string    `json:"subject,omitempty"`
+	Date     time.Time `json:"date,omitempty"`
+	Labels   []string  `json:"labels,omitempty"`
+	Snippet  string    `json:"snippet,omitempty"`
 }
 
 // AttachmentMeta is lightweight attachment info included in email responses
@@ -81,11 +99,12 @@ type SearchQuery struct {
 	PageToken  string
 }
 
-// SearchResult contains the results of an email search.
+// SearchResult contains the results of an email search. Emails are returned
+// as stubs (no body) — call GetEmail to fetch a single message in full.
 type SearchResult struct {
-	Emails        []Email `json:"emails"`
-	NextPageToken string  `json:"next_page_token,omitempty"`
-	Total         int64   `json:"total"`
+	Emails        []EmailStub `json:"emails"`
+	NextPageToken string      `json:"next_page_token,omitempty"`
+	Total         int64       `json:"total"`
 }
 
 // Client wraps the Gmail API for a single account.
@@ -102,7 +121,17 @@ func NewClient(service *gmail.Service, userEmail string) *Client {
 	}
 }
 
-// ListEmails searches/lists emails using the Gmail API.
+// stubMetadataHeaders is the allowlist of headers fetched per message in
+// ListEmails. Gmail's `metadata` format returns ALL headers by default,
+// which on noisy mailboxes (DKIM, ARC, Received chains) can still be 5–10 KB
+// per message. Restricting to this allowlist keeps each stub well under 1 KB
+// while preserving every field an agent typically needs to triage results.
+var stubMetadataHeaders = []string{"From", "To", "Cc", "Subject", "Date", "Message-ID"}
+
+// ListEmails searches/lists emails using the Gmail API. The returned stubs
+// contain only id, thread_id, snippet, labels, and the headers in
+// stubMetadataHeaders — no body, no body_html, no attachments. To fetch the
+// full content of a single message, call GetEmail.
 func (c *Client) ListEmails(ctx context.Context, query SearchQuery) (*SearchResult, error) {
 	maxResults := query.MaxResults
 	if maxResults == 0 {
@@ -131,11 +160,15 @@ func (c *Client) ListEmails(ctx context.Context, query SearchQuery) (*SearchResu
 	}
 
 	for _, msg := range resp.Messages {
-		full, err := c.service.Users.Messages.Get("me", msg.Id).Context(ctx).Format("full").Do()
+		stub, err := c.service.Users.Messages.Get("me", msg.Id).
+			Context(ctx).
+			Format("metadata").
+			MetadataHeaders(stubMetadataHeaders...).
+			Do()
 		if err != nil {
 			return nil, fmt.Errorf("gmail: getting message %s: %w", msg.Id, err)
 		}
-		result.Emails = append(result.Emails, parseEmail(full))
+		result.Emails = append(result.Emails, parseEmailStub(stub))
 	}
 
 	return result, nil
@@ -378,6 +411,38 @@ func findAttachmentMeta(part *gmail.MessagePart, attachmentID string, att *Attac
 	for _, p := range part.Parts {
 		findAttachmentMeta(p, attachmentID, att)
 	}
+}
+
+// parseEmailStub extracts only the fields an EmailStub carries — id,
+// thread_id, the allowlisted headers, snippet, and label IDs. Skips body
+// extraction and attachment walking; the Gmail API call that produced `msg`
+// uses Format("metadata") so part data isn't present anyway.
+func parseEmailStub(msg *gmail.Message) EmailStub {
+	stub := EmailStub{
+		ID:       msg.Id,
+		ThreadID: msg.ThreadId,
+		Labels:   msg.LabelIds,
+		Snippet:  msg.Snippet,
+	}
+	if msg.Payload != nil {
+		for _, h := range msg.Payload.Headers {
+			switch strings.ToLower(h.Name) {
+			case "from":
+				stub.From = h.Value
+			case "to":
+				stub.To = parseAddressList(h.Value)
+			case "cc":
+				stub.Cc = parseAddressList(h.Value)
+			case "subject":
+				stub.Subject = h.Value
+			case "date":
+				if t, err := mail.ParseDate(h.Value); err == nil {
+					stub.Date = t
+				}
+			}
+		}
+	}
+	return stub
 }
 
 // parseEmail extracts headers and body from a Gmail API message.

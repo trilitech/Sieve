@@ -231,17 +231,17 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 	return []connector.OperationDef{
 		{
 			Name:        "list_emails",
-			Description: "Search and list emails using Gmail query syntax",
+			Description: "Search and list emails using Gmail query syntax. Returns lightweight stubs (id, thread_id, snippet, labels, and the From/To/Cc/Subject/Date/Message-ID headers) — no body, no attachments. Call read_email to fetch the full content of a specific message. This keeps list responses small enough to fit in agent context windows even with max_results=100.",
 			Params: map[string]connector.ParamDef{
-				"query":       {Type: "string", Description: "Gmail search query string", Required: false},
-				"max_results": {Type: "int", Description: "Maximum number of results to return", Required: false},
+				"query":       {Type: "string", Description: "Gmail search query string (same syntax as the Gmail web UI search box)", Required: false},
+				"max_results": {Type: "int", Description: "Maximum number of results to return (default 100, max 500)", Required: false},
 				"page_token":  {Type: "string", Description: "Page token for pagination", Required: false},
 			},
 			ReadOnly: true,
 		},
 		{
 			Name:        "read_email",
-			Description: "Read a single email by message ID",
+			Description: "Read a single email by message ID, returning full headers, plain-text body, HTML body, and attachment metadata",
 			Params: map[string]connector.ParamDef{
 				"message_id": {Type: "string", Description: "The ID of the message to read", Required: true},
 			},

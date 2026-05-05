@@ -276,13 +276,14 @@ func (m *Mock) Execute(_ context.Context, op string, params map[string]any) (any
 
 	// --- Gmail defaults ---
 	case "list_emails":
+		// Stub shape — no body, no attachments. Mirrors the real Gmail
+		// connector's EmailStub. Bodies live on read_email.
 		return map[string]any{
 			"emails": []any{
 				map[string]any{
 					"id": "msg1", "thread_id": "t1", "from": "sender@test.com",
 					"to": []string{"me@test.com"}, "subject": "Test Email",
-					"body": "Hello world", "labels": []string{"INBOX"},
-					"snippet": "Hello world", "has_attachment": false,
+					"labels": []string{"INBOX"}, "snippet": "Hello world",
 				},
 			},
 			"total":           1,
