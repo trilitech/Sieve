@@ -712,6 +712,21 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	// statement). If anything above failed, no DB write happens — the user
 	// retries from the connections page either way.
 	if pending.IsReauth {
+		// Identity guard: if the operator picked a different Google account
+		// in the consent screen than the one the connection was originally
+		// bound to, refuse the swap. Otherwise the display_name still says
+		// e.g. "C1.org gmail" but the underlying mailbox is now the user's
+		// personal account — and any policy keyed on email is silently
+		// wrong. Better to abort and make them retry with the right account.
+		existing, gerr := s.connections.GetWithConfig(pending.ID)
+		if gerr != nil {
+			http.Error(w, fmt.Sprintf("re-auth: load existing connection: %v", gerr), http.StatusInternalServerError)
+			return
+		}
+		if err := matchesReauthIdentity(existing, profile.EmailAddress); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if err := s.connections.UpdateConfig(pending.ID, connConfig); err != nil {
 			http.Error(w, fmt.Sprintf("failed to update connection: %v", err), http.StatusInternalServerError)
 			return
@@ -724,6 +739,34 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
+// matchesReauthIdentity returns nil if the OAuth consent that just completed
+// is for the same Google account the connection was originally bound to, or
+// a descriptive error if it isn't. Comparison is case-insensitive (Google
+// addresses are case-insensitive in the local part too in practice).
+//
+// The check exists because the re-auth flow uses oauth2.ApprovalForce — the
+// operator is shown the Google account chooser and could pick a different
+// one. Without this guard, an honest mistake silently rebinds the connection
+// to a different mailbox while the display_name and bindings keep pointing
+// at the old identity.
+//
+// If the existing config has no email at all (a state we don't currently
+// produce, but might in tests or after a future schema change), allow the
+// update — there's nothing to compare against.
+func matchesReauthIdentity(existing *connections.Connection, newEmail string) error {
+	existingEmail, _ := existing.Config["email"].(string)
+	if existingEmail == "" {
+		return nil
+	}
+	if !strings.EqualFold(existingEmail, newEmail) {
+		return fmt.Errorf(
+			"re-auth identity mismatch: connection is bound to %q but you signed in as %q. Click Re-authenticate again and pick %q in the Google account chooser. (To switch a connection to a different Google account, delete it and add it fresh.)",
+			existingEmail, newEmail, existingEmail,
+		)
+	}
+	return nil
 }
 
 // oauthPendingCleanupLoop runs until Close() is called, deleting oauthPending
