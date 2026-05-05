@@ -28,6 +28,7 @@ import (
 	"github.com/trilitech/Sieve/internal/approval"
 	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
+	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
@@ -192,6 +193,15 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Pre-flight: if the connection is already flagged needs_reauth, fail
+	// fast with a structured response so the agent's wrapper can surface the
+	// re-auth URL to its human. Saves us building the connector and running
+	// policy only to fail at Token() inside Execute.
+	if c, err := rt.connections.Get(connID); err == nil && c.NeedsReauth {
+		writeReauthError(w, connID, c.ReauthReason)
+		return
+	}
+
 	// Parse params from body (POST) or query string (GET).
 	var params map[string]any
 	if r.Method == http.MethodPost {
@@ -252,6 +262,14 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		result, err := conn.Execute(r.Context(), operation, params)
 		if err != nil {
 			rt.logAudit(tok, connID, operation, params, "allow(error)", "", time.Since(start).Milliseconds())
+			if errors.Is(err, connector.ErrNeedsReauth) {
+				reason := err.Error()
+				if c, e := rt.connections.Get(connID); e == nil && c.ReauthReason != "" {
+					reason = c.ReauthReason
+				}
+				writeReauthError(w, connID, reason)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", err))
 			return
 		}
@@ -314,6 +332,14 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		result, err := conn.Execute(r.Context(), operation, params)
 		if err != nil {
 			rt.logAudit(tok, connID, operation, params, "approved(error)", "", time.Since(start).Milliseconds())
+			if errors.Is(err, connector.ErrNeedsReauth) {
+				reason := err.Error()
+				if c, e := rt.connections.Get(connID); e == nil && c.ReauthReason != "" {
+					reason = c.ReauthReason
+				}
+				writeReauthError(w, connID, reason)
+				return
+			}
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", err))
 			return
 		}
@@ -531,6 +557,22 @@ func writeConnectionError(w http.ResponseWriter, defaultStatus int, defaultMessa
 	writeError(w, defaultStatus, defaultMessage)
 }
 
+// writeReauthError emits the structured response that points an agent (and
+// the human reading the agent's tool output) at the re-authentication URL.
+// Used both pre-flight (the needs_reauth flag is already set) and post-flight
+// (Execute returned ErrNeedsReauth, which means the flag was just set).
+func writeReauthError(w http.ResponseWriter, connID, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	json.NewEncoder(w).Encode(map[string]any{
+		"error":         "connection_reauth_required",
+		"connection_id": connID,
+		"reason":        reason,
+		"reauth_url":    "/connections/" + connID + "/reauth",
+		"message":       "This connection's credentials are no longer valid. A human must re-authenticate via the Sieve web UI.",
+	})
+}
+
 // --- Approval status endpoint ---
 
 func (rt *Router) approvalStatus(w http.ResponseWriter, r *http.Request) {
@@ -623,6 +665,12 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 		return
 	}
 
+	// Pre-flight reauth check — short-circuit if the connection is dead.
+	if c, err := rt.connections.Get(connID); err == nil && c.NeedsReauth {
+		writeReauthError(w, connID, c.ReauthReason)
+		return
+	}
+
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
 		writeConnectionError(w, http.StatusNotFound, "connector not available", err)
@@ -700,6 +748,14 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 	result, err := conn.Execute(r.Context(), operation, params)
 	if err != nil {
 		rt.logAudit(tok, connID, operation, params, "error", err.Error(), time.Since(start).Milliseconds())
+		if errors.Is(err, connector.ErrNeedsReauth) {
+			reason := err.Error()
+			if c, e := rt.connections.Get(connID); e == nil && c.ReauthReason != "" {
+				reason = c.ReauthReason
+			}
+			writeReauthError(w, connID, reason)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

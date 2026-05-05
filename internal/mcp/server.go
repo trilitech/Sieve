@@ -25,6 +25,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -386,6 +387,25 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		}
 	}
 
+	// Pre-flight reauth check — skip policy and Execute if the connection's
+	// credentials are already known to be dead. The text content gives the
+	// agent enough information to surface the re-auth URL to its human.
+	if conn.NeedsReauth {
+		durationMs := time.Since(start).Milliseconds()
+		s.logAudit(tok, connID, opName, call.Arguments, "reauth_required", conn.ReauthReason, durationMs)
+		return &JSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      id,
+			Result: ToolCallResult{
+				Content: []ContentBlock{{Type: "text", Text: fmt.Sprintf(
+					"Connection %q needs re-authentication. Reason: %s. A human must visit the Sieve admin UI and click Re-authenticate on this connection (URL: /connections/%s/reauth).",
+					connID, conn.ReauthReason, connID,
+				)}},
+				IsError: true,
+			},
+		}
+	}
+
 	// Build policy request.
 	policyReq := &policy.PolicyRequest{
 		Operation:  opName,
@@ -485,6 +505,29 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
+		// Translate the reauth sentinel into a human-actionable tool error
+		// pointing at the re-auth URL. The needs_reauth flag was set in DB
+		// by the gmail token source's onRefreshFailure callback by the time
+		// this error surfaces, so future calls will hit the pre-flight path
+		// above without re-running policy and Execute.
+		if errors.Is(err, connector.ErrNeedsReauth) {
+			reason := err.Error()
+			if c2, e := s.connections.Get(connID); e == nil && c2.ReauthReason != "" {
+				reason = c2.ReauthReason
+			}
+			s.logAudit(tok, connID, opName, call.Arguments, "reauth_required", reason, durationMs)
+			return &JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      id,
+				Result: ToolCallResult{
+					Content: []ContentBlock{{Type: "text", Text: fmt.Sprintf(
+						"Connection %q needs re-authentication. Reason: %s. A human must visit the Sieve admin UI and click Re-authenticate on this connection (URL: /connections/%s/reauth).",
+						connID, reason, connID,
+					)}},
+					IsError: true,
+				},
+			}
+		}
 		s.logAudit(tok, connID, opName, call.Arguments, "error", err.Error(), durationMs)
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",

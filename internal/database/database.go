@@ -87,7 +87,9 @@ func (db *DB) migrate() error {
 		dek_wrapped       BLOB NOT NULL,
 		dek_nonce         BLOB NOT NULL,
 		enc_version       INTEGER NOT NULL,
-		created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+		created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+		needs_reauth      INTEGER NOT NULL DEFAULT 0,
+		reauth_reason     TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS crypto_meta (
@@ -176,10 +178,29 @@ func (db *DB) migrate() error {
 				dek_wrapped       BLOB NOT NULL,
 				dek_nonce         BLOB NOT NULL,
 				enc_version       INTEGER NOT NULL,
-				created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+				created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+				needs_reauth      INTEGER NOT NULL DEFAULT 0,
+				reauth_reason     TEXT
 			);
 		`); err != nil {
 			return fmt.Errorf("recreate connections table: %w", err)
+		}
+	}
+
+	// Migration: add needs_reauth / reauth_reason columns for tracking which
+	// OAuth-backed connections have refresh tokens that no longer work
+	// (revoked, expired, or rotated out). Idempotent — only adds the columns
+	// if they aren't already there. Existing rows default to needs_reauth=0.
+	hasReauth, err := columnExists(db, "connections", "needs_reauth")
+	if err != nil {
+		return fmt.Errorf("check connections.needs_reauth: %w", err)
+	}
+	if !hasReauth {
+		if _, err := db.Exec(`ALTER TABLE connections ADD COLUMN needs_reauth INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add needs_reauth column: %w", err)
+		}
+		if _, err := db.Exec(`ALTER TABLE connections ADD COLUMN reauth_reason TEXT`); err != nil {
+			return fmt.Errorf("add reauth_reason column: %w", err)
 		}
 	}
 

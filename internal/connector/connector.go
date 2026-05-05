@@ -1,6 +1,19 @@
 package connector
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrNeedsReauth signals that a connection's stored credentials cannot be
+// used or refreshed and the human operator must re-authenticate (typically
+// in the web UI). Connectors return this — wrapped with %w if they have
+// upstream context — when they detect an unrecoverable token failure
+// (e.g., OAuth invalid_grant: refresh token revoked, expired, or rotated
+// out from under us). The API/MCP layers map errors.Is(err, ErrNeedsReauth)
+// to a structured response that points the caller at the re-auth URL
+// instead of bubbling a generic 500.
+var ErrNeedsReauth = errors.New("connection needs re-authentication")
 
 // Connector is the interface that all service connectors must implement.
 type Connector interface {

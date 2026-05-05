@@ -253,6 +253,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /connections", s.handleConnections)
 	mux.HandleFunc("POST /connections/add", s.handleConnectionAdd)
 	mux.HandleFunc("POST /connections/{id}/delete", s.handleConnectionDelete)
+	mux.HandleFunc("POST /connections/{id}/reauth", s.handleConnectionReauth)
 	mux.HandleFunc("GET /oauth/callback", s.handleOAuthCallback)
 
 	// GitHub-specific setup flows
@@ -444,11 +445,19 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 // pendingOAuth holds info for a connection being added via OAuth.
+//
+// IsReauth distinguishes a fresh-add flow (insert a new connection record on
+// success) from a re-authentication of an existing connection (update the
+// existing record's config and clear needs_reauth). The handler picks one or
+// the other based on this flag — keeping it explicit avoids accidentally
+// overwriting an existing connection during a normal Add, or duplicating one
+// during a Re-auth.
 type pendingOAuth struct {
 	ID            string
 	ConnectorType string
 	DisplayName   string
 	CreatedAt     time.Time
+	IsReauth      bool
 }
 
 func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
@@ -550,6 +559,55 @@ func (s *Server) handleConnectionDelete(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
+// handleConnectionReauth kicks off the OAuth flow for an existing connection
+// whose refresh token has been invalidated. The flow re-uses the same Google
+// OAuth start (AccessTypeOffline + ApprovalForce so we get a fresh refresh
+// token, even if the user's account already grants this app). On callback,
+// we'll UpdateConfig on the existing record (which atomically clears
+// needs_reauth) instead of inserting a new one.
+//
+// Limited to Google connections today; GitHub PAT/App connections have their
+// own setup flow and would need a separate re-auth surface if their tokens
+// expire.
+func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	conn, err := s.connections.Get(id)
+	if err != nil {
+		http.Error(w, "connection not found", http.StatusNotFound)
+		return
+	}
+	if conn.ConnectorType != "google" {
+		http.Error(w, "re-auth not supported for connector type "+conn.ConnectorType, http.StatusBadRequest)
+		return
+	}
+
+	conf, err := s.googleOAuthConfig(r.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	stateBytes := make([]byte, 16)
+	if _, err := rand.Read(stateBytes); err != nil {
+		http.Error(w, "failed to generate state", http.StatusInternalServerError)
+		return
+	}
+	state := hex.EncodeToString(stateBytes)
+
+	s.oauthMu.Lock()
+	s.oauthPending[state] = pendingOAuth{
+		ID:            id,
+		ConnectorType: conn.ConnectorType,
+		DisplayName:   conn.DisplayName,
+		CreatedAt:     time.Now(),
+		IsReauth:      true,
+	}
+	s.oauthMu.Unlock()
+
+	url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
 // --- OAuth handlers ---
 
 func (s *Server) googleOAuthConfig(host string) (*oauth2.Config, error) {
@@ -649,12 +707,20 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		"client_secret": conf.ClientSecret,
 	}
 
-	// NOW save the connection — only after OAuth succeeded and we have
-	// verified credentials. This is the commit point: if anything above
-	// failed, no connection record exists and the user can try again cleanly.
-	if err := s.connections.Add(pending.ID, pending.ConnectorType, pending.DisplayName, connConfig); err != nil {
-		http.Error(w, fmt.Sprintf("failed to save connection: %v", err), http.StatusInternalServerError)
-		return
+	// Commit point. For a fresh add, INSERT; for a re-auth, UPDATE the
+	// existing record (which atomically clears needs_reauth in the same
+	// statement). If anything above failed, no DB write happens — the user
+	// retries from the connections page either way.
+	if pending.IsReauth {
+		if err := s.connections.UpdateConfig(pending.ID, connConfig); err != nil {
+			http.Error(w, fmt.Sprintf("failed to update connection: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		if err := s.connections.Add(pending.ID, pending.ConnectorType, pending.DisplayName, connConfig); err != nil {
+			http.Error(w, fmt.Sprintf("failed to save connection: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)

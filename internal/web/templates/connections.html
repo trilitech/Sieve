@@ -36,8 +36,15 @@
           </thead>
           <tbody class="divide-y divide-slate-700">
             {{range .Connections}}
-            <tr class="hover:bg-slate-700/30 transition-colors">
-              <td class="px-6 py-4 text-sm font-mono text-white">{{.ID}}</td>
+            <tr class="{{if .NeedsReauth}}bg-amber-500/5 hover:bg-amber-500/10{{else}}hover:bg-slate-700/30{{end}} transition-colors">
+              <td class="px-6 py-4 text-sm font-mono text-white">
+                {{.ID}}
+                {{if .NeedsReauth}}
+                <span title="{{.ReauthReason}}" class="ml-2 inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/30">
+                  ⚠ needs re-auth
+                </span>
+                {{end}}
+              </td>
               <td class="px-6 py-4">
                 {{$label := mapGet $.ConnLabels .ID}}
                 <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
@@ -54,7 +61,15 @@
               </td>
               <td class="px-6 py-4 text-sm text-slate-300">{{.DisplayName}}</td>
               <td class="px-6 py-4 text-sm text-slate-400">{{timeAgo .CreatedAt}}</td>
-              <td class="px-6 py-4 text-right">
+              <td class="px-6 py-4 text-right whitespace-nowrap">
+                {{if and .NeedsReauth (eq .ConnectorType "google")}}
+                <form method="POST" action="/connections/{{.ID}}/reauth" class="inline mr-3">
+                  <button type="submit"
+                          class="text-sm text-amber-300 hover:text-amber-200 font-medium transition-colors">
+                    Re-authenticate
+                  </button>
+                </form>
+                {{end}}
                 <form method="POST" action="/connections/{{.ID}}/delete"
                       hx-post="/connections/{{.ID}}/delete"
                       hx-confirm="Delete connection '{{.ID}}'? This cannot be undone."
