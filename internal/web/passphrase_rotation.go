@@ -168,6 +168,13 @@ func (s *Server) renderRotationError(w http.ResponseWriter, r *http.Request, sta
 		"LLMMaxTokens":  maxTokens,
 		"RotationError": msg,
 	}
+	// Failed-rotation responses MUST NOT be cached. A shared HTTP cache or a
+	// browser bfcache entry could replay the page (and the visible
+	// rotation-error chip) to a later operator. The form fields aren't
+	// echoed (FR-015), but the *fact that a rotation failed* is itself a
+	// signal we don't want to leak to a different session on the same
+	// machine.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	s.render(w, "settings", data)
 }
@@ -212,6 +219,21 @@ func zeroBytes(b []byte) {
 }
 
 // --- Lockout state machine (Phase 4) ---
+//
+// Scope:
+//
+//   - Per-process. State lives on the *Server, so a Sieve restart clears
+//     the counter and the cooldown. An attacker who can force a restart
+//     (or wait through one) bypasses the lockout. Acceptable here because
+//     the only surface that hits this state machine is the admin web UI,
+//     which is single-process and not exposed to agents.
+//   - Global, not per-source. A locked-out form blocks every browser and
+//     every IP; a legitimate operator from a different machine cannot
+//     submit until the cooldown elapses. Sieve is admin-only with a
+//     small operator population, so we accept the friction in exchange
+//     for a much simpler state machine. If multi-operator deployments
+//     ever become a goal, scope this by source IP (and persist across
+//     restarts).
 
 // checkRotationLockout returns (true, retryAfter) if the rotation form is
 // currently in cooldown per FR-021 (5 consecutive wrong-current-passphrase

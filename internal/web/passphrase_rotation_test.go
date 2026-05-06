@@ -463,6 +463,28 @@ func TestRotateHandlerNoEchoOnFailure(t *testing.T) {
 	}
 }
 
+// TestRotateHandlerFailureNotCached asserts that failed-rotation responses
+// carry Cache-Control: no-store. A shared HTTP cache or browser bfcache
+// entry that retained the rendered page (with its visible "rotation
+// failed" chip) could replay the failure indication to a later operator
+// session — and the *fact that a rotation just failed* is itself signal
+// we don't want to leak even if the form fields are scrubbed.
+func TestRotateHandlerFailureNotCached(t *testing.T) {
+	ts, _ := newRotationTestServer(t)
+
+	// Confirmation-mismatch — drives renderRotationError.
+	req := rotateRequest(t, ts, "test-passphrase", "newA", "newB")
+	resp, err := rotateClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control: got %q, want %q", got, "no-store")
+	}
+}
+
 func readBody(t *testing.T, resp *http.Response) string {
 	t.Helper()
 	b := make([]byte, 0, 4096)
