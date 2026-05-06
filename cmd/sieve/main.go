@@ -11,9 +11,39 @@
 //
 // Connection configs are envelope-encrypted at rest. The keyring is set
 // up on first run (--setup) and loaded on every start thereafter.
+//
+// Rotation:
+//
+//   - --rotate-passphrase enters offline rotation mode: prompts for the
+//     current passphrase, then twice for the new passphrase, runs an
+//     atomic re-wrap of every per-record DEK, and exits. The binary
+//     does NOT bind any network ports in this mode. Sieve must be
+//     stopped before running rotation against the same DB to avoid a
+//     SQLite write-lock conflict.
+//
+//   - --reset-keyring is the recovery path for a forgotten passphrase.
+//     It deletes every encrypted credential and the keyring metadata,
+//     preserves everything else (policies, roles, tokens, audit log,
+//     settings), and exits. Operator must type RESET at the TTY
+//     confirmation prompt; the flag refuses to run without a TTY. After
+//     reset, run --setup to choose a new passphrase, then re-add
+//     connections.
+//
+// Exit codes (rotation/reset modes):
+//
+//	  0 — success
+//	  1 — generic / unexpected failure
+//	  2 — wrong current passphrase
+//	  3 — new-passphrase confirmation mismatch (caught by intake layer)
+//	  4 — new passphrase identical to current
+//	  5 — keyring not initialized (run --setup first)
+//	  6 — DB lock conflict (another Sieve process is holding the DB,
+//	      or another rotation is already in progress)
+//	  7 — reset aborted (operator did not type RESET, or no TTY)
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -24,6 +54,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -47,6 +78,18 @@ import (
 	"github.com/trilitech/Sieve/internal/web"
 )
 
+// Exit codes for the offline rotation/reset flows. See package doc.
+const (
+	rotateExitSuccess         = 0
+	rotateExitGeneric         = 1
+	rotateExitWrongPassphrase = 2
+	rotateExitConfirmMismatch = 3
+	rotateExitSameAsCurrent   = 4
+	rotateExitKeyringMissing  = 5
+	rotateExitLockConflict    = 6
+	resetExitAborted          = 7 // operator did not type RESET, or stdin is not a TTY
+)
+
 const (
 	defaultDBPath  = "./data/sieve.db"
 	defaultWebAddr = "127.0.0.1:19816"
@@ -67,10 +110,20 @@ func main() {
 	}
 
 	var (
-		dbPath          = flag.String("db", defaultDBPath, "path to the persistent sieve database file")
-		webAddr         = flag.String("web", defaultWebAddr, "host:port for the admin web UI")
-		apiAddr         = flag.String("api", defaultAPIAddr, "host:port for the agent API+MCP")
-		setup           = flag.Bool("setup", false, "first-run mode: initialize the keyring (prompts for passphrase twice)")
+		dbPath           = flag.String("db", defaultDBPath, "path to the persistent sieve database file")
+		webAddr          = flag.String("web", defaultWebAddr, "host:port for the admin web UI")
+		apiAddr          = flag.String("api", defaultAPIAddr, "host:port for the agent API+MCP")
+		setup            = flag.Bool("setup", false, "first-run mode: initialize the keyring (prompts for passphrase twice)")
+		rotatePassphrase = flag.Bool("rotate-passphrase", false,
+			"offline rotation mode: prompt for current and new passphrases, "+
+				"re-wrap every credential record under the new key, and exit. "+
+				"Stop the running Sieve process first to avoid a DB lock conflict.")
+		resetKeyring = flag.Bool("reset-keyring", false,
+			"DESTRUCTIVE recovery for a forgotten passphrase: deletes every "+
+				"stored credential and the keyring metadata, then exits. Policies, "+
+				"roles, tokens, audit history, and settings are preserved. Run "+
+				"--setup afterward to choose a new passphrase. Requires a TTY; "+
+				"the operator must type RESET to confirm.")
 		googleCredsPath = flag.String("google-credentials", "",
 			"path to the Google OAuth client_secret*.json (for the Google Account connector). "+
 				"Empty = auto-discover *client_secret*.json in cwd. Optional.")
@@ -83,10 +136,290 @@ func main() {
 	}
 	flag.Parse()
 
+	if exclusiveCount(*setup, *rotatePassphrase, *resetKeyring) > 1 {
+		log.SetFlags(0)
+		log.Fatalf("sieve: --setup, --rotate-passphrase, and --reset-keyring are mutually exclusive")
+	}
+
+	if *rotatePassphrase {
+		os.Exit(runRotate(*dbPath))
+	}
+	if *resetKeyring {
+		os.Exit(runResetKeyring(*dbPath))
+	}
+
 	if err := run(*dbPath, *webAddr, *apiAddr, *setup, *googleCredsPath); err != nil {
 		log.SetFlags(0)
 		log.Fatalf("sieve: %v", err)
 	}
+}
+
+// runRotate is the offline passphrase-rotation entrypoint. It prompts for
+// the current passphrase, prompts twice for the new passphrase, runs an
+// atomic re-wrap of every per-record DEK, writes one audit row inside the
+// rotation transaction, and exits with one of the documented exit codes.
+//
+// The function does NOT bind any network ports and does NOT start the
+// background goroutines that the normal start path uses (per FR-016 of
+// spec 002: rotation is an offline maintenance operation).
+func runRotate(dbPath string) int {
+	log.SetFlags(0)
+
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: create db dir: %v\n", err)
+		return rotateExitGeneric
+	}
+	db, err := database.New(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: open db %q: %v\n", dbPath, err)
+		// Most "open db" failures from a busy DB look like SQLITE_BUSY;
+		// surface the lock-conflict exit code so scripts can branch.
+		if isLockConflict(err) {
+			fmt.Fprintln(os.Stderr, "sieve: another Sieve process appears to hold the DB; stop it first.")
+			return rotateExitLockConflict
+		}
+		return rotateExitGeneric
+	}
+	defer db.Close()
+
+	// Acquire current passphrase. Confirm=false: only one prompt.
+	current, err := secrets.Acquire(secrets.PromptOptions{
+		Confirm: false,
+		Prompt:  "Current passphrase: ",
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: read current passphrase: %v\n", err)
+		return rotateExitGeneric
+	}
+	defer zero(current)
+
+	// Acquire new passphrase. Confirm=true: prompt twice and verify match.
+	newPP, err := secrets.Acquire(secrets.PromptOptions{
+		Confirm: true,
+		Prompt:  "New passphrase: ",
+	})
+	if err != nil {
+		// secrets.Acquire surfaces a literal "passphrases do not match"
+		// error on TTY confirm mismatch — map that to its dedicated exit
+		// code so scripts can distinguish it from a generic IO error.
+		if strings.Contains(err.Error(), "passphrases do not match") {
+			fmt.Fprintln(os.Stderr, "sieve: new passphrase confirmation does not match")
+			return rotateExitConfirmMismatch
+		}
+		fmt.Fprintf(os.Stderr, "sieve: read new passphrase: %v\n", err)
+		return rotateExitGeneric
+	}
+	defer zero(newPP)
+
+	if bytes.Equal(current, newPP) {
+		fmt.Fprintln(os.Stderr, "sieve: new passphrase identical to current; no rotation performed")
+		return rotateExitSameAsCurrent
+	}
+
+	// Wire the audit logger so the rotation row commits inside the
+	// rotation transaction (FR-018, shared with spec 003).
+	auditLog := audit.NewLogger(db)
+	auditor := auditLog.AsRotationAuditor("cli")
+
+	keyring := &secrets.Keyring{}
+	count, err := keyring.Rotate(db.DB, current, newPP, auditor)
+	if err != nil {
+		switch {
+		case errors.Is(err, secrets.ErrWrongPassphrase):
+			fmt.Fprintln(os.Stderr, "sieve: current passphrase incorrect")
+			return rotateExitWrongPassphrase
+		case errors.Is(err, secrets.ErrCryptoMetaMissing):
+			fmt.Fprintln(os.Stderr, "sieve: keyring not initialized — run with --setup once before rotating")
+			return rotateExitKeyringMissing
+		case errors.Is(err, secrets.ErrAlreadyRotating):
+			fmt.Fprintln(os.Stderr, "sieve: another rotation is already in progress")
+			return rotateExitLockConflict
+		case isLockConflict(err):
+			fmt.Fprintln(os.Stderr, "sieve: database is busy — another Sieve process must be stopped before rotation")
+			return rotateExitLockConflict
+		default:
+			fmt.Fprintf(os.Stderr, "sieve: rotation failed: %v\n", err)
+			return rotateExitGeneric
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "sieve: passphrase rotated. %d credential record", count)
+	if count != 1 {
+		fmt.Fprint(os.Stderr, "s")
+	}
+	fmt.Fprintln(os.Stderr, " re-wrapped.")
+	return rotateExitSuccess
+}
+
+// isLockConflict checks whether err looks like a SQLite busy/locked
+// error. SQLite's go driver wraps these with the literal "database is
+// locked" string; this is the most reliable check across driver versions.
+func isLockConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked")
+}
+
+// exclusiveCount returns the number of true values among bs. main() uses
+// this to enforce mutual exclusion between --setup, --rotate-passphrase,
+// and --reset-keyring (each is a top-level mode the binary enters and
+// exits without becoming a network-listening process).
+func exclusiveCount(bs ...bool) int {
+	n := 0
+	for _, b := range bs {
+		if b {
+			n++
+		}
+	}
+	return n
+}
+
+// runResetKeyring is the recovery path for an operator who has forgotten
+// their passphrase. By design, Sieve has no way to decrypt credentials
+// without the passphrase — this is the same property that protects them
+// from any attacker who steals the database file. The trade-off: a
+// forgotten passphrase means starting over with credentials.
+//
+// What this function deletes:
+//
+//   - every row in the connections table (the encrypted credentials)
+//   - the singleton crypto_meta row (the keyring salt + verifier)
+//
+// Everything else — policies, roles, tokens, audit history, settings —
+// is preserved, so the operator's bindings and tokens keep working as
+// soon as they re-add the underlying connections after running --setup.
+//
+// One audit row (operation = "keyring.reset", surface = "cli") is
+// written inside the same transaction as the deletes so the event is
+// visible in the admin UI's audit page after recovery.
+//
+// Safeguards (per the threat-model discussion in
+// docs/credential-encryption.md):
+//
+//   - stdin must be a TTY. The reset flag refuses to run under piped
+//     input so a script cannot accidentally fire it; running it has to
+//     be a deliberate hands-on operation.
+//   - the operator must type the literal string "RESET" at the
+//     confirmation prompt; anything else aborts.
+//
+// These are UX safeguards against accidental destruction, not security
+// boundaries: anyone with write access to the DB file can already
+// destroy the credentials by other means (rm, sqlite3 DELETE, etc.).
+// File permissions (chmod 0600 on data/sieve.db, plus running Sieve as
+// a dedicated user) are the actual security boundary.
+func runResetKeyring(dbPath string) int {
+	log.SetFlags(0)
+
+	if !stdinIsTerminal() {
+		fmt.Fprintln(os.Stderr, "sieve: --reset-keyring requires a TTY for confirmation; aborting")
+		return resetExitAborted
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: create db dir: %v\n", err)
+		return rotateExitGeneric
+	}
+	db, err := database.New(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: open db %q: %v\n", dbPath, err)
+		if isLockConflict(err) {
+			fmt.Fprintln(os.Stderr, "sieve: another Sieve process appears to hold the DB; stop it first.")
+			return rotateExitLockConflict
+		}
+		return rotateExitGeneric
+	}
+	defer db.Close()
+
+	// Tell the operator exactly what they're about to lose AND what
+	// will survive, so the confirmation is informed.
+	var connectionCount int
+	_ = db.DB.QueryRow(`SELECT COUNT(*) FROM connections`).Scan(&connectionCount)
+
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "WARNING: --reset-keyring is destructive and irreversible.")
+	fmt.Fprintf(os.Stderr, "  • %d stored credential record(s) will be deleted.\n", connectionCount)
+	fmt.Fprintln(os.Stderr, "  • You will need to re-add every connection (Gmail, OAuth")
+	fmt.Fprintln(os.Stderr, "    accounts, LLM API keys, etc.) after running --setup again.")
+	fmt.Fprintln(os.Stderr, "  • Policies, roles, tokens, audit history, and settings are")
+	fmt.Fprintln(os.Stderr, "    preserved.")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprint(os.Stderr, "Type RESET (in capital letters) to confirm, anything else to abort: ")
+
+	var line string
+	if _, err := fmt.Fscanln(os.Stdin, &line); err != nil {
+		// Empty line / EOF / read error all map to "abort".
+		fmt.Fprintln(os.Stderr, "sieve: reset aborted")
+		return resetExitAborted
+	}
+	if strings.TrimSpace(line) != "RESET" {
+		fmt.Fprintln(os.Stderr, "sieve: reset aborted (input did not match)")
+		return resetExitAborted
+	}
+
+	// Single transaction so the deletes commit atomically with the audit
+	// row that records the event.
+	tx, err := db.DB.Begin()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: begin reset tx: %v\n", err)
+		if isLockConflict(err) {
+			return rotateExitLockConflict
+		}
+		return rotateExitGeneric
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM connections`); err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: delete connections: %v\n", err)
+		return rotateExitGeneric
+	}
+	if _, err := tx.Exec(`DELETE FROM crypto_meta`); err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: delete crypto_meta: %v\n", err)
+		return rotateExitGeneric
+	}
+
+	auditLog := audit.NewLogger(db)
+	if err := auditLog.LogTx(tx, &audit.LogRequest{
+		TokenID:      "system",
+		TokenName:    "system",
+		ConnectionID: "-",
+		Operation:    "keyring.reset",
+		Params: map[string]any{
+			"surface":             "cli",
+			"connections_deleted": connectionCount,
+		},
+		PolicyResult: "success",
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: audit reset: %v\n", err)
+		return rotateExitGeneric
+	}
+
+	if err := tx.Commit(); err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: commit reset: %v\n", err)
+		if isLockConflict(err) {
+			return rotateExitLockConflict
+		}
+		return rotateExitGeneric
+	}
+
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintf(os.Stderr, "sieve: keyring reset. %d credential record(s) deleted.\n", connectionCount)
+	fmt.Fprintln(os.Stderr, "sieve: run with --setup to choose a new passphrase, then re-add your connections.")
+	return rotateExitSuccess
+}
+
+// stdinIsTerminal reports whether stdin is connected to a TTY. The
+// rotation/reset prompts use this to refuse running under piped input.
+func stdinIsTerminal() bool {
+	// term.IsTerminal is what internal/secrets uses; replicate the check
+	// here without exposing a new public function from the secrets pkg.
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) error {
@@ -155,6 +488,7 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	webSrv := web.NewServer(
 		tokenSvc, connSvc, policiesSvc, rolesSvc, registry,
 		approvalQ, auditLog, googleCredsPath, settingsSvc, scriptgenSvc,
+		keyring, db, webAddr,
 	)
 	defer webSrv.Close()
 

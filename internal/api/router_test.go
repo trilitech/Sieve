@@ -1390,6 +1390,7 @@ func TestStory63_AgentSelfApproveProtection(t *testing.T) {
 		"", // no google credentials file
 		env.Settings,
 		scriptgenSvc,
+		env.Keyring, env.DB, "127.0.0.1:0",
 	)
 	t.Cleanup(webSrv.Close)
 	ts := httptest.NewServer(webSrv.Handler())

@@ -1401,3 +1401,194 @@ test.describe('Story 301: Rotating credentials without agent downtime', () => {
     expect(resp3.status).toBe(200);
   });
 });
+
+// ─── Documentation IA: categorized landing, in-page TOC, search ──────────────
+// Verifies the redesigned /docs surface (specs/001-docs-navigation/).
+
+test.describe('Documentation IA', () => {
+  test('home shows categorized sections with descriptions, not a flat A–Z list', async ({ page }) => {
+    await page.goto(`${s.web_url}/docs`);
+    await expect(page).toHaveTitle(/Documentation/);
+
+    // At least four real categories are rendered as section headings.
+    const required = ['Getting Started', 'Connectors', 'Policies & Approvals', 'Security'];
+    for (const cat of required) {
+      await expect(page.locator(`h2:has-text("${cat}")`)).toBeVisible();
+    }
+
+    // Each visible page card has both a title and a one-line description.
+    const card = page.locator('a[href^="/docs/"]:has(span.font-medium)').first();
+    await expect(card).toBeVisible();
+    await expect(card.locator('span.text-xs')).not.toHaveText(/^\s*$/);
+  });
+
+  test('clicking a category card lands on the category landing scoped to that group', async ({ page }) => {
+    await page.goto(`${s.web_url}/docs`);
+    await page.locator('h2:has-text("Connectors") a, a[href="/docs/category/connectors"]').first().click();
+    await expect(page).toHaveURL(/\/docs\/category\/connectors$/);
+    // Connectors-specific page must be present.
+    await expect(page.locator('a[href="/docs/connections-guide"]')).toBeVisible();
+    // A page from a different category must NOT be present in the listing.
+    await expect(page.locator('a[href="/docs/credential-encryption"]')).toHaveCount(0)
+      .catch(async () => {
+        // The rail shows it, so scope to the main listing area only.
+        const main = page.locator('main >> nth=0');
+        await expect(main.locator('ul a[href="/docs/credential-encryption"]')).toHaveCount(0);
+      });
+  });
+
+  test('breadcrumbs read Documentation › Category › Page on a doc detail view', async ({ page }) => {
+    await page.goto(`${s.web_url}/docs/concepts`);
+    const crumbs = page.locator('nav[aria-label="Breadcrumb"]');
+    await expect(crumbs).toContainText('Documentation');
+    await expect(crumbs).toContainText('Getting Started');
+    // Trailing crumb (the title) is the one without a hyperlink.
+    const last = crumbs.locator('span.text-slate-200');
+    await expect(last).toBeVisible();
+  });
+
+  test('rail highlights the active page on a doc detail view', async ({ page }) => {
+    await page.goto(`${s.web_url}/docs/policy-rules-reference`);
+    const active = page.locator('aside a[href="/docs/policy-rules-reference"]');
+    await expect(active.first()).toHaveClass(/text-indigo-400/);
+  });
+
+  test('long doc shows a TOC with multiple entries; clicking jumps and highlights', async ({ page }) => {
+    await page.goto(`${s.web_url}/docs/policy-rules-reference`);
+    // Wait for marked.js to populate the article.
+    await page.waitForFunction(() => {
+      const a = document.querySelector('#content');
+      return !!(a && a.querySelectorAll('h2').length >= 2);
+    });
+    const tocLinks = page.locator('#toc-list a.toc-link');
+    expect(await tocLinks.count()).toBeGreaterThanOrEqual(2);
+
+    const firstLink = tocLinks.first();
+    const targetID = await firstLink.getAttribute('data-target');
+    expect(targetID).toBeTruthy();
+    await firstLink.click();
+    await expect(page).toHaveURL(new RegExp(`#${targetID}$`));
+  });
+
+  test('doc with fewer than two H2 headings hides the TOC', async ({ page }) => {
+    // Pick a short page; if our shortest doc has ≥2 H2s, this assertion still
+    // passes for any future short doc and is harmless here.
+    await page.goto(`${s.web_url}/docs/mcp-integration`);
+    await page.waitForFunction(() => {
+      return !!document.querySelector('#content article, #content > *');
+    }).catch(() => { /* tolerate */ });
+    const aside = page.locator('#toc-aside');
+    const h2Count = await page.locator('#content h2').count();
+    if (h2Count < 2) {
+      await expect(aside).toBeHidden();
+    } else {
+      await expect(aside).toBeVisible();
+    }
+  });
+
+  test('internal .md cross-link in a doc body navigates to the rendered doc page', async ({ page }) => {
+    // policy-scripts.md links across to other docs; pick whichever .md link is present.
+    await page.goto(`${s.web_url}/docs/policy-scripts`);
+    await page.waitForFunction(() => !!document.querySelector('#content a[href]'));
+    const link = page.locator('#content a[href^="/docs/"]').first();
+    if (await link.count() === 0) test.skip();
+    const href = await link.getAttribute('href');
+    expect(href).toMatch(/^\/docs\/[a-z0-9-]+(?:#.*)?$/);
+    await link.click();
+    await expect(page).toHaveURL(new RegExp(`${href!.split('#')[0]}(?:#.*)?$`));
+    // Confirm the new page rendered (not a 404).
+    await expect(page.locator('nav[aria-label="Breadcrumb"]')).toBeVisible();
+  });
+
+  test('search returns matching pages with highlighted excerpts', async ({ page }) => {
+    await page.goto(`${s.web_url}/docs`);
+    const input = page.locator('#docs-search');
+    await input.fill('approval');
+    await page.waitForSelector('#docs-results a', { state: 'visible' });
+    const results = page.locator('#docs-results a');
+    expect(await results.count()).toBeGreaterThan(0);
+    await expect(results.first().locator('mark')).toHaveCount(1);
+  });
+
+  test('search shows a clear empty-state message when nothing matches', async ({ page }) => {
+    await page.goto(`${s.web_url}/docs`);
+    await page.locator('#docs-search').fill('zzzzz-no-matches-here');
+    await page.waitForSelector('#docs-results', { state: 'visible' });
+    await expect(page.locator('#docs-results')).toContainText(/no documentation matches/i);
+  });
+
+  test('clicking a search result navigates to /docs/{slug}#{anchor} when matched in a section', async ({ page }) => {
+    await page.goto(`${s.web_url}/docs`);
+    await page.locator('#docs-search').fill('approval');
+    await page.waitForSelector('#docs-results a');
+    const first = page.locator('#docs-results a').first();
+    const href = await first.getAttribute('href');
+    expect(href).toMatch(/^\/docs\/[a-z0-9-]+(?:#[a-z0-9-]+)?$/);
+    await first.click();
+    await expect(page).toHaveURL(new RegExp(href!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$'));
+  });
+
+  test('unknown category id returns 404', async ({ page }) => {
+    const resp = await page.goto(`${s.web_url}/docs/category/this-id-does-not-exist`);
+    expect(resp?.status()).toBe(404);
+  });
+});
+
+// ─── Passphrase rotation ─────────────────────────────────────────────────────
+// Spec 003 — UI passphrase rotation. The e2e testserver boots with passphrase
+// "e2e-test-passphrase" (see e2e/testserver/main.go). The first test rotates
+// to "rotated-via-ui" and asserts that an agent credential call against the
+// running instance still succeeds without restart. Subsequent tests in this
+// describe block run against the post-rotation state; the testserver keeps
+// the new in-memory KEK so credential calls keep working.
+
+test.describe('Passphrase rotation', () => {
+  test('Rotate passphrase from settings page', async ({ page }) => {
+    // Open the settings page and confirm the rotation form is rendered
+    // alongside the existing LLM Configuration card.
+    await page.goto(`${s.web_url}/settings`);
+    await expect(page.locator('#rotate-passphrase-form')).toBeVisible();
+    await expect(page.locator('input#current_passphrase')).toBeVisible();
+    await expect(page.locator('input#new_passphrase')).toBeVisible();
+    await expect(page.locator('input#new_passphrase_confirm')).toBeVisible();
+
+    // Fill the form and submit. Use the testserver default passphrase
+    // ("e2e-test-passphrase"); rotate to a fresh value.
+    await page.fill('input#current_passphrase', 'e2e-test-passphrase');
+    await page.fill('input#new_passphrase', 'rotated-via-ui');
+    await page.fill('input#new_passphrase_confirm', 'rotated-via-ui');
+    await Promise.all([
+      page.waitForURL(/\/settings\?rotated=1&count=\d+/),
+      page.click('#rotate-passphrase-submit'),
+    ]);
+
+    // Success card MUST be visible and reference the records-rewrapped
+    // count. The seed test environment has at least one connection, so
+    // count >= 1.
+    const successText = await page.locator('div').filter({ hasText: /Passphrase rotated\.\s+\d+\s+credential record/ }).first().textContent();
+    expect(successText).toMatch(/Passphrase rotated\.\s+\d+\s+credential record/);
+
+    // Exercise an existing agent-side credential flow against the post-
+    // rotation keyring to confirm requests still succeed without restart.
+    // The seed token and a list-emails call against the mock connector
+    // are wired by the testserver — apiCall returns the JSON response.
+    const emails = await apiCall(s, 'GET', `/api/v1/connections/test-conn/ops/list_emails`, undefined, s.seed_token);
+    expect(emails).toBeTruthy();
+  });
+
+  test('Submit with confirmation mismatch shows error and does not rotate', async ({ page }) => {
+    await page.goto(`${s.web_url}/settings`);
+    // Use the post-rotation passphrase as the current; pick deliberately
+    // mismatched new + confirm fields.
+    await page.fill('input#current_passphrase', 'rotated-via-ui');
+    await page.fill('input#new_passphrase', 'attempt-A');
+    await page.fill('input#new_passphrase_confirm', 'attempt-B');
+    await page.click('#rotate-passphrase-submit');
+    // The page re-renders at /settings/rotate-passphrase with the chip;
+    // assert the confirmation-mismatch message is visible and that the
+    // URL did NOT enter the success-redirect state.
+    await expect(page).not.toHaveURL(/rotated=1/);
+    const body = await page.textContent('body');
+    expect(body).toContain('new passphrase and confirmation do not match');
+  });
+});

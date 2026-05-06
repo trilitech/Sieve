@@ -38,6 +38,7 @@ import (
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/secrets"
 	"github.com/trilitech/Sieve/internal/tokens"
 )
 
@@ -494,6 +495,24 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	// Execute via connector.
 	c, err := s.connections.GetConnector(connID)
 	if err != nil {
+		// Surface keyring-state errors as transient JSON-RPC errors so
+		// MCP hosts can choose to retry (mirrors the HTTP 503 +
+		// Retry-After: 5 contract on the REST surface). The MCP wire
+		// has no Retry-After equivalent; the message is the signal.
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			return &JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      id,
+				Error:   &JSONRPCError{Code: -32000, Message: "service locked: passphrase required"},
+			}
+		}
+		if errors.Is(err, secrets.ErrKeyringRotating) {
+			return &JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      id,
+				Error:   &JSONRPCError{Code: -32000, Message: "rotation in progress, retry shortly"},
+			}
+		}
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      id,

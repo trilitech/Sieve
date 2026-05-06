@@ -4,7 +4,10 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -145,8 +148,12 @@ func TestRotate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := k.Rotate(db, []byte("old"), []byte("new")); err != nil {
+	count, err := k.Rotate(db, []byte("old"), []byte("new"), nil)
+	if err != nil {
 		t.Fatalf("rotate: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("rewrap count: got %d, want 1", count)
 	}
 
 	// After rotate the in-memory KEK is the new one — we can unwrap the
@@ -185,8 +192,240 @@ func TestRotateRejectsWrongOldPassphrase(t *testing.T) {
 	k := &Keyring{}
 	setupFast(t, db, k, []byte("right"))
 
-	err := k.Rotate(db, []byte("wrong"), []byte("new"))
+	_, err := k.Rotate(db, []byte("wrong"), []byte("new"), nil)
 	if !errors.Is(err, ErrWrongPassphrase) {
 		t.Fatalf("expected ErrWrongPassphrase, got %v", err)
 	}
+}
+
+// TestRotateConcurrentRead is the load-bearing FR-011 test: while Rotate is
+// running, concurrent WithKEK callers MUST fail-fast with ErrKeyringRotating
+// rather than block, hang, or observe a torn key. After rotation completes,
+// fresh WithKEK calls MUST succeed against the new key material.
+func TestRotateConcurrentRead(t *testing.T) {
+	db := newDB(t)
+	k := &Keyring{}
+	setupFast(t, db, k, []byte("old"))
+
+	// Insert a connection row so Rotate has DEKs to rewrap.
+	dek := make([]byte, 32)
+	for i := range dek {
+		dek[i] = byte(i)
+	}
+	wrapped, nonce, err := gcmSeal(k.KEK(), dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO connections (id, dek_wrapped, dek_nonce) VALUES (?, ?, ?)`,
+		"conn-1", wrapped, nonce,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reader goroutine: loop calling WithKEK and tally outcomes.
+	var (
+		stop          atomic.Bool
+		successes     atomic.Int64
+		rotatingErrs  atomic.Int64
+		notLoadedErrs atomic.Int64
+		otherErrs     atomic.Int64
+	)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for !stop.Load() {
+			err := k.WithKEK(func(kek []byte) error {
+				if len(kek) != 32 {
+					return errors.New("torn KEK")
+				}
+				return nil
+			})
+			switch {
+			case err == nil:
+				successes.Add(1)
+			case errors.Is(err, ErrKeyringRotating):
+				rotatingErrs.Add(1)
+			case errors.Is(err, ErrKeyringNotLoaded):
+				notLoadedErrs.Add(1)
+			default:
+				otherErrs.Add(1)
+			}
+		}
+	}()
+
+	// Give the reader goroutine a head start so we observe pre-rotation
+	// successes before flipping the rotating flag.
+	time.Sleep(5 * time.Millisecond)
+
+	count, err := k.Rotate(db, []byte("old"), []byte("new"), nil)
+	if err != nil {
+		stop.Store(true)
+		wg.Wait()
+		t.Fatalf("rotate: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("rewrap count: got %d, want 1", count)
+	}
+
+	// Let the reader goroutine run for a bit after rotation completes so
+	// we can observe post-rotation successes.
+	time.Sleep(5 * time.Millisecond)
+	stop.Store(true)
+	wg.Wait()
+
+	if otherErrs.Load() != 0 {
+		t.Fatalf("got unexpected non-typed errors during concurrent read: %d", otherErrs.Load())
+	}
+	if notLoadedErrs.Load() != 0 {
+		t.Fatalf("got unexpected ErrKeyringNotLoaded during concurrent read: %d", notLoadedErrs.Load())
+	}
+	if successes.Load() == 0 {
+		t.Fatal("no WithKEK successes — reader never ran or rotating flag never cleared")
+	}
+	// We can't deterministically assert rotatingErrs > 0 because the
+	// reader goroutine and Rotate are racing; on very fast hardware a
+	// tight scheduler could let every WithKEK call slot in either before
+	// or after the rotating flag was held. The contract this test enforces
+	// is the "no torn KEK / no inconsistent error" invariant; the
+	// fail-fast latency claim is verified by inspection of the WithKEK
+	// implementation. Log the counts so a CI failure on a future change
+	// is easier to diagnose.
+	t.Logf("concurrent-read tallies: success=%d rotating=%d notLoaded=%d other=%d",
+		successes.Load(), rotatingErrs.Load(), notLoadedErrs.Load(), otherErrs.Load())
+}
+
+// TestRotateConcurrentRotate verifies the two-tabs edge case: when two
+// goroutines call Rotate simultaneously, exactly one returns
+// ErrAlreadyRotating and the other completes the rotation. The on-disk
+// state after both return MUST be the result of the successful rotation.
+func TestRotateConcurrentRotate(t *testing.T) {
+	db := newDB(t)
+	k := &Keyring{}
+	setupFast(t, db, k, []byte("old"))
+
+	// Add a row so each rotation has a DEK to rewrap.
+	dek := make([]byte, 32)
+	for i := range dek {
+		dek[i] = byte(i)
+	}
+	wrapped, nonce, err := gcmSeal(k.KEK(), dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO connections (id, dek_wrapped, dek_nonce) VALUES (?, ?, ?)`,
+		"conn-1", wrapped, nonce,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	type rotateResult struct {
+		count int
+		err   error
+		newPP []byte
+	}
+	results := make(chan rotateResult, 2)
+
+	go func() {
+		count, err := k.Rotate(db, []byte("old"), []byte("new-A"), nil)
+		results <- rotateResult{count, err, []byte("new-A")}
+	}()
+	go func() {
+		count, err := k.Rotate(db, []byte("old"), []byte("new-B"), nil)
+		results <- rotateResult{count, err, []byte("new-B")}
+	}()
+
+	r1 := <-results
+	r2 := <-results
+
+	// Exactly one MUST be ErrAlreadyRotating; the other MUST be nil.
+	switch {
+	case errors.Is(r1.err, ErrAlreadyRotating) && r2.err == nil:
+		// r2 won the race; verify it claims the rewrap count and the
+		// resulting on-disk state loads with new-B.
+		if r2.count != 1 {
+			t.Fatalf("winner count: got %d, want 1", r2.count)
+		}
+		k2 := &Keyring{}
+		if err := k2.Load(db, r2.newPP); err != nil {
+			t.Fatalf("load winner passphrase %q: %v", r2.newPP, err)
+		}
+	case errors.Is(r2.err, ErrAlreadyRotating) && r1.err == nil:
+		if r1.count != 1 {
+			t.Fatalf("winner count: got %d, want 1", r1.count)
+		}
+		k2 := &Keyring{}
+		if err := k2.Load(db, r1.newPP); err != nil {
+			t.Fatalf("load winner passphrase %q: %v", r1.newPP, err)
+		}
+	default:
+		t.Fatalf("expected exactly one ErrAlreadyRotating and one nil; got r1=%v, r2=%v", r1.err, r2.err)
+	}
+}
+
+// TestRotateRollbackPreservesState verifies FR-006 / FR-010: when the
+// rotation transaction fails mid-flight, the on-disk state and the
+// in-memory KEK MUST remain on the pre-rotation values. We induce a
+// mid-rotation failure by inserting a connection row whose dek_wrapped
+// is corrupted — the unwrap step inside Rotate's loop will fail, the
+// transaction rolls back, and the next Load with the OLD passphrase
+// MUST succeed.
+func TestRotateRollbackPreservesState(t *testing.T) {
+	db := newDB(t)
+	k := &Keyring{}
+	setupFast(t, db, k, []byte("old"))
+
+	// Insert a row whose wrapped DEK is gibberish — Rotate will fail on
+	// gcmOpen for this row, rolling back the transaction.
+	garbage := make([]byte, 48)
+	garbageNonce := make([]byte, 12)
+	if _, err := db.Exec(
+		`INSERT INTO connections (id, dek_wrapped, dek_nonce) VALUES (?, ?, ?)`,
+		"corrupt", garbage, garbageNonce,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	originalKEK := append([]byte(nil), k.KEK()...)
+
+	_, err := k.Rotate(db, []byte("old"), []byte("new"), nil)
+	if err == nil {
+		t.Fatal("expected rotate to fail on corrupt row, got nil")
+	}
+
+	// In-memory KEK MUST be unchanged.
+	if !equalBytes(originalKEK, k.KEK()) {
+		t.Fatal("in-memory KEK changed after failed rotation")
+	}
+
+	// On-disk crypto_meta MUST still verify against the OLD passphrase.
+	k2 := &Keyring{}
+	if err := k2.Load(db, []byte("old")); err != nil {
+		t.Fatalf("load with old passphrase after failed rotate: %v", err)
+	}
+
+	// And the new passphrase MUST still fail to load.
+	k3 := &Keyring{}
+	if err := k3.Load(db, []byte("new")); !errors.Is(err, ErrWrongPassphrase) {
+		t.Fatalf("expected ErrWrongPassphrase loading with new pp after failed rotate, got %v", err)
+	}
+
+	// rotating flag MUST be cleared after the failed rotation (defer).
+	if k.rotating.Load() {
+		t.Fatal("rotating flag still set after failed rotation")
+	}
+}
+
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

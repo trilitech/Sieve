@@ -546,12 +546,19 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 // writeConnectionError centralizes the locked-state response. If err is the
-// keyring-not-loaded sentinel, return 503; otherwise fall through to the
-// caller-supplied default status. Routed through one helper so every
-// credential-touching endpoint produces an identical 503 body.
+// keyring-not-loaded sentinel, return 503; if err is the rotation-in-progress
+// sentinel, return 503 with a Retry-After header so retry-aware agent SDKs
+// back off cleanly during the brief rotation window. Otherwise fall through
+// to the caller-supplied default status. Routed through one helper so every
+// credential-touching endpoint produces an identical body.
 func writeConnectionError(w http.ResponseWriter, defaultStatus int, defaultMessage string, err error) {
 	if errors.Is(err, secrets.ErrKeyringNotLoaded) {
 		writeError(w, http.StatusServiceUnavailable, "service locked: passphrase required")
+		return
+	}
+	if errors.Is(err, secrets.ErrKeyringRotating) {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "rotation in progress, retry shortly")
 		return
 	}
 	writeError(w, defaultStatus, defaultMessage)

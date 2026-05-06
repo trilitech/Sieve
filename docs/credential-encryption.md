@@ -138,18 +138,133 @@ This covers all credential-touching routes: `/api/v1/connections/*/ops/*`, `/pro
 
 ## Passphrase rotation
 
-`sieve passphrase change` (provided by the `cmd/sieve` entrypoint):
+You can change Sieve's passphrase at any time, and every connection you've already added keeps working under the new value. Sieve gives you two ways to do it:
 
-1. Prompts for the current passphrase, derives the old KEK, verifies the sentinel.
-2. Prompts twice for the new passphrase, derives a new KEK with a fresh salt.
-3. Opens a transaction.
-4. For every `connections` row: unwrap the DEK with the old KEK, re-wrap it with the new KEK, update `dek_wrapped` + `dek_nonce` in place.
-5. Update `crypto_meta` with the new salt, params, and verifier.
-6. Commit.
+- **From the admin UI** — for routine rotations on a running Sieve. Recommended.
+- **From the command line** — for when Sieve is stopped, or for recovery situations.
 
-The actual ciphertext (`config_ciphertext`) is **never touched** — only the tiny wrapped-DEK blobs are rewritten. Rotation is O(connections), not O(credential bytes).
+Both paths produce the same end state and the same audit-log entry, so it doesn't matter which one you pick — choose whichever fits the moment.
 
-If any step fails the transaction rolls back and the old passphrase is still valid. The in-memory KEK is only swapped after a successful commit.
+### When to rotate
+
+Rotate the passphrase whenever it's been seen by someone who shouldn't keep access:
+
+- A teammate who knew the passphrase has left.
+- The passphrase was typed into a chat, ticket, or screen-share and you'd like a clean cutover.
+- You're following a scheduled rotation policy.
+- You've recovered from a suspected compromise and want a fresh key.
+
+Rotation is cheap regardless of how many connections you have — it's not "re-encrypt every credential", it's "swap the small key that *unlocks* the credentials". Even with hundreds of connections it completes in a few seconds. (See [Why rotation is fast](#why-rotation-is-fast) below.)
+
+### From the admin UI (recommended)
+
+1. Open the admin UI at `http://127.0.0.1:19816/settings`.
+2. Scroll to the **Security** card.
+3. Fill in your current passphrase, then your new passphrase twice (the second time confirms there was no typo).
+4. Click **Rotate passphrase**.
+
+The button enters a busy state for one to three seconds while Sieve derives the new key, and then the page reloads with a green confirmation showing how many credentials were re-keyed. **Sieve does not need to be restarted** — it picks up the new passphrase immediately, and you can keep working in the same admin session.
+
+If the rotation fails (wrong current passphrase, mismatched confirmation, etc.) the page redraws with a clear error and **none of the typed values are echoed back** — you re-type from scratch. Nothing is changed on disk until everything has succeeded.
+
+### From the command line
+
+Use this when Sieve is stopped, or in recovery situations where the admin UI isn't available. **Stop the running Sieve process first** — if you don't, the rotation will be blocked by the database lock and exit with code `6`.
+
+```
+$ sieve --rotate-passphrase
+Current passphrase: ********
+New passphrase: ********
+Confirm passphrase: ********
+sieve: passphrase rotated. 7 credential records re-wrapped.
+$ echo $?
+0
+```
+
+The command does not start any network listeners — it runs the rotation and exits. Start Sieve again the normal way with the new passphrase when you're done.
+
+**Exit codes** (so scripts can branch on specific failures):
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Generic / unexpected failure |
+| 2 | Wrong current passphrase |
+| 3 | New-passphrase confirmation mismatch |
+| 4 | New passphrase identical to current |
+| 5 | Keyring not initialized — run `--setup` once first |
+| 6 | Database is locked — another Sieve process is holding it, or another rotation is already in progress |
+
+The CLI surface currently expects a real terminal for the prompts. If you need scripted rotation, drive the admin-UI form from a headless browser, or wrap the CLI in an `expect`-style script.
+
+### What agents experience while rotation is happening
+
+Rotation takes one to three seconds, and during that window any agent that hits Sieve to use a credential gets a *temporary* error back:
+
+```
+HTTP/1.1 503 Service Unavailable
+Retry-After: 5
+Content-Type: text/plain
+
+rotation in progress, retry shortly
+```
+
+Anthropic's agent SDKs, the MCP host, and any client that already retries on `503` will retry automatically and continue working — your agents don't need to be reconfigured or restarted. Agents will **never** see a partially-rotated state where some credentials work and others don't; rotation is all-or-nothing from the outside.
+
+### How the UI form is hardened
+
+The rotation form is the most sensitive form Sieve has — anyone who can submit it can change your passphrase. It carries protections that the other admin forms don't need:
+
+- **Agents can't reach it.** The form lives on the admin-only port (19816) and explicitly rejects any request carrying a Sieve agent token. Even an agent that somehow learns the URL gets `403`.
+- **Other websites can't trick your browser into submitting it.** Sieve checks the request's `Origin` (or `Referer`) header against the page that served the form. A malicious site you happen to visit while Sieve is running cannot silently POST to the rotation endpoint.
+- **Brute-forcing the current passphrase doesn't work.** After five wrong guesses in a row, the form locks itself for 15 minutes (`HTTP 423`, with a `Retry-After` header) and writes a single entry to the audit log so you can see that someone was probing. Further attempts during the cooldown are refused without producing more audit-log noise. The cooldown lives in memory — restarting Sieve clears it, but five fresh guesses will trigger it again.
+- **Password managers don't save it.** The fields are tagged `autocomplete="new-password"` so your browser doesn't store them next to the admin-UI login credential.
+- **Failures don't leak the typed values.** A failed submission redraws the form blank — Sieve never echoes the passphrase you typed back into the page, even on internal errors.
+
+### If you forget your passphrase
+
+There is no passphrase recovery. The encryption is real — anything that could "recover" your credentials without the passphrase would also let an attacker who got the database file do the same. Pick a passphrase you can remember, or store one in a password manager.
+
+If you've forgotten it and need to start over, there's a controlled escape hatch:
+
+```
+$ sieve --reset-keyring
+
+WARNING: --reset-keyring is destructive and irreversible.
+  • 7 stored credential record(s) will be deleted.
+  • You will need to re-add every connection (Gmail, OAuth
+    accounts, LLM API keys, etc.) after running --setup again.
+  • Policies, roles, tokens, audit history, and settings are
+    preserved.
+
+Type RESET (in capital letters) to confirm, anything else to abort: RESET
+
+sieve: keyring reset. 7 credential record(s) deleted.
+sieve: run with --setup to choose a new passphrase, then re-add your connections.
+```
+
+The flag deletes the encrypted credentials and the keyring metadata, and **only** those. Your policies, role-to-connection bindings, agent tokens, audit history, and settings all survive — so once you re-add the connections (using the same IDs), every existing token and binding starts working again without further changes.
+
+The flag is a UX safeguard, not a security boundary: anyone with write access to `data/sieve.db` can already destroy the credentials by other means (`rm`, raw `sqlite3` deletes). The actual security boundary is file permissions on the database (`chmod 0600`, plus running Sieve as a dedicated user). The two safeguards `--reset-keyring` adds are:
+
+- It refuses to run unless stdin is a TTY (no scripted accidental wipes).
+- It requires the operator to type the literal string `RESET` (no muscle-memory `y` confirmations).
+
+It also writes one audit-log entry recording the reset, which `rm` does not.
+
+### Why rotation is fast
+
+Sieve doesn't store your credentials encrypted under your passphrase directly. It stores each credential encrypted under a small per-record key, and that small key is encrypted under your passphrase. Rotation only re-encrypts the small keys; the credential payloads themselves are never touched.
+
+That's why rotation completes in a few seconds even on installations with many connections, and why a failed rotation can never leave a credential in a half-encrypted state — the actual encrypted credentials don't change at all.
+
+### What gets recorded
+
+Every successful rotation writes one entry to the audit log with `operation = "keyring.rotate"`, the surface that drove it (`ui` or `cli`), and the count of credentials that were re-keyed. The entry is written inside the same database transaction as the rotation itself, so a failed rotation produces no audit row, and a successful rotation always has exactly one.
+
+A `--reset-keyring` invocation produces a single `keyring.reset` audit entry recording the count of deleted credentials, written inside the same transaction as the deletes themselves.
+
+No audit row ever contains the passphrase, any derived key, or any decrypted credential.
 
 ## Deployment recipes
 
