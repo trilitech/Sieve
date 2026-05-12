@@ -241,7 +241,7 @@ func NewServer(
 	}
 
 	// Parse each page template together with the nav partial.
-	pages := []string{"connections", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit", "docs"}
+	pages := []string{"connections", "connection_edit", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit", "docs"}
 	for _, page := range pages {
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
@@ -275,6 +275,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /connections/add", s.handleConnectionAdd)
 	mux.HandleFunc("POST /connections/{id}/delete", s.handleConnectionDelete)
 	mux.HandleFunc("POST /connections/{id}/reauth", s.handleConnectionReauth)
+	mux.HandleFunc("GET /connections/{id}/edit", s.handleConnectionEditPage)
+	mux.HandleFunc("POST /connections/{id}/edit", s.handleConnectionEditSave)
 	mux.HandleFunc("GET /oauth/callback", s.handleOAuthCallback)
 
 	// GitHub-specific setup flows

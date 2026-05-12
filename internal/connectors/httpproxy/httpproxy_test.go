@@ -362,6 +362,88 @@ func TestAuthValueScrubFilterReturnsNilWhenDisabled(t *testing.T) {
 	}
 }
 
+// --- US4: additional_denied_headers (operator-extendable deny-list) ---
+
+func TestExecuteRespectsAdditionalDeniedHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("upstream MUST NOT be contacted on operator-extended deny")
+	}))
+	defer upstream.Close()
+	c, err := Factory(map[string]any{
+		"target_url":                upstream.URL,
+		"auth_header":               "x-api-key",
+		"auth_value":                "sk-test",
+		"additional_denied_headers": []any{"X-Custom", "X-App-Internal"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := c.(*ProxyConnector)
+
+	// Both extras are denied (case-insensitive). Baseline still applies.
+	for _, casing := range []string{"X-Custom", "x-custom", "X-CUSTOM"} {
+		t.Run(casing, func(t *testing.T) {
+			_, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+				"method":  "GET",
+				"path":    "/v1/anything",
+				"headers": map[string]any{casing: "x"},
+			})
+			if !errors.Is(err, ErrHeaderDenied) {
+				t.Errorf("operator-extended deny via %q failed; got err=%v", casing, err)
+			}
+		})
+	}
+
+	// A non-denied header still passes the deny-check (would reach upstream
+	// but our test server fails the test if it does — so we don't actually
+	// call Execute with such a header here; just verify the negative.)
+	if denied, _ := isDeniedHeader("anthropic-version", pc.authHeaderLower, pc.additionalDeniedLookup); denied {
+		t.Errorf("non-denied header anthropic-version should pass")
+	}
+}
+
+func TestAdditionalDenyDoesNotReduceBaseline(t *testing.T) {
+	// Even if an operator passes an empty additional_denied_headers list,
+	// the baseline (Authorization, Host, hop-by-hop, etc.) still fires.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("upstream MUST NOT be contacted")
+	}))
+	defer upstream.Close()
+	c, err := Factory(map[string]any{
+		"target_url":                upstream.URL,
+		"auth_header":               "x-api-key",
+		"auth_value":                "sk-test",
+		"additional_denied_headers": []any{}, // empty: no extras
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := c.(*ProxyConnector)
+	_, err = pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method":  "POST",
+		"path":    "/v1/messages",
+		"headers": map[string]any{"Authorization": "evil"},
+	})
+	if !errors.Is(err, ErrHeaderDenied) {
+		t.Errorf("baseline (Authorization) must still be denied with empty extras; got %v", err)
+	}
+}
+
+func TestEmptyAdditionalDenyEntryRejected(t *testing.T) {
+	_, err := Factory(map[string]any{
+		"target_url":                "https://example.com",
+		"auth_header":               "x-api-key",
+		"auth_value":                "sk",
+		"additional_denied_headers": []any{"X-Good", "  ", "X-Other"},
+	})
+	if err == nil {
+		t.Fatal("Factory must reject empty trimmed entries in additional_denied_headers")
+	}
+	if !strings.Contains(err.Error(), "additional_denied_headers") {
+		t.Errorf("error must clearly point at the offending field; got %q", err.Error())
+	}
+}
+
 func TestAuthValueScrubFilterReturnsFilterWhenEnabled(t *testing.T) {
 	c, err := Factory(map[string]any{
 		"target_url":  "https://example.com",

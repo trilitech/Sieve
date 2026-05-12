@@ -73,9 +73,12 @@ var deniedHeaderKeys = map[string]struct{}{
 
 // isDeniedHeader reports whether the given header key is denied for a
 // connection whose configured auth_header is authHeaderLower (already
-// lowercased by the caller). The returned string is the lowercased
-// form of key, useful in error messages.
-func isDeniedHeader(key, authHeaderLower string) (bool, string) {
+// lowercased by the caller) and whose operator-extended deny-list is
+// extra (a lowercased lookup map; may be nil). The returned string is
+// the lowercased form of key, useful in error messages. The static
+// baseline (deniedHeaderKeys + x-forwarded-* + auth_header) is checked
+// first; the extra map only ADDS denies, never reduces the baseline.
+func isDeniedHeader(key, authHeaderLower string, extra map[string]struct{}) (bool, string) {
 	lower := strings.ToLower(strings.TrimSpace(key))
 	if lower == "" {
 		return false, lower
@@ -88,6 +91,11 @@ func isDeniedHeader(key, authHeaderLower string) (bool, string) {
 	}
 	if authHeaderLower != "" && lower == authHeaderLower {
 		return true, lower
+	}
+	if extra != nil {
+		if _, ok := extra[lower]; ok {
+			return true, lower
+		}
 	}
 	return false, lower
 }
@@ -109,13 +117,15 @@ var Meta = connector.ConnectorMeta{
 // raw HTTP requests. The Execute method receives the HTTP method, path, headers,
 // and body as params and returns the proxied response.
 type ProxyConnector struct {
-	targetURL       string
-	authHeader      string
-	authHeaderLower string // lowercased once at construction; used by header deny-check
-	authValue       string
-	authValueScrub  bool // when true (default), upstream response bodies are scrubbed of literal authValue
-	extraHeaders    map[string]string
-	client          *http.Client
+	targetURL              string
+	authHeader             string
+	authHeaderLower        string   // lowercased once at construction; used by header deny-check
+	authValue              string
+	authValueScrub         bool     // when true (default), upstream response bodies are scrubbed of literal authValue
+	additionalDenied       []string // operator-supplied extras the connector ALSO denies (lowercased; never reduces the baseline)
+	additionalDeniedLookup map[string]struct{} // O(1) lookup over additionalDenied
+	extraHeaders           map[string]string
+	client                 *http.Client
 }
 
 func Factory(config map[string]any) (connector.Connector, error) {
@@ -153,6 +163,33 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		authValueScrub = v
 	}
 
+	// additional_denied_headers is the operator-supplied extension to the
+	// hard-coded baseline deny-list. Entries are case-insensitive; empty
+	// trimmed entries fail config load. The baseline is never reducible
+	// via this field — entries here can only ADD to the deny set.
+	var additionalDenied []string
+	switch raw := config["additional_denied_headers"].(type) {
+	case []string:
+		additionalDenied = raw
+	case []any:
+		additionalDenied = make([]string, 0, len(raw))
+		for _, v := range raw {
+			if s, ok := v.(string); ok {
+				additionalDenied = append(additionalDenied, s)
+			}
+		}
+	}
+	addLookup := make(map[string]struct{}, len(additionalDenied))
+	cleaned := make([]string, 0, len(additionalDenied))
+	for i, h := range additionalDenied {
+		t := strings.ToLower(strings.TrimSpace(h))
+		if t == "" {
+			return nil, fmt.Errorf("http_proxy: additional_denied_headers[%d] is empty", i)
+		}
+		addLookup[t] = struct{}{}
+		cleaned = append(cleaned, t)
+	}
+
 	// Path restrictions are handled by the policy engine, not the connector.
 	// The connector just proxies — what's allowed is a policy decision.
 
@@ -166,12 +203,14 @@ func Factory(config map[string]any) (connector.Connector, error) {
 	}
 
 	return &ProxyConnector{
-		targetURL:       targetURL,
-		authHeader:      authHeader,
-		authHeaderLower: strings.ToLower(strings.TrimSpace(authHeader)),
-		authValue:       authValue,
-		authValueScrub:  authValueScrub,
-		extraHeaders:    extraHeaders,
+		targetURL:              targetURL,
+		authHeader:             authHeader,
+		authHeaderLower:        strings.ToLower(strings.TrimSpace(authHeader)),
+		authValue:              authValue,
+		authValueScrub:         authValueScrub,
+		additionalDenied:       cleaned,
+		additionalDeniedLookup: addLookup,
+		extraHeaders:           extraHeaders,
 		client: &http.Client{
 			Timeout: 5 * time.Minute,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -233,7 +272,7 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 	// / extra_headers continue to flow through unchanged.
 	if headers, ok := params["headers"].(map[string]any); ok {
 		for k := range headers {
-			if denied, lower := isDeniedHeader(k, p.authHeaderLower); denied {
+			if denied, lower := isDeniedHeader(k, p.authHeaderLower, p.additionalDeniedLookup); denied {
 				return nil, fmt.Errorf("%w: %q not allowed", ErrHeaderDenied, lower)
 			}
 		}
@@ -420,7 +459,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 		if strings.EqualFold(key, "Authorization") {
 			continue
 		}
-		if denied, lower := isDeniedHeader(key, p.authHeaderLower); denied {
+		if denied, lower := isDeniedHeader(key, p.authHeaderLower, p.additionalDeniedLookup); denied {
 			http.Error(w, fmt.Sprintf("header %q not allowed", lower), http.StatusBadRequest)
 			return "", fmt.Errorf("%w: %q", ErrHeaderDenied, lower)
 		}
