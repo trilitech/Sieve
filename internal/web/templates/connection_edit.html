@@ -59,6 +59,22 @@
         </section>
 
         <section class="rounded-lg bg-slate-800 border border-slate-700 p-6">
+          <h2 class="text-lg font-semibold text-white mb-2">Auth query parameter</h2>
+          <p class="text-sm text-slate-400 mb-3">
+            When the upstream API expects credentials in a URL query parameter
+            (for example, OpenWeather's <code>?appid=...</code>) rather than an
+            HTTP header, set this to the parameter name. Leave empty to use
+            header authentication only. Letters, digits, <code>_</code>,
+            <code>-</code>, and <code>.</code> are permitted. Comparison
+            against agent-supplied URL parameters is case-sensitive.
+          </p>
+          <input type="text" name="auth_query_param" pattern="[A-Za-z0-9_.\-]*"
+            value="{{.AuthQueryParam}}"
+            placeholder="appid"
+            class="w-64 rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">
+        </section>
+
+        <section class="rounded-lg bg-slate-800 border border-slate-700 p-6">
           <h2 class="text-lg font-semibold text-white mb-2">Header deny-list (read-only baseline)</h2>
           <p class="text-sm text-slate-400 mb-4">
             Sieve always rejects agent-supplied request headers whose key matches any entry below

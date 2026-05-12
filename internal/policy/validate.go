@@ -16,6 +16,7 @@ var matchFieldToParams = map[string][]string{
 	"model":                  {"model"},
 	"providers":              {"provider"},
 	"path":                   {"path"},
+	"method":                 {"method"},
 	"body_contains":          {"body"},
 	"max_tokens":             {"max_tokens"},
 	"max_cost":               {"max_cost", "estimated_cost"},

@@ -2265,3 +2265,78 @@ func TestValidatePolicy_ResponseFieldsAlwaysValid(t *testing.T) {
 		t.Fatalf("response-based fields (from, labels) should be valid on any op, got errors: %v", errs)
 	}
 }
+
+func TestRulesMatchMethod(t *testing.T) {
+	// Allow GETs and HEADs against /v1/models; deny everything else.
+	eval := makeRulesEvaluator(t, map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match": map[string]any{
+					"operations": []any{"proxy_request"},
+					"method":     []any{"GET", "HEAD"},
+					"path":       "/v1/models",
+				},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+	})
+	ctx := context.Background()
+
+	cases := []struct {
+		method, path, want string
+	}{
+		{"GET", "/v1/models", "allow"},
+		{"HEAD", "/v1/models", "allow"},
+		{"get", "/v1/models", "allow"},  // case-insensitive
+		{"POST", "/v1/models", "deny"},
+		{"GET", "/v1/messages", "deny"}, // path mismatch
+		{"DELETE", "/v1/anything", "deny"},
+	}
+	for _, c := range cases {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			req := &PolicyRequest{
+				Operation: "proxy_request",
+				Connector: "http_proxy",
+				Params: map[string]any{
+					"method": c.method,
+					"path":   c.path,
+				},
+			}
+			dec, err := eval.Evaluate(ctx, req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if dec.Action != c.want {
+				t.Errorf("method=%q path=%q: got %s, want %s", c.method, c.path, dec.Action, c.want)
+			}
+		})
+	}
+}
+
+func TestValidatePolicy_MethodFieldOK(t *testing.T) {
+	ops := []connector.OperationDef{
+		{
+			Name: "proxy_request",
+			Params: map[string]connector.ParamDef{
+				"method": {Type: "string", Required: true},
+				"path":   {Type: "string", Required: true},
+			},
+		},
+	}
+	config := map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match": map[string]any{
+					"operations": []any{"proxy_request"},
+					"method":     []any{"GET"},
+				},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+	}
+	if errs := ValidatePolicy(config, ops); len(errs) != 0 {
+		t.Fatalf("method field should validate against an op accepting `method` param, got errors: %v", errs)
+	}
+}

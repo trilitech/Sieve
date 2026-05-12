@@ -1180,10 +1180,16 @@ func (s *Server) handlePolicyEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Detect scope from the policy config if stored, otherwise default to gmail.
+	// Detect scope. Preference order: explicit `scope` field > shape inference
+	// from the rules > "gmail" as last-resort default. Older policies that
+	// were created before the create form started persisting `scope` end up
+	// with an empty value; inferring from rules keeps the edit page from
+	// silently rendering the wrong connector's UI.
 	scope := "gmail"
-	if s, ok := pol.PolicyConfig["scope"].(string); ok && s != "" {
-		scope = s
+	if v, ok := pol.PolicyConfig["scope"].(string); ok && v != "" {
+		scope = v
+	} else if inferred := inferPolicyScope(pol.PolicyConfig); inferred != "" {
+		scope = inferred
 	}
 
 	data := map[string]any{
@@ -1192,6 +1198,51 @@ func (s *Server) handlePolicyEdit(w http.ResponseWriter, r *http.Request) {
 		"Scope":  scope,
 	}
 	s.render(w, "policy_edit", data)
+}
+
+// inferPolicyScope guesses a policy's connector scope from the shape of its
+// rules. Returns "" when nothing distinctive is found (caller defaults to
+// "gmail" for backwards compatibility with the legacy default).
+//
+// Signals checked, in order of specificity:
+//   - rule.match.method or rule.match.path  → http_proxy
+//   - match.operations contains "proxy_request" → http_proxy
+//   - rule.match.providers or LLM-only fields → llm
+//   - match.operations contains a Drive/Calendar/etc op name → that scope
+func inferPolicyScope(cfg map[string]any) string {
+	rules, _ := cfg["rules"].([]any)
+	for _, ri := range rules {
+		r, ok := ri.(map[string]any)
+		if !ok {
+			continue
+		}
+		match, _ := r["match"].(map[string]any)
+		if match == nil {
+			continue
+		}
+		if _, ok := match["method"]; ok {
+			return "http_proxy"
+		}
+		if _, ok := match["path"]; ok {
+			return "http_proxy"
+		}
+		if ops, ok := match["operations"].([]any); ok {
+			for _, op := range ops {
+				if s, _ := op.(string); s == "proxy_request" {
+					return "http_proxy"
+				}
+			}
+		}
+		if _, ok := match["providers"]; ok {
+			return "llm"
+		}
+		for _, k := range []string{"model", "max_tokens", "max_cost", "extended_thinking", "system_prompt_contains", "max_temperature", "json_mode", "grounding", "safety_threshold"} {
+			if _, ok := match[k]; ok {
+				return "llm"
+			}
+		}
+	}
+	return ""
 }
 
 func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {

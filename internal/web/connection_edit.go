@@ -3,9 +3,18 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 )
+
+// authQueryParamPattern mirrors the validator in
+// internal/connectors/httpproxy/httpproxy.go::validateAuthQueryParam. The
+// connector package owns the canonical regex; we duplicate the string here
+// rather than import the connector package (which would create a cyclic
+// dependency through connector.Registry). Tests in both packages assert the
+// strings match.
+var authQueryParamPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 // connectionEditData backs the templates/connection_edit.html template.
 // It carries the per-connector knobs introduced by spec 006 plus a few
@@ -36,6 +45,7 @@ type connectionEditData struct {
 
 type httpProxyEditData struct {
 	AuthValueScrub          bool
+	AuthQueryParam          string
 	AdditionalDeniedHeaders string // textarea pre-filled (one per line)
 	BaselineDenyKeys        []string
 	AuthHeaderConfigured    string
@@ -172,6 +182,18 @@ func applyHTTPProxyEdit(cfg map[string]any, r *http.Request) string {
 	// auth_value_scrub: checkbox; absent in form → false; "1"/"on" → true.
 	cfg["auth_value_scrub"] = r.FormValue("auth_value_scrub") != ""
 
+	// auth_query_param: trim whitespace; empty = clear; non-empty must
+	// match the validation regex (also enforced server-side by the
+	// connector Factory).
+	aqp := strings.TrimSpace(r.FormValue("auth_query_param"))
+	if aqp == "" {
+		cfg["auth_query_param"] = ""
+	} else if !authQueryParamPattern.MatchString(aqp) {
+		return "auth_query_param must contain only letters, digits, _, -, or . (got " + aqp + ")"
+	} else {
+		cfg["auth_query_param"] = aqp
+	}
+
 	// additional_denied_headers: textarea (one per line); empty trimmed
 	// entries are rejected.
 	raw := r.FormValue("additional_denied_headers")
@@ -244,10 +266,12 @@ func connectionEditDataFromConnection(conn interface {
 		if v, ok := cfg["auth_value_scrub"].(bool); ok {
 			scrub = v
 		}
+		aqp, _ := cfg["auth_query_param"].(string)
 		extra := joinStringSliceField(cfg["additional_denied_headers"])
 		authH, _ := cfg["auth_header"].(string)
 		d.HTTPProxy = &httpProxyEditData{
 			AuthValueScrub:          scrub,
+			AuthQueryParam:          aqp,
 			AdditionalDeniedHeaders: extra,
 			BaselineDenyKeys:        staticHTTPProxyBaselineKeys,
 			AuthHeaderConfigured:    authH,

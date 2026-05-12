@@ -100,6 +100,26 @@ func isDeniedHeader(key, authHeaderLower string, extra map[string]struct{}) (boo
 	return false, lower
 }
 
+// authQueryParamPattern is the character class accepted for the optional
+// auth_query_param config field on http_proxy connections. ASCII letters,
+// digits, underscore, hyphen, dot — covers every common API key parameter
+// name in the wild (appid, api_key, api-key, client.id, etc.) without
+// permitting URL-special chars (?, &, #, =, +, %, space, /) that would
+// either break the URL or change semantics.
+var authQueryParamPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+// validateAuthQueryParam trims whitespace and verifies the parameter-name
+// character class. Empty / whitespace-only input is valid and means "use
+// header auth only" (legacy behaviour); the connector's
+// injectAuthQueryParam short-circuits when the field is empty.
+func validateAuthQueryParam(s string) (cleaned string, ok bool) {
+	cleaned = strings.TrimSpace(s)
+	if cleaned == "" {
+		return "", true
+	}
+	return cleaned, authQueryParamPattern.MatchString(cleaned)
+}
+
 var Meta = connector.ConnectorMeta{
 	Type:        "http_proxy",
 	Name:        "HTTP Proxy",
@@ -124,6 +144,7 @@ type ProxyConnector struct {
 	authValueScrub         bool     // when true (default), upstream response bodies are scrubbed of literal authValue
 	additionalDenied       []string // operator-supplied extras the connector ALSO denies (lowercased; never reduces the baseline)
 	additionalDeniedLookup map[string]struct{} // O(1) lookup over additionalDenied
+	authQueryParam         string   // empty = legacy header-only auth; non-empty = inject auth_value as URL query param under this name
 	extraHeaders           map[string]string
 	client                 *http.Client
 }
@@ -190,6 +211,16 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		cleaned = append(cleaned, t)
 	}
 
+	// auth_query_param: when set, inject auth_value as a URL query parameter
+	// under this name on every outbound request (closes the gap for
+	// query-string-auth APIs like OpenWeather One Call 3.0). Empty / unset
+	// = legacy header-only auth, behaviour unchanged from prior versions.
+	rawAuthQueryParam, _ := config["auth_query_param"].(string)
+	authQueryParam, qpOK := validateAuthQueryParam(rawAuthQueryParam)
+	if !qpOK {
+		return nil, fmt.Errorf("http_proxy: auth_query_param %q must match [A-Za-z0-9_.-]+ (or be empty)", rawAuthQueryParam)
+	}
+
 	// Path restrictions are handled by the policy engine, not the connector.
 	// The connector just proxies — what's allowed is a policy decision.
 
@@ -210,6 +241,7 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		authValueScrub:         authValueScrub,
 		additionalDenied:       cleaned,
 		additionalDeniedLookup: addLookup,
+		authQueryParam:         authQueryParam,
 		extraHeaders:           extraHeaders,
 		client: &http.Client{
 			Timeout: 5 * time.Minute,
@@ -221,6 +253,29 @@ func Factory(config map[string]any) (connector.Connector, error) {
 }
 
 func (p *ProxyConnector) Type() string { return "http_proxy" }
+
+// injectAuthQueryParam writes auth_value into the outbound URL's query
+// string under the configured authQueryParam, replacing any existing
+// values (regardless of count or case). Returns true when an override
+// fired — i.e. the agent's URL contained the configured param name with
+// one or more values that were dropped in favour of Sieve's auth_value.
+//
+// The agent's other query parameters are preserved unchanged. URL
+// encoding (RFC 3986) is handled by url.Values.Encode().
+//
+// When authQueryParam is empty, the helper is a no-op and returns false
+// — this is the backwards-compatibility guarantee for connections that
+// pre-date this feature (no auth_query_param field in their config).
+func (p *ProxyConnector) injectAuthQueryParam(u *url.URL) bool {
+	if p.authQueryParam == "" {
+		return false
+	}
+	q := u.Query()
+	overridden := q.Has(p.authQueryParam)
+	q.Set(p.authQueryParam, p.authValue) // Set replaces any existing values
+	u.RawQuery = q.Encode()
+	return overridden
+}
 
 // AuthValueScrubFilter returns the response filter that scrubs the configured
 // auth_value (literal-match) from upstream response bodies, or nil when the
@@ -290,6 +345,13 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 		return nil, fmt.Errorf("http_proxy: create request: %w", err)
 	}
 
+	// Inject auth_value as a URL query parameter when auth_query_param is
+	// configured (e.g. OpenWeather's ?appid=...). No-op when unset.
+	// Returns true when an agent-supplied value of the same param name
+	// was dropped — the router uses that signal to emit
+	// http_proxy.auth_query_overridden in the audit log.
+	overridden := p.injectAuthQueryParam(req.URL)
+
 	// Inject real auth credential.
 	req.Header.Set(p.authHeader, p.authValue)
 
@@ -338,12 +400,20 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 		respBody = scrubbed
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"status":      resp.StatusCode,
 		"status_text": resp.Status,
 		"headers":     flattenHeaders(resp.Header),
 		"body":        string(respBody),
-	}, nil
+	}
+	// Signal to the router that an agent attempted to inject their own value
+	// for the configured auth_query_param. The router reads this private key
+	// to choose `policy_result: http_proxy.auth_query_overridden` and strips
+	// it before serialising the response back to the agent.
+	if overridden {
+		result["_auth_query_overridden"] = true
+	}
+	return result, nil
 }
 
 func (p *ProxyConnector) Validate(ctx context.Context) error {
@@ -438,15 +508,18 @@ var headersInvalidatedByFiltering = map[string]bool{
 //
 // Returns the filter-summary string (the second return value of
 // ApplyResponseFilters; empty when no filters were applied or when the
-// streaming fast-path was taken) and a non-nil error when the request was
-// rejected locally (e.g. invalid path, denied header). The HTTP error
-// response has already been written to w in that case. Callers use the
-// summary to choose the audit-log policy_result identifier.
-func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxyPath string, filters []policy.ResponseFilter) (string, error) {
+// streaming fast-path was taken), a bool indicating whether the
+// auth_query_param injection overrode an agent-supplied value (the
+// router uses this to emit `policy_result: http_proxy.auth_query_overridden`),
+// and a non-nil error when the request was rejected locally (e.g.
+// invalid path, denied header). The HTTP error response has already
+// been written to w in that case. Callers use the summary + override
+// flag to choose the audit-log policy_result identifier.
+func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxyPath string, filters []policy.ResponseFilter) (string, bool, error) {
 	cleaned, err := validateProxyPath(proxyPath)
 	if err != nil {
 		http.Error(w, "invalid path", http.StatusBadRequest)
-		return "", fmt.Errorf("invalid proxy path: %w", err)
+		return "", false, fmt.Errorf("invalid proxy path: %w", err)
 	}
 
 	// Reject deny-listed inbound headers BEFORE constructing the upstream
@@ -461,7 +534,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 		}
 		if denied, lower := isDeniedHeader(key, p.authHeaderLower, p.additionalDeniedLookup); denied {
 			http.Error(w, fmt.Sprintf("header %q not allowed", lower), http.StatusBadRequest)
-			return "", fmt.Errorf("%w: %q", ErrHeaderDenied, lower)
+			return "", false, fmt.Errorf("%w: %q", ErrHeaderDenied, lower)
 		}
 	}
 
@@ -469,7 +542,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	targetBase, err := url.Parse(p.targetURL)
 	if err != nil {
 		http.Error(w, "invalid target URL configuration", http.StatusInternalServerError)
-		return "", fmt.Errorf("invalid target URL: %w", err)
+		return "", false, fmt.Errorf("invalid target URL: %w", err)
 	}
 	// Use JoinPath to safely combine the base path with the proxy path.
 	targetURL := targetBase.JoinPath(cleaned)
@@ -478,8 +551,13 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), r.Body)
 	if err != nil {
 		http.Error(w, "failed to create proxy request", http.StatusInternalServerError)
-		return "", fmt.Errorf("create proxy request: %w", err)
+		return "", false, fmt.Errorf("create proxy request: %w", err)
 	}
+
+	// Inject auth_value as a URL query parameter when auth_query_param is
+	// configured. No-op when unset. Returns true when an agent-supplied
+	// value of the same param name was dropped.
+	overridden := p.injectAuthQueryParam(proxyReq.URL)
 
 	// Copy original headers (except Authorization — we substitute it, and
 	// except Accept-Encoding when filters are active so that Go's Transport
@@ -507,7 +585,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	resp, err := p.client.Do(proxyReq)
 	if err != nil {
 		http.Error(w, "proxy request failed: "+err.Error(), http.StatusBadGateway)
-		return "", fmt.Errorf("upstream request: %w", err)
+		return "", false, fmt.Errorf("upstream request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -521,7 +599,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 		}
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
-		return "", nil
+		return "", overridden, nil
 	}
 
 	// Slow path: buffer the response so we can apply filters.
@@ -530,11 +608,11 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	respBody, err := io.ReadAll(limitedBody)
 	if err != nil {
 		http.Error(w, "failed to read proxy response", http.StatusBadGateway)
-		return "", fmt.Errorf("read proxy response: %w", err)
+		return "", false, fmt.Errorf("read proxy response: %w", err)
 	}
 	if int64(len(respBody)) > maxFilteredBodySize {
 		http.Error(w, "response too large to filter", http.StatusBadGateway)
-		return "", fmt.Errorf("response exceeds %d byte filter limit", maxFilteredBodySize)
+		return "", false, fmt.Errorf("response exceeds %d byte filter limit", maxFilteredBodySize)
 	}
 
 	respBody, filterSummary := policy.ApplyResponseFilters(respBody, filters)
@@ -552,7 +630,7 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody)
-	return filterSummary, nil
+	return filterSummary, overridden, nil
 }
 
 func flattenHeaders(h http.Header) map[string]string {

@@ -98,10 +98,127 @@ func TestEditPageRendersHTTPProxy(t *testing.T) {
 		"Authorization", // baseline panel entry
 		"X-Forwarded-",  // baseline panel entry
 		"x-api-key",     // configured auth_header
+		"auth_query_param",
+		"OpenWeather", // helper text mentions the motivating example
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("edit page missing expected fragment %q", want)
 		}
+	}
+}
+
+func TestEditSavePersistsAuthQueryParam(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addHTTPProxyConnection(t, env, "h1")
+
+	form := url.Values{}
+	form.Set("auth_query_param", "appid")
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	resp, err := httpClientNoRedirect().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303 on success, got %d", resp.StatusCode)
+	}
+	conn, err := env.Connections.GetWithConfig("h1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := conn.Config["auth_query_param"].(string); got != "appid" {
+		t.Errorf("auth_query_param did not persist; got %q", got)
+	}
+}
+
+func TestEditSaveRejectsInvalidAuthQueryParam(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addHTTPProxyConnection(t, env, "h1")
+
+	form := url.Values{}
+	form.Set("auth_query_param", "appid&extra=bad")
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	resp, err := httpClientNoRedirect().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid input, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "auth_query_param") {
+		t.Errorf("error banner should name auth_query_param; got %q", string(body))
+	}
+	conn, _ := env.Connections.GetWithConfig("h1")
+	if _, exists := conn.Config["auth_query_param"]; exists {
+		t.Errorf("auth_query_param was written despite validation error")
+	}
+}
+
+func TestEditSaveClearsAuthQueryParam(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addHTTPProxyConnection(t, env, "h1")
+
+	// First, persist a value.
+	form := url.Values{}
+	form.Set("auth_query_param", "appid")
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	resp, err := httpClientNoRedirect().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("set step: expected 303, got %d", resp.StatusCode)
+	}
+
+	// Then clear it.
+	form2 := url.Values{}
+	form2.Set("auth_query_param", "")
+	req2, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form2.Encode()))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req2.Header.Set("Origin", ts.URL)
+	resp2, err := httpClientNoRedirect().Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusSeeOther {
+		t.Fatalf("clear step: expected 303, got %d", resp2.StatusCode)
+	}
+	conn, _ := env.Connections.GetWithConfig("h1")
+	if got, _ := conn.Config["auth_query_param"].(string); got != "" {
+		t.Errorf("auth_query_param should be cleared; got %q", got)
+	}
+}
+
+func TestEditSaveTrimsAuthQueryParamWhitespace(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addHTTPProxyConnection(t, env, "h1")
+
+	form := url.Values{}
+	form.Set("auth_query_param", "  appid  ")
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	resp, err := httpClientNoRedirect().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", resp.StatusCode)
+	}
+	conn, _ := env.Connections.GetWithConfig("h1")
+	if got, _ := conn.Config["auth_query_param"].(string); got != "appid" {
+		t.Errorf("auth_query_param should be trimmed; got %q", got)
 	}
 }
 

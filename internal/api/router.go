@@ -296,12 +296,22 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", err))
 			return
 		}
+		// Spec 007: detect the http_proxy auth_query_param override signal
+		// smuggled through the result map's private `_auth_query_overridden`
+		// key. Strip the key before serialising so the agent never sees it.
+		policyResult := "allow"
+		if resultMap, ok := result.(map[string]any); ok {
+			if overridden, _ := resultMap["_auth_query_overridden"].(bool); overridden {
+				policyResult = "http_proxy.auth_query_overridden"
+				delete(resultMap, "_auth_query_overridden")
+			}
+		}
 		resultJSON, _ := json.Marshal(result)
 		var reason string
 		if len(decision.Filters) > 0 {
 			resultJSON, reason = policy.ApplyResponseFilters(resultJSON, decision.Filters)
 		}
-		rt.logAudit(tok, connID, operation, params, "allow", reason, time.Since(start).Milliseconds())
+		rt.logAudit(tok, connID, operation, params, policyResult, reason, time.Since(start).Milliseconds())
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write(resultJSON)
@@ -384,12 +394,20 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", err))
 			return
 		}
+		// Spec 007: same private-key smuggling pattern as the pre-approval path.
+		policyResult := "approved"
+		if resultMap, ok := result.(map[string]any); ok {
+			if overridden, _ := resultMap["_auth_query_overridden"].(bool); overridden {
+				policyResult = "http_proxy.auth_query_overridden"
+				delete(resultMap, "_auth_query_overridden")
+			}
+		}
 		resultJSON, _ := json.Marshal(result)
 		var approvedReason string
 		if len(decision.Filters) > 0 {
 			resultJSON, approvedReason = policy.ApplyResponseFilters(resultJSON, decision.Filters)
 		}
-		rt.logAudit(tok, connID, operation, params, "approved", approvedReason, time.Since(start).Milliseconds())
+		rt.logAudit(tok, connID, operation, params, policyResult, approvedReason, time.Since(start).Milliseconds())
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write(resultJSON)
@@ -457,11 +475,13 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The connector must be an http_proxy type with ProxyHTTP method.
-	// The signature returns (filterSummary, error) per spec 006: the summary
-	// is used to detect when the auto-attached auth_value scrub matched, so
-	// the audit-log policy_result can be set to http_proxy.auth_value_scrubbed.
+	// Signature: (filterSummary, queryOverridden, error). filterSummary
+	// is used to detect auth_value scrub matches (spec 006 W1.2);
+	// queryOverridden is true when the auth_query_param injection
+	// dropped an agent-supplied value (spec 007). Both feed the
+	// audit-log policy_result selection.
 	type httpProxier interface {
-		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) (string, error)
+		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) (string, bool, error)
 	}
 
 	proxy, ok := conn.(httpProxier)
@@ -557,7 +577,7 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	filterSummary, err := proxy.ProxyHTTP(w, r, proxyPath, decision.Filters)
+	filterSummary, queryOverridden, err := proxy.ProxyHTTP(w, r, proxyPath, decision.Filters)
 	if err != nil {
 		// W1.1: a denied header is a distinct deny class; the audit row uses
 		// http_proxy.header_denied so analytics can spot exploitation attempts.
@@ -568,11 +588,14 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		rt.logAudit(tok, connID, operation, nil, policyResult, err.Error(), time.Since(start).Milliseconds())
 		return
 	}
-	// W1.2: when the auto-attached scrub fired and matched at least one
-	// occurrence of auth_value, the policy_result distinguishes "scrub
-	// removed credential material" from a vanilla allow.
+	// Audit identifier precedence (per spec 007 contracts/audit-identifier.md):
+	//   1. http_proxy.auth_query_overridden (override is an attempted exploit)
+	//   2. http_proxy.auth_value_scrubbed   (W1.2 routine defensive event)
+	//   3. proxied                          (vanilla success)
 	policyResult := "proxied"
-	if strings.Contains(filterSummary, "redacted") {
+	if queryOverridden {
+		policyResult = "http_proxy.auth_query_overridden"
+	} else if strings.Contains(filterSummary, "redacted") {
 		policyResult = "http_proxy.auth_value_scrubbed"
 	}
 	rt.logAudit(tok, connID, operation, nil, policyResult, filterSummary, time.Since(start).Milliseconds())

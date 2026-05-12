@@ -1937,3 +1937,198 @@ func TestListModelsEndpoint(t *testing.T) {
 		t.Fatalf("expected first model claude-sonnet-4-20250514, got %v", first["id"])
 	}
 }
+
+// --- Spec 007: http_proxy auth_query_param audit identifier ---
+
+// setupProxyWithAuthQueryParam wires an http_proxy connection that injects
+// auth_value into the configured query-string parameter, returns the Sieve
+// server URL, the bearer token, the audit logger, and the upstream handler
+// setter so each test can assert on inbound URLs and audit rows.
+func setupProxyWithAuthQueryParam(t *testing.T, queryParam, authValue string) (serverURL, token string, env *testenv.Env, setHandler func(http.HandlerFunc)) {
+	t.Helper()
+
+	var mu sync.Mutex
+	var currentHandler http.HandlerFunc
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		h := currentHandler
+		mu.Unlock()
+		if h != nil {
+			h(w, r)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	env = testenv.New(t)
+	env.Registry.Register(httpproxyconn.Meta, httpproxyconn.Factory)
+
+	cfg := map[string]any{
+		"target_url":  upstream.URL,
+		"auth_header": "x-api-key",
+		"auth_value":  authValue,
+	}
+	if queryParam != "" {
+		cfg["auth_query_param"] = queryParam
+	}
+	if err := env.Connections.Add("aqp-conn", "http_proxy", "Auth Query Param Proxy", cfg); err != nil {
+		t.Fatalf("add proxy connection: %v", err)
+	}
+
+	pol, err := env.Policies.Create("aqp-allow-all", "rules", map[string]any{
+		"rules":          []any{},
+		"default_action": "allow",
+	})
+	if err != nil {
+		t.Fatalf("create policy: %v", err)
+	}
+
+	role, err := env.Roles.Create("aqp-role", []roles.Binding{
+		{ConnectionID: "aqp-conn", PolicyIDs: []string{pol.ID}},
+	})
+	if err != nil {
+		t.Fatalf("create role: %v", err)
+	}
+
+	tok := env.CreateToken(t, role.ID)
+
+	router := api.NewRouter(env.Tokens, env.Connections, env.Policies, env.Roles, env.Approval, env.Audit)
+	srv := httptest.NewServer(router.Handler())
+	t.Cleanup(srv.Close)
+
+	set := func(h http.HandlerFunc) {
+		mu.Lock()
+		defer mu.Unlock()
+		currentHandler = h
+	}
+	return srv.URL, tok, env, set
+}
+
+func latestAuditEntry(t *testing.T, env *testenv.Env, op string) audit.Entry {
+	t.Helper()
+	entries, err := env.Audit.List(&audit.ListFilter{})
+	if err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Operation == op {
+			return entries[i]
+		}
+	}
+	t.Fatalf("no audit entry for operation %q (have %d entries)", op, len(entries))
+	return audit.Entry{}
+}
+
+// T019: Override path through ProxyHTTP emits the override identifier.
+func TestProxyHTTPAuditIdentifier_QueryOverridden(t *testing.T) {
+	serverURL, tok, env, setHandler := setupProxyWithAuthQueryParam(t, "appid", "REAL_KEY")
+
+	setHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	})
+
+	resp := doRequest(t, "GET", serverURL+"/proxy/aqp-conn/data/3.0/onecall?lat=51.5&appid=AGENT_INJECTED", tok, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	entry := latestAuditEntry(t, env, "proxy:GET:/data/3.0/onecall")
+	if entry.PolicyResult != "http_proxy.auth_query_overridden" {
+		t.Fatalf("expected policy_result=http_proxy.auth_query_overridden, got %q", entry.PolicyResult)
+	}
+}
+
+// T020: Non-override request (no agent-supplied appid) emits the vanilla
+// "proxied" identifier.
+func TestProxyHTTPAuditIdentifier_NoOverride(t *testing.T) {
+	serverURL, tok, env, setHandler := setupProxyWithAuthQueryParam(t, "appid", "REAL_KEY")
+
+	setHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	})
+
+	resp := doRequest(t, "GET", serverURL+"/proxy/aqp-conn/data/3.0/onecall?lat=51.5", tok, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	entry := latestAuditEntry(t, env, "proxy:GET:/data/3.0/onecall")
+	if entry.PolicyResult != "proxied" {
+		t.Fatalf("expected policy_result=proxied, got %q", entry.PolicyResult)
+	}
+}
+
+// T021: When both override and scrub fire, override wins per the precedence
+// rule in contracts/audit-identifier.md.
+func TestProxyHTTPAuditIdentifier_OverrideBeatsScrub(t *testing.T) {
+	serverURL, tok, env, setHandler := setupProxyWithAuthQueryParam(t, "appid", "REAL_KEY")
+
+	// Upstream echoes the auth_value back in the body so the W1.2 scrub
+	// would otherwise fire and tag the row http_proxy.auth_value_scrubbed.
+	setHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"bad key REAL_KEY"}`))
+	})
+
+	resp := doRequest(t, "GET", serverURL+"/proxy/aqp-conn/data/3.0/onecall?appid=AGENT_INJECTED", tok, "")
+	defer resp.Body.Close()
+
+	entry := latestAuditEntry(t, env, "proxy:GET:/data/3.0/onecall")
+	if entry.PolicyResult != "http_proxy.auth_query_overridden" {
+		t.Fatalf("expected override to beat scrub; got policy_result=%q", entry.PolicyResult)
+	}
+}
+
+// T022: Override path through curated Execute emits the override identifier.
+func TestExecuteAuditIdentifier_QueryOverridden(t *testing.T) {
+	serverURL, tok, env, setHandler := setupProxyWithAuthQueryParam(t, "appid", "REAL_KEY")
+
+	setHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	})
+
+	body := `{"method":"GET","path":"/data/3.0/onecall?appid=AGENT_INJECTED&lat=51.5"}`
+	resp := doRequest(t, "POST", serverURL+"/api/v1/connections/aqp-conn/ops/proxy_request", tok, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	entry := latestAuditEntry(t, env, "proxy_request")
+	if entry.PolicyResult != "http_proxy.auth_query_overridden" {
+		t.Fatalf("expected policy_result=http_proxy.auth_query_overridden, got %q", entry.PolicyResult)
+	}
+}
+
+// T023: The private result-map key `_auth_query_overridden` is stripped before
+// the curated response is JSON-encoded back to the agent.
+func TestExecuteAuditIdentifier_PrivateKeyStripped(t *testing.T) {
+	serverURL, tok, _, setHandler := setupProxyWithAuthQueryParam(t, "appid", "REAL_KEY")
+
+	setHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	})
+
+	body := `{"method":"GET","path":"/data/3.0/onecall?appid=AGENT_INJECTED"}`
+	resp := doRequest(t, "POST", serverURL+"/api/v1/connections/aqp-conn/ops/proxy_request", tok, body)
+	defer resp.Body.Close()
+	respBody := readBody(t, resp)
+	if strings.Contains(respBody, "_auth_query_overridden") {
+		t.Fatalf("response leaked private key _auth_query_overridden: %s", respBody)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(respBody), &parsed); err != nil {
+		t.Fatalf("response was not valid JSON: %v\n%s", err, respBody)
+	}
+	if _, present := parsed["_auth_query_overridden"]; present {
+		t.Fatalf("parsed response still contains _auth_query_overridden")
+	}
+}

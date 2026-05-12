@@ -16,3 +16,6 @@ test-results/
 specs/
 .DS_Store
 *.DS_Store
+.gitnexus
+.claude/
+passphrase

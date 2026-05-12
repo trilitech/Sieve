@@ -3,9 +3,11 @@ package httpproxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -192,7 +194,7 @@ func TestProxyHTTPRejectsDeniedHeaders(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer sieve_tok_test") // bearer carve-out
 			req.Header.Set(key, "evil")
 			rec := httptest.NewRecorder()
-			summary, err := pc.ProxyHTTP(rec, req, "/v1/anything", nil)
+			summary, _, err := pc.ProxyHTTP(rec, req, "/v1/anything", nil)
 			if !errors.Is(err, ErrHeaderDenied) {
 				t.Errorf("expected ErrHeaderDenied for %q, got err=%v summary=%q", key, err, summary)
 			}
@@ -216,7 +218,7 @@ func TestProxyHTTPCaseInsensitiveDeny(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer sieve_tok_test")
 			req.Header.Set(casing, "attacker-supplied")
 			rec := httptest.NewRecorder()
-			_, err := pc.ProxyHTTP(rec, req, "/v1/messages", nil)
+			_, _, err := pc.ProxyHTTP(rec, req, "/v1/messages", nil)
 			if !errors.Is(err, ErrHeaderDenied) {
 				t.Errorf("auth_header override via %q must be denied on transparent surface; got err=%v", casing, err)
 			}
@@ -244,7 +246,7 @@ func TestProxyHTTPAuthorizationCarveOut(t *testing.T) {
 	req := httptest.NewRequest("GET", "/proxy/conn/v1/anything", nil)
 	req.Header.Set("Authorization", "Bearer sieve_tok_test")
 	rec := httptest.NewRecorder()
-	_, err := pc.ProxyHTTP(rec, req, "/v1/anything", nil)
+	_, _, err := pc.ProxyHTTP(rec, req, "/v1/anything", nil)
 	if err != nil {
 		t.Fatalf("Authorization presence must NOT trigger deny; got err=%v", err)
 	}
@@ -460,5 +462,273 @@ func TestAuthValueScrubFilterReturnsFilterWhenEnabled(t *testing.T) {
 	}
 	if len(f.RedactPatterns) != 1 {
 		t.Errorf("expected 1 redact pattern, got %d", len(f.RedactPatterns))
+	}
+}
+
+// --- spec 007: auth_query_param injection ---
+
+// makeQueryAuthProxy builds a ProxyConnector configured for query-string auth
+// against the supplied test server. authValue defaults to "SECRET" if empty.
+func makeQueryAuthProxy(t *testing.T, ts *httptest.Server, paramName, authValue string) *ProxyConnector {
+	t.Helper()
+	if authValue == "" {
+		authValue = "SECRET"
+	}
+	c, err := Factory(map[string]any{
+		"target_url":       ts.URL,
+		"auth_header":      "X-Unused",
+		"auth_value":       authValue,
+		"auth_query_param": paramName,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c.(*ProxyConnector)
+}
+
+func TestExecuteInjectsAuthQueryParam(t *testing.T) {
+	var observedRawQuery string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedRawQuery = r.URL.RawQuery
+		w.WriteHeader(200)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	pc := makeQueryAuthProxy(t, upstream, "appid", "WEATHER_KEY")
+
+	_, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "/data/3.0/onecall",
+	})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if observedRawQuery != "appid=WEATHER_KEY" {
+		t.Errorf("expected upstream to see ?appid=WEATHER_KEY, got %q", observedRawQuery)
+	}
+}
+
+func TestExecuteInjectsAlongsideAgentParams(t *testing.T) {
+	var observedQuery url.Values
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedQuery = r.URL.Query()
+		w.WriteHeader(200)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	pc := makeQueryAuthProxy(t, upstream, "appid", "")
+
+	_, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "/data/3.0/onecall?lat=51.5&lon=-0.12",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := observedQuery.Get("lat"); got != "51.5" {
+		t.Errorf("agent param lat lost; got %q", got)
+	}
+	if got := observedQuery.Get("lon"); got != "-0.12" {
+		t.Errorf("agent param lon lost; got %q", got)
+	}
+	if got := observedQuery.Get("appid"); got != "SECRET" {
+		t.Errorf("auth param missing; got %q", got)
+	}
+	// Exactly 3 params, not duplicates.
+	if len(observedQuery) != 3 {
+		t.Errorf("expected 3 query params, got %d (%v)", len(observedQuery), observedQuery)
+	}
+}
+
+func TestExecuteOverridesAgentSuppliedAuthParam(t *testing.T) {
+	var observedQuery url.Values
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedQuery = r.URL.Query()
+		w.WriteHeader(200)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	pc := makeQueryAuthProxy(t, upstream, "appid", "REAL_KEY")
+
+	res, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "/data/3.0/onecall?appid=AGENT_INJECTED",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Upstream sees exactly one appid value, and that value is REAL_KEY.
+	values := observedQuery["appid"]
+	if len(values) != 1 || values[0] != "REAL_KEY" {
+		t.Errorf("expected exactly one appid=REAL_KEY upstream; got %v", values)
+	}
+	if strings.Contains(observedQuery.Encode(), "AGENT_INJECTED") {
+		t.Errorf("agent's value leaked to upstream: %q", observedQuery.Encode())
+	}
+	// Result map carries the private override signal.
+	resultMap, ok := res.(map[string]any)
+	if !ok {
+		t.Fatalf("result should be map[string]any, got %T", res)
+	}
+	overridden, _ := resultMap["_auth_query_overridden"].(bool)
+	if !overridden {
+		t.Errorf("result map missing _auth_query_overridden=true; got %v", resultMap)
+	}
+}
+
+func TestExecuteUrlEncodesSpecialChars(t *testing.T) {
+	const secret = "key+with=special&chars/and%spaces"
+	var observedAppid string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// r.URL.Query() decodes — observedAppid receives the original byte sequence.
+		observedAppid = r.URL.Query().Get("appid")
+		w.WriteHeader(200)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	pc := makeQueryAuthProxy(t, upstream, "appid", secret)
+
+	_, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "/anything",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observedAppid != secret {
+		t.Errorf("upstream saw %q after URL-decode; want byte-identical %q", observedAppid, secret)
+	}
+}
+
+func TestProxyHTTPInjectsAuthQueryParam(t *testing.T) {
+	var observedRawQuery string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedRawQuery = r.URL.RawQuery
+		w.WriteHeader(200)
+	}))
+	defer upstream.Close()
+	pc := makeQueryAuthProxy(t, upstream, "appid", "STREAM_KEY")
+
+	req := httptest.NewRequest("GET", "/proxy/conn/data/3.0/onecall?lat=51.5", nil)
+	req.Header.Set("Authorization", "Bearer sieve_tok_test")
+	rec := httptest.NewRecorder()
+	_, overridden, err := pc.ProxyHTTP(rec, req, "/data/3.0/onecall?lat=51.5", nil)
+	if err != nil {
+		t.Fatalf("ProxyHTTP failed: %v", err)
+	}
+	if overridden {
+		t.Errorf("override flag should be false when agent didn't supply auth param; got true")
+	}
+	if !strings.Contains(observedRawQuery, "appid=STREAM_KEY") {
+		t.Errorf("upstream raw query missing appid injection: %q", observedRawQuery)
+	}
+}
+
+func TestProxyHTTPDetectsOverride(t *testing.T) {
+	var observedAppid []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedAppid = r.URL.Query()["appid"]
+		w.WriteHeader(200)
+	}))
+	defer upstream.Close()
+	pc := makeQueryAuthProxy(t, upstream, "appid", "REAL_KEY")
+
+	req := httptest.NewRequest("GET", "/proxy/conn/x?appid=AGENT_INJECTED", nil)
+	req.Header.Set("Authorization", "Bearer sieve_tok_test")
+	rec := httptest.NewRecorder()
+	_, overridden, err := pc.ProxyHTTP(rec, req, "/x?appid=AGENT_INJECTED", nil)
+	if err != nil {
+		t.Fatalf("ProxyHTTP failed: %v", err)
+	}
+	if !overridden {
+		t.Errorf("override flag should be true when agent supplied auth param name")
+	}
+	if len(observedAppid) != 1 || observedAppid[0] != "REAL_KEY" {
+		t.Errorf("upstream should see exactly one appid=REAL_KEY; got %v", observedAppid)
+	}
+}
+
+func TestFactoryRejectsInvalidAuthQueryParam(t *testing.T) {
+	cases := []string{
+		"appid&injection",
+		"appid=value",
+		"app id",
+		"appid?",
+		"appid#frag",
+		"appid+plus",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Factory(map[string]any{
+				"target_url":       "https://example.com",
+				"auth_header":      "x-api-key",
+				"auth_value":       "k",
+				"auth_query_param": name,
+			})
+			if err == nil {
+				t.Fatalf("Factory must reject invalid auth_query_param %q", name)
+			}
+			if !strings.Contains(err.Error(), "auth_query_param") {
+				t.Errorf("error must clearly point at the offending field; got %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestFactoryAcceptsEmptyAuthQueryParam(t *testing.T) {
+	c, err := Factory(map[string]any{
+		"target_url":  "https://example.com",
+		"auth_header": "x-api-key",
+		"auth_value":  "k",
+		// no auth_query_param field
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := c.(*ProxyConnector)
+	if pc.authQueryParam != "" {
+		t.Errorf("expected empty authQueryParam (legacy mode); got %q", pc.authQueryParam)
+	}
+	// Whitespace-only is also legitimate clear.
+	c2, err := Factory(map[string]any{
+		"target_url":       "https://example.com",
+		"auth_header":      "x-api-key",
+		"auth_value":       "k",
+		"auth_query_param": "   ",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.(*ProxyConnector).authQueryParam != "" {
+		t.Errorf("whitespace-only auth_query_param should normalize to empty")
+	}
+}
+
+func TestAuthValueScrubStillFiresWithQueryAuth(t *testing.T) {
+	const secret = "REDACT_ME_IF_ECHOED"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Confirm injection landed AND echo it in the response body.
+		if r.URL.Query().Get("appid") != secret {
+			t.Errorf("auth value not injected; got %q", r.URL.Query().Get("appid"))
+		}
+		w.WriteHeader(401)
+		fmt.Fprintf(w, `{"error":"invalid token: %s"}`, secret)
+	}))
+	defer upstream.Close()
+	pc := makeQueryAuthProxy(t, upstream, "appid", secret)
+
+	res, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "/anything",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := res.(map[string]any)["body"].(string)
+	if strings.Contains(body, secret) {
+		t.Errorf("auth_value leaked to agent (W1.2 scrub did not fire on query-auth connection): %q", body)
+	}
+	if !strings.Contains(body, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] marker; got %q", body)
 	}
 }
