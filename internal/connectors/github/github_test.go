@@ -355,3 +355,186 @@ func TestOperationsCatalogConsistency(t *testing.T) {
 		}
 	}
 }
+
+// --- W1.4: github cross-fork PR head allow-list ---
+
+// crossForkConnector returns a Connector configured against the supplied mock
+// upstream and the supplied cross-fork allow-list. The default-allow-list is
+// nil (deny all cross-fork heads).
+func crossForkConnector(t *testing.T, allowlist []string, upstreamHit *bool) *Connector {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if upstreamHit != nil {
+			*upstreamHit = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"number":1}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	rawCfg := map[string]any{
+		"credentials": []any{
+			map[string]any{"kind": "fpat", "scope": map[string]any{"type": "org", "name": "acme"}, "token": "ghp_acme"},
+		},
+	}
+	if allowlist != nil {
+		al := make([]any, len(allowlist))
+		for i, u := range allowlist {
+			al[i] = u
+		}
+		rawCfg["cross_fork_pr_allowlist"] = al
+	}
+	cfg, err := parseConfig(rawCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Connector{
+		config:     cfg,
+		apiBase:    srv.URL,
+		httpClient: srv.Client(),
+		appTokens:  newAppTokenCache(srv.Client()),
+	}
+}
+
+func TestOpCreatePRRejectsCrossForkOutsideAllowlist(t *testing.T) {
+	hit := false
+	c := crossForkConnector(t, nil, &hit) // empty allow-list = deny-all
+	_, err := c.opCreatePR(context.Background(), map[string]any{
+		"owner": "acme",
+		"repo":  "widgets",
+		"title": "evil PR",
+		"head":  "evil-user:malicious-branch",
+		"base":  "main",
+	})
+	if !errors.Is(err, ErrCrossForkHeadDenied) {
+		t.Fatalf("expected ErrCrossForkHeadDenied, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "evil-user") {
+		t.Errorf("error must name the offending user, got %q", err.Error())
+	}
+	if hit {
+		t.Errorf("upstream MUST NOT be contacted on cross-fork deny")
+	}
+}
+
+func TestOpCreatePRAllowsAllowlistedCrossFork(t *testing.T) {
+	hit := false
+	c := crossForkConnector(t, []string{"alice"}, &hit)
+	_, err := c.opCreatePR(context.Background(), map[string]any{
+		"owner": "acme",
+		"repo":  "widgets",
+		"title": "trusted contribution",
+		"head":  "alice:feature",
+		"base":  "main",
+	})
+	if err != nil {
+		t.Fatalf("allowlisted cross-fork must succeed; got %v", err)
+	}
+	if !hit {
+		t.Errorf("upstream was not contacted; allowlisted cross-fork should reach GitHub")
+	}
+}
+
+func TestOpCreatePRRejectsNonAllowlistedCrossFork(t *testing.T) {
+	hit := false
+	c := crossForkConnector(t, []string{"alice"}, &hit)
+	_, err := c.opCreatePR(context.Background(), map[string]any{
+		"owner": "acme",
+		"repo":  "widgets",
+		"title": "untrusted PR",
+		"head":  "bob:feature",
+		"base":  "main",
+	})
+	if !errors.Is(err, ErrCrossForkHeadDenied) {
+		t.Errorf("non-allowlisted cross-fork must deny; got %v", err)
+	}
+	if hit {
+		t.Errorf("upstream MUST NOT be contacted")
+	}
+}
+
+func TestOpCreatePRSameRepoUnaffected(t *testing.T) {
+	hit := false
+	c := crossForkConnector(t, nil, &hit) // empty allow-list, but same-repo head bypasses
+	_, err := c.opCreatePR(context.Background(), map[string]any{
+		"owner": "acme",
+		"repo":  "widgets",
+		"title": "feature",
+		"head":  "feature-branch", // no colon = same-repo head
+		"base":  "main",
+	})
+	if err != nil {
+		t.Fatalf("same-repo head must succeed regardless of allow-list; got %v", err)
+	}
+	if !hit {
+		t.Errorf("upstream not contacted for same-repo head")
+	}
+}
+
+func TestOpCreatePRBranchNameWithColons(t *testing.T) {
+	hit := false
+	c := crossForkConnector(t, []string{"alice"}, &hit)
+	// "alice:feature:sub-feature" — split-on-first-colon yields user "alice",
+	// branch "feature:sub-feature". Allow-list contains alice → succeed.
+	_, err := c.opCreatePR(context.Background(), map[string]any{
+		"owner": "acme",
+		"repo":  "widgets",
+		"title": "branch with colons",
+		"head":  "alice:feature:sub-feature",
+		"base":  "main",
+	})
+	if err != nil {
+		t.Fatalf("split-on-first-colon should grant allowlisted user; got %v", err)
+	}
+	if !hit {
+		t.Errorf("upstream not contacted on legitimate cross-fork with colon-bearing branch")
+	}
+}
+
+func TestAllowsCrossForkUserCaseInsensitive(t *testing.T) {
+	cfg := &Config{CrossForkPRAllowlist: []string{"Alice"}}
+	if !cfg.allowsCrossForkUser("alice") {
+		t.Errorf("allow-list match should be case-insensitive (Alice ↔ alice)")
+	}
+	if !cfg.allowsCrossForkUser("ALICE") {
+		t.Errorf("allow-list match should be case-insensitive (Alice ↔ ALICE)")
+	}
+	if cfg.allowsCrossForkUser("alicE-other") {
+		t.Errorf("allow-list match must be exact-string (after case-fold), not substring")
+	}
+	if cfg.allowsCrossForkUser("") {
+		t.Errorf("empty user must never match")
+	}
+}
+
+func TestEmptyAllowlistEntryRejected(t *testing.T) {
+	_, err := parseConfig(map[string]any{
+		"credentials": []any{
+			map[string]any{"kind": "fpat", "scope": map[string]any{"type": "org", "name": "acme"}, "token": "ghp_x"},
+		},
+		"cross_fork_pr_allowlist": []any{"", "alice"},
+	})
+	if err == nil {
+		t.Fatal("parseConfig must reject empty allow-list entries")
+	}
+	if !strings.Contains(err.Error(), "cross_fork_pr_allowlist") {
+		t.Errorf("error must clearly point at the offending field; got %q", err.Error())
+	}
+}
+
+func TestOpCreatePRWildcardLiteral(t *testing.T) {
+	// "*" must be treated as a literal user, not a wildcard.
+	hit := false
+	c := crossForkConnector(t, []string{"*"}, &hit)
+	_, err := c.opCreatePR(context.Background(), map[string]any{
+		"owner": "acme", "repo": "widgets", "title": "x",
+		"head": "evil:branch",
+		"base": "main",
+	})
+	if !errors.Is(err, ErrCrossForkHeadDenied) {
+		t.Errorf("'*' allow-list entry must NOT be a wildcard; expected deny, got %v", err)
+	}
+	if hit {
+		t.Errorf("upstream contacted despite wildcard literal interpretation")
+	}
+}

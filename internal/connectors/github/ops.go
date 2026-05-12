@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +11,12 @@ import (
 
 	"github.com/trilitech/Sieve/internal/connector"
 )
+
+// ErrCrossForkHeadDenied indicates that opCreatePR was called with a
+// `head` parameter in cross-fork "user:branch" form whose user portion
+// is not in the connection's cross_fork_pr_allowlist. Callers map this
+// to audit policy_result "github.cross_fork_head_denied".
+var ErrCrossForkHeadDenied = errors.New("github: cross-fork heads not allowed")
 
 // escapeRepoPath percent-escapes each path segment while preserving '/'
 // separators. Needed because GitHub's /contents/{path} endpoint doesn't
@@ -447,6 +454,17 @@ func (g *Connector) opCreatePR(ctx context.Context, p map[string]any) (any, erro
 	head, err := requireString(p, "head")
 	if err != nil {
 		return nil, err
+	}
+	// W1.4: cross-fork heads (user:branch form) are default-denied unless the
+	// user portion appears in the connection's cross_fork_pr_allowlist. The
+	// branch portion may itself contain colons; we split on the FIRST colon
+	// so "alice:feature:sub" yields user="alice", branch="feature:sub".
+	// Same-repo heads (no colon) bypass the check.
+	if idx := strings.Index(head, ":"); idx > 0 {
+		user := head[:idx]
+		if !g.config.allowsCrossForkUser(user) {
+			return nil, fmt.Errorf("%w: %q is not in the allow-list", ErrCrossForkHeadDenied, user)
+		}
 	}
 	base, err := requireString(p, "base")
 	if err != nil {

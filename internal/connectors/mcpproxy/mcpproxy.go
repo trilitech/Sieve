@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,16 @@ import (
 
 	"github.com/trilitech/Sieve/internal/connector"
 )
+
+// ErrResponseOversized indicates the upstream tools/call response body
+// exceeded the connection's response_body_cap_bytes setting. Callers map
+// this to audit policy_result "mcp_proxy.response_oversized".
+var ErrResponseOversized = errors.New("mcp_proxy: upstream response oversized")
+
+// defaultMCPResponseCap is the default upstream response body size cap.
+// Mirrors internal/connectors/github/client.go::maxResponseBytes (5 MiB).
+// Operators MAY override per-connection via response_body_cap_bytes.
+const defaultMCPResponseCap int64 = 5 << 20
 
 var Meta = connector.ConnectorMeta{
 	Type:        "mcp_proxy",
@@ -74,15 +85,16 @@ type upstreamTool struct {
 
 // MCPProxyConnector proxies to an upstream MCP server.
 type MCPProxyConnector struct {
-	url         string
-	authHeader  string
-	authValue   string
-	serverName  string
-	client      *http.Client
-	tools       []upstreamTool
-	toolsByName map[string]upstreamTool
-	mu          sync.RWMutex
-	initialized bool
+	url             string
+	authHeader      string
+	authValue       string
+	serverName      string
+	responseBodyCap int64 // bytes; 0 means use defaultMCPResponseCap
+	client          *http.Client
+	tools           []upstreamTool
+	toolsByName     map[string]upstreamTool
+	mu              sync.RWMutex
+	initialized     bool
 }
 
 func Factory(config map[string]any) (connector.Connector, error) {
@@ -102,13 +114,45 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		serverName = "upstream"
 	}
 
+	// response_body_cap_bytes: positive integer overrides the default;
+	// missing or zero falls back to defaultMCPResponseCap (5 MiB);
+	// negative is rejected as a config-load error so operators don't
+	// silently get an effectively-unbounded behaviour.
+	cap := defaultMCPResponseCap
+	if raw, ok := config["response_body_cap_bytes"]; ok {
+		switch v := raw.(type) {
+		case int:
+			if v < 0 {
+				return nil, fmt.Errorf("mcp_proxy: response_body_cap_bytes must be positive, got %d", v)
+			}
+			if v > 0 {
+				cap = int64(v)
+			}
+		case int64:
+			if v < 0 {
+				return nil, fmt.Errorf("mcp_proxy: response_body_cap_bytes must be positive, got %d", v)
+			}
+			if v > 0 {
+				cap = v
+			}
+		case float64:
+			if v < 0 {
+				return nil, fmt.Errorf("mcp_proxy: response_body_cap_bytes must be positive, got %g", v)
+			}
+			if v > 0 {
+				cap = int64(v)
+			}
+		}
+	}
+
 	return &MCPProxyConnector{
-		url:         url,
-		authHeader:  authHeader,
-		authValue:   authValue,
-		serverName:  serverName,
-		client:      &http.Client{Timeout: 2 * time.Minute},
-		toolsByName: make(map[string]upstreamTool),
+		url:             url,
+		authHeader:      authHeader,
+		authValue:       authValue,
+		serverName:      serverName,
+		responseBodyCap: cap,
+		client:          &http.Client{Timeout: 2 * time.Minute},
+		toolsByName:     make(map[string]upstreamTool),
 	}, nil
 }
 
@@ -289,9 +333,21 @@ func (m *MCPProxyConnector) callUpstream(ctx context.Context, method string, par
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Cap upstream response body at responseBodyCap bytes (default 5 MiB)
+	// to defend against malicious or compromised upstreams that stream
+	// unbounded responses and exhaust connector memory. Pattern mirrors
+	// internal/connectors/github/client.go::doRequest. Reads cap+1 so
+	// "exactly cap" is allowed and "cap+1 or more" trips the overflow check.
+	cap := m.responseBodyCap
+	if cap <= 0 {
+		cap = defaultMCPResponseCap
+	}
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, cap+1))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if int64(len(respBody)) > cap {
+		return nil, fmt.Errorf("%w: response exceeded %d byte cap", ErrResponseOversized, cap)
 	}
 
 	if resp.StatusCode != http.StatusOK {

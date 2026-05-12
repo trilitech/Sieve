@@ -29,6 +29,9 @@ import (
 	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
+	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
+	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
+	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
@@ -261,6 +264,26 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	case "allow":
 		result, err := conn.Execute(r.Context(), operation, params)
 		if err != nil {
+			// W1.1: header-denied is a distinct deny class, not an opaque
+			// 500. Surface it via http_proxy.header_denied policy_result and
+			// HTTP 400 so analytics can spot exploit attempts.
+			if errors.Is(err, httpproxy.ErrHeaderDenied) {
+				rt.logAudit(tok, connID, operation, params, "http_proxy.header_denied", err.Error(), time.Since(start).Milliseconds())
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			// W1.3: mcp_proxy upstream response body exceeded the cap.
+			if errors.Is(err, mcpproxy.ErrResponseOversized) {
+				rt.logAudit(tok, connID, operation, params, "mcp_proxy.response_oversized", err.Error(), time.Since(start).Milliseconds())
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			// W1.4: github cross-fork PR head denied at the connector layer.
+			if errors.Is(err, githubconn.ErrCrossForkHeadDenied) {
+				rt.logAudit(tok, connID, operation, params, "github.cross_fork_head_denied", err.Error(), time.Since(start).Milliseconds())
+				writeError(w, http.StatusForbidden, err.Error())
+				return
+			}
 			rt.logAudit(tok, connID, operation, params, "allow(error)", "", time.Since(start).Milliseconds())
 			if errors.Is(err, connector.ErrNeedsReauth) {
 				reason := err.Error()
@@ -331,6 +354,24 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 
 		result, err := conn.Execute(r.Context(), operation, params)
 		if err != nil {
+			// W1.1: same header-denied detection as the pre-approval path.
+			if errors.Is(err, httpproxy.ErrHeaderDenied) {
+				rt.logAudit(tok, connID, operation, params, "http_proxy.header_denied", err.Error(), time.Since(start).Milliseconds())
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			// W1.3: mcp_proxy oversized response on the post-approval path.
+			if errors.Is(err, mcpproxy.ErrResponseOversized) {
+				rt.logAudit(tok, connID, operation, params, "mcp_proxy.response_oversized", err.Error(), time.Since(start).Milliseconds())
+				writeError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			// W1.4: github cross-fork PR head denied on the post-approval path.
+			if errors.Is(err, githubconn.ErrCrossForkHeadDenied) {
+				rt.logAudit(tok, connID, operation, params, "github.cross_fork_head_denied", err.Error(), time.Since(start).Milliseconds())
+				writeError(w, http.StatusForbidden, err.Error())
+				return
+			}
 			rt.logAudit(tok, connID, operation, params, "approved(error)", "", time.Since(start).Milliseconds())
 			if errors.Is(err, connector.ErrNeedsReauth) {
 				reason := err.Error()
@@ -416,14 +457,26 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The connector must be an http_proxy type with ProxyHTTP method.
+	// The signature returns (filterSummary, error) per spec 006: the summary
+	// is used to detect when the auto-attached auth_value scrub matched, so
+	// the audit-log policy_result can be set to http_proxy.auth_value_scrubbed.
 	type httpProxier interface {
-		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) error
+		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) (string, error)
 	}
 
 	proxy, ok := conn.(httpProxier)
 	if !ok {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("connection %q is not an HTTP proxy", connID))
 		return
+	}
+
+	// Connectors that expose AuthValueScrubFilter (today: http_proxy) get a
+	// built-in scrub filter prepended to the policy decision's filter list.
+	// This forces http_proxy through the buffered (filtered) path of
+	// ProxyHTTP, so the configured auth_value cannot reach the agent — even
+	// in 4xx/5xx error bodies that would otherwise stream through unfiltered.
+	type authValueFilterer interface {
+		AuthValueScrubFilter() *policy.ResponseFilter
 	}
 
 	start := time.Now()
@@ -494,11 +547,35 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := proxy.ProxyHTTP(w, r, proxyPath, decision.Filters); err != nil {
-		rt.logAudit(tok, connID, operation, nil, "bad_request", err.Error(), time.Since(start).Milliseconds())
-	} else {
-		rt.logAudit(tok, connID, operation, nil, "proxied", "", time.Since(start).Milliseconds())
+	// Auto-attach the auth_value scrub filter for http_proxy connections that
+	// have it enabled. Prepended (not appended) so it runs before any
+	// operator-attached redact pattern; operator filters never see the
+	// unredacted auth_value. Closes audit row W1.2.
+	if avf, ok := conn.(authValueFilterer); ok {
+		if scrubFilter := avf.AuthValueScrubFilter(); scrubFilter != nil {
+			decision.Filters = append([]policy.ResponseFilter{*scrubFilter}, decision.Filters...)
+		}
 	}
+
+	filterSummary, err := proxy.ProxyHTTP(w, r, proxyPath, decision.Filters)
+	if err != nil {
+		// W1.1: a denied header is a distinct deny class; the audit row uses
+		// http_proxy.header_denied so analytics can spot exploitation attempts.
+		policyResult := "bad_request"
+		if errors.Is(err, httpproxy.ErrHeaderDenied) {
+			policyResult = "http_proxy.header_denied"
+		}
+		rt.logAudit(tok, connID, operation, nil, policyResult, err.Error(), time.Since(start).Milliseconds())
+		return
+	}
+	// W1.2: when the auto-attached scrub fired and matched at least one
+	// occurrence of auth_value, the policy_result distinguishes "scrub
+	// removed credential material" from a vanilla allow.
+	policyResult := "proxied"
+	if strings.Contains(filterSummary, "redacted") {
+		policyResult = "http_proxy.auth_value_scrubbed"
+	}
+	rt.logAudit(tok, connID, operation, nil, policyResult, filterSummary, time.Since(start).Milliseconds())
 }
 
 // logAudit is a helper that logs to the audit logger, ignoring errors.
