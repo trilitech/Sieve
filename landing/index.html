@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sieve — Give AI agents access, not credentials</title>
+  <meta name="description" content="A local credential gateway and policy engine for AI agents. Connect Sieve to your services once; issue scoped tokens with fine-grained rules; revoke and audit from one place." />
+  <meta property="og:title" content="Sieve — Give AI agents access, not credentials" />
+  <meta property="og:description" content="A local credential gateway and policy engine for AI agents." />
+  <meta property="og:type" content="website" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    code, pre { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+    pre { tab-size: 2; }
+    .gradient-text {
+      background-image: linear-gradient(135deg, #a5b4fc 0%, #818cf8 40%, #6366f1 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .hero-glow {
+      background:
+        radial-gradient(60% 80% at 50% 0%, rgba(99,102,241,0.18) 0%, rgba(99,102,241,0) 60%),
+        radial-gradient(50% 60% at 80% 30%, rgba(168,85,247,0.10) 0%, rgba(168,85,247,0) 70%);
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.375rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      border: 1px solid rgba(99,102,241,0.25);
+      background: rgba(99,102,241,0.08);
+      color: rgb(165,180,252);
+      white-space: nowrap;
+    }
+    /* Subtle grid backdrop only on hero, matches the admin UI's "tech but calm" feel */
+    .hero-grid {
+      background-image:
+        linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mask-image: radial-gradient(ellipse 60% 50% at 50% 30%, black 40%, transparent 75%);
+    }
+  </style>
+</head>
+
+<body class="bg-slate-900 text-slate-100 antialiased min-h-screen">
+
+  <!-- ============================================================== -->
+  <!-- Nav                                                              -->
+  <!-- ============================================================== -->
+  <header class="sticky top-0 z-50 backdrop-blur bg-slate-900/70 border-b border-slate-800">
+    <div class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="#top" class="flex items-center gap-2.5">
+        <div class="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+          </svg>
+        </div>
+        <span class="font-bold text-white tracking-tight text-lg">Sieve</span>
+      </a>
+      <nav class="flex items-center gap-6 text-sm">
+        <a href="#how" class="text-slate-300 hover:text-white transition-colors hidden md:inline">How it works</a>
+        <a href="#features" class="text-slate-300 hover:text-white transition-colors hidden md:inline">Features</a>
+        <a href="#examples" class="text-slate-300 hover:text-white transition-colors hidden md:inline">Examples</a>
+        <a href="#setup" class="text-slate-300 hover:text-white transition-colors hidden md:inline">Setup</a>
+        <a href="https://github.com/trilitech/Sieve" class="inline-flex items-center gap-1.5 text-slate-300 hover:text-white transition-colors">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.6 5.6.6 11.9c0 5 3.3 9.3 7.8 10.8.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.2-1.7-1.2-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.8 2.7 1.3 3.4 1 .1-.7.4-1.3.7-1.5-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.2-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2.9-.2 2-.4 3-.4 1 0 2 .1 3 .4 2.3-1.5 3.3-1.2 3.3-1.2.7 1.6.2 2.8.1 3.1.8.9 1.2 1.9 1.2 3.2 0 4.6-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.5 4.6-1.5 7.8-5.8 7.8-10.8C23.4 5.6 18.3.5 12 .5z"/></svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ============================================================== -->
+  <!-- Hero                                                             -->
+  <!-- ============================================================== -->
+  <section id="top" class="relative overflow-hidden">
+    <div class="absolute inset-0 hero-glow pointer-events-none"></div>
+    <div class="absolute inset-0 hero-grid pointer-events-none"></div>
+
+    <div class="relative max-w-6xl mx-auto px-6 pt-24 pb-28 md:pt-32 md:pb-36">
+      <h1 class="text-center text-4xl md:text-6xl font-extrabold tracking-tight text-white leading-[1.05]">
+        Give AI agents <span class="gradient-text">access</span>,<br class="hidden md:block" />
+        not <span class="gradient-text">credentials</span>.
+      </h1>
+
+      <p class="mt-6 mx-auto max-w-2xl text-center text-lg md:text-xl text-slate-300 leading-relaxed">
+        A local gateway between your agents and the services they use. Connect once. Issue scoped tokens. Enforce policies on every call.
+      </p>
+
+      <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href="#setup" class="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition-colors shadow-lg shadow-indigo-500/20">
+          Get started
+          <svg class="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+        <a href="https://github.com/trilitech/Sieve" class="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-sm font-semibold transition-colors">
+          View on GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- The problem                                                      -->
+  <!-- ============================================================== -->
+  <section class="border-t border-slate-800 bg-slate-900">
+    <div class="max-w-4xl mx-auto px-6 py-20 md:py-28">
+      <h2 class="text-3xl md:text-4xl font-bold text-white tracking-tight">The problem</h2>
+
+      <div class="mt-8 space-y-5 text-lg text-slate-300 leading-relaxed">
+        <p>Agents are useful when they can act.</p>
+        <p>They can triage email, manage infrastructure, update GitHub issues, call APIs, draft replies, inspect logs, manage campaigns, and operate business workflows.</p>
+        <p class="text-white font-medium">But useful agents need credentials, and raw credentials are a bad boundary.</p>
+        <p>Gmail scopes are too coarse. API keys are usually all-or-nothing. IAM can be powerful, but it is painful to configure per agent, per project, per task. MCP tools expose capabilities, but they do not automatically give you the policy granularity you need.</p>
+        <p class="text-indigo-300 font-medium">And prompt instructions are not permissions.</p>
+        <p>If an agent is compromised — by prompt injection, a malicious document, a poisoned webpage, a rogue tool, or a leaked conversation — the damage is determined by what the agent can actually access.</p>
+        <p class="text-white font-semibold pt-2">Sieve limits that blast radius.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- What Sieve does — pipeline                                       -->
+  <!-- ============================================================== -->
+  <section id="how" class="border-t border-slate-800 bg-slate-950/40">
+    <div class="max-w-6xl mx-auto px-6 py-20 md:py-28">
+      <div class="max-w-3xl">
+        <h2 class="text-3xl md:text-4xl font-bold text-white tracking-tight">What Sieve does</h2>
+        <p class="mt-4 text-lg text-slate-300">
+          Sieve sits between agents and services. The agent gets a Sieve token, not the real credential. You decide what that token is allowed to do — which services it can reach, which operations are permitted, and what content the agent can see.
+        </p>
+      </div>
+
+      <!-- Pipeline diagram — horizontal flow with connecting lines -->
+      <div class="mt-16 relative">
+        <!-- Connecting line (desktop only) — pinned to the vertical center of the icon row, not the full section -->
+        <div class="hidden md:block absolute top-[28px] left-[10%] right-[10%] h-px bg-gradient-to-r from-transparent via-indigo-500/30 to-transparent z-0"></div>
+
+        <div class="relative z-10 flex flex-col md:flex-row items-center md:items-start justify-between gap-8 md:gap-0">
+
+          <!-- Agent -->
+          <div class="flex flex-col items-center text-center md:w-1/5">
+            <div class="w-14 h-14 rounded-2xl bg-slate-800 border border-slate-600 flex items-center justify-center shadow-lg shadow-slate-900/50">
+              <svg class="w-7 h-7 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+            </div>
+            <div class="mt-3 text-white font-semibold text-sm">Agent</div>
+            <div class="mt-1 text-xs text-slate-500 max-w-[140px]">Claude Code, Codex, any agent</div>
+          </div>
+
+          <!-- Arrow (mobile) -->
+          <div class="md:hidden text-slate-600">
+            <svg class="w-5 h-5 rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          </div>
+
+          <!-- Token -->
+          <div class="flex flex-col items-center text-center md:w-1/5">
+            <div class="w-14 h-14 rounded-2xl bg-slate-800 border border-indigo-500/30 flex items-center justify-center shadow-lg shadow-indigo-500/10">
+              <svg class="w-7 h-7 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+            </div>
+            <div class="mt-3 text-white font-semibold text-sm">Sieve token</div>
+            <div class="mt-1 text-xs text-slate-500 max-w-[140px]">Scoped and revocable</div>
+          </div>
+
+          <!-- Arrow (mobile) -->
+          <div class="md:hidden text-slate-600">
+            <svg class="w-5 h-5 rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          </div>
+
+          <!-- Sieve (center, emphasized) -->
+          <div class="flex flex-col items-center text-center md:w-1/5">
+            <div class="w-16 h-16 rounded-2xl bg-indigo-600 border border-indigo-400/40 flex items-center justify-center shadow-lg shadow-indigo-500/30 ring-4 ring-indigo-500/10">
+              <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/></svg>
+            </div>
+            <div class="mt-3 text-white font-bold text-sm">Sieve</div>
+            <div class="mt-1 text-xs text-indigo-300 max-w-[160px]">Policies, filtering, approval, audit</div>
+          </div>
+
+          <!-- Arrow (mobile) -->
+          <div class="md:hidden text-slate-600">
+            <svg class="w-5 h-5 rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          </div>
+
+          <!-- Credentials -->
+          <div class="flex flex-col items-center text-center md:w-1/5">
+            <div class="w-14 h-14 rounded-2xl bg-slate-800 border border-slate-600 flex items-center justify-center shadow-lg shadow-slate-900/50">
+              <svg class="w-7 h-7 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+            </div>
+            <div class="mt-3 text-white font-semibold text-sm">Real credentials</div>
+            <div class="mt-1 text-xs text-slate-500 max-w-[140px]">Encrypted, never exposed</div>
+          </div>
+
+          <!-- Arrow (mobile) -->
+          <div class="md:hidden text-slate-600">
+            <svg class="w-5 h-5 rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+          </div>
+
+          <!-- Services -->
+          <div class="flex flex-col items-center text-center md:w-1/5">
+            <div class="w-14 h-14 rounded-2xl bg-slate-800 border border-slate-600 flex items-center justify-center shadow-lg shadow-slate-900/50">
+              <svg class="w-7 h-7 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
+            </div>
+            <div class="mt-3 text-white font-semibold text-sm">Services</div>
+            <div class="mt-1 text-xs text-slate-500 max-w-[140px]">Gmail, AWS, GitHub, LLMs, any API</div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- Core value prop                                                  -->
+  <!-- ============================================================== -->
+  <section class="border-t border-slate-800 bg-slate-900">
+    <div class="max-w-4xl mx-auto px-6 py-16 md:py-20 text-center">
+      <h2 class="text-3xl md:text-4xl font-bold text-white tracking-tight">
+        Centralize credentials.<br />
+        Delegate capabilities.<br />
+        Enforce policy <span class="gradient-text">outside the model</span>.
+      </h2>
+      <p class="mt-6 mx-auto max-w-2xl text-lg text-slate-300 leading-relaxed">
+        Sieve gives you one place to manage agent access across services. Connect your accounts and APIs once, define reusable policies, and issue scoped tokens to agents. If a token leaks, revoke it in one click — the underlying credentials stay safe.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- Feature cards                                                    -->
+  <!-- ============================================================== -->
+  <section id="features" class="border-t border-slate-800 bg-slate-900">
+    <div class="max-w-6xl mx-auto px-6 py-20 md:py-28">
+      <div class="max-w-2xl mb-12">
+        <h2 class="text-3xl md:text-4xl font-bold text-white tracking-tight">What you get</h2>
+        <p class="mt-3 text-slate-400">Composable. Use one feature or all of them.</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- Card 1 -->
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-6 hover:border-indigo-500/40 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-indigo-500/10 ring-1 ring-indigo-500/30 flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+          </div>
+          <h3 class="text-white font-semibold">Keep credentials away from agents</h3>
+          <p class="mt-2 text-sm text-slate-400 leading-relaxed">Agents talk to Sieve. Sieve talks to your services. Your real passwords, keys, and tokens never leave Sieve's hands.</p>
+        </div>
+
+        <!-- Card 2 -->
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-6 hover:border-indigo-500/40 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-indigo-500/10 ring-1 ring-indigo-500/30 flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+          </div>
+          <h3 class="text-white font-semibold">Define fine-grained policies</h3>
+          <p class="mt-2 text-sm text-slate-400 leading-relaxed">Create rules narrower than the underlying service usually allows. Match on labels, content, models, regions, recipients, costs.</p>
+        </div>
+
+        <!-- Card 3 -->
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-6 hover:border-indigo-500/40 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-indigo-500/10 ring-1 ring-indigo-500/30 flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/></svg>
+          </div>
+          <h3 class="text-white font-semibold">Filter, redact, and script</h3>
+          <p class="mt-2 text-sm text-slate-400 leading-relaxed">Block operations up front, or inspect responses and redact sensitive content before the agent sees it. When rules aren't enough, write a short Python script for any custom logic.</p>
+        </div>
+
+        <!-- Card 5 -->
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-6 hover:border-indigo-500/40 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-indigo-500/10 ring-1 ring-indigo-500/30 flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <h3 class="text-white font-semibold">Add human approval where it matters</h3>
+          <p class="mt-2 text-sm text-slate-400 leading-relaxed">Hold sensitive operations — sending email, changing infra, posting to production, calling expensive APIs — in an approval queue.</p>
+        </div>
+
+        <!-- Card 6 -->
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-6 hover:border-indigo-500/40 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-indigo-500/10 ring-1 ring-indigo-500/30 flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          </div>
+          <h3 class="text-white font-semibold">Rotate once, not everywhere</h3>
+          <p class="mt-2 text-sm text-slate-400 leading-relaxed">Give every agent its own Sieve token. When access changes, update the role or revoke the token. Your service credentials stay untouched.</p>
+        </div>
+
+        <!-- Card 6 -->
+        <div class="bg-slate-800/80 border border-slate-700 rounded-xl p-6 hover:border-indigo-500/40 transition-colors">
+          <div class="w-10 h-10 rounded-lg bg-indigo-500/10 ring-1 ring-indigo-500/30 flex items-center justify-center mb-4">
+            <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+          </div>
+          <h3 class="text-white font-semibold">Audit every agent action</h3>
+          <p class="mt-2 text-sm text-slate-400 leading-relaxed">Sieve logs which token made each request, which connection it used, what operation it attempted, what policy decision was made, and how long it took.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- Developer setup                                                  -->
+  <!-- ============================================================== -->
+  <section id="setup" class="border-t border-slate-800 bg-slate-950/40">
+    <div class="max-w-6xl mx-auto px-6 py-20 md:py-28">
+      <div class="max-w-2xl mb-10">
+        <h2 class="text-3xl md:text-4xl font-bold text-white tracking-tight">Connect once. Issue scoped tokens.</h2>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+        <!-- Numbered list -->
+        <ol class="space-y-4">
+          <li class="flex gap-4">
+            <div class="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-500/20 ring-1 ring-indigo-500/40 flex items-center justify-center text-indigo-300 text-sm font-semibold">1</div>
+            <div>
+              <div class="text-white font-medium">Run Sieve locally or on your own server.</div>
+              <div class="text-sm text-slate-400">Single binary, no dependencies. All credentials encrypted at rest.</div>
+            </div>
+          </li>
+          <li class="flex gap-4">
+            <div class="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-500/20 ring-1 ring-indigo-500/40 flex items-center justify-center text-indigo-300 text-sm font-semibold">2</div>
+            <div>
+              <div class="text-white font-medium">Connect your services.</div>
+              <div class="text-sm text-slate-400">Gmail, GitHub, AWS, LLM providers, MCP servers, or any HTTP API.</div>
+            </div>
+          </li>
+          <li class="flex gap-4">
+            <div class="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-500/20 ring-1 ring-indigo-500/40 flex items-center justify-center text-indigo-300 text-sm font-semibold">3</div>
+            <div>
+              <div class="text-white font-medium">Define policies.</div>
+              <div class="text-sm text-slate-400">Rules, scripts, or a built-in preset.</div>
+            </div>
+          </li>
+          <li class="flex gap-4">
+            <div class="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-500/20 ring-1 ring-indigo-500/40 flex items-center justify-center text-indigo-300 text-sm font-semibold">4</div>
+            <div>
+              <div class="text-white font-medium">Bundle policies into roles.</div>
+              <div class="text-sm text-slate-400">Group policies together so you can assign them to agents in one step.</div>
+            </div>
+          </li>
+          <li class="flex gap-4">
+            <div class="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-500/20 ring-1 ring-indigo-500/40 flex items-center justify-center text-indigo-300 text-sm font-semibold">5</div>
+            <div>
+              <div class="text-white font-medium">Issue one token per agent.</div>
+              <div class="text-sm text-slate-400">Scoped, revocable, with a TTL if you want one.</div>
+            </div>
+          </li>
+          <li class="flex gap-4">
+            <div class="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-500/20 ring-1 ring-indigo-500/40 flex items-center justify-center text-indigo-300 text-sm font-semibold">6</div>
+            <div>
+              <div class="text-white font-medium">Audit, approve, revoke, and rotate from one place.</div>
+              <div class="text-sm text-slate-400">Everything in a web UI. Agents cannot access the admin interface.</div>
+            </div>
+          </li>
+        </ol>
+
+        <!-- Code panels -->
+        <div class="space-y-4">
+          <div class="bg-slate-950 border border-slate-700 rounded-xl overflow-hidden">
+            <div class="px-4 py-2 border-b border-slate-700 text-xs text-slate-500 font-mono flex items-center justify-between">
+              <span>shell</span>
+              <span class="text-slate-600">CLI</span>
+            </div>
+<pre class="px-5 py-4 text-sm text-slate-300 overflow-x-auto"><span class="text-slate-500"># First run — set a passphrase, then start</span>
+sieve --setup
+sieve
+
+<span class="text-slate-500"># Admin UI: http://localhost:19816</span>
+<span class="text-slate-500"># Agents:   http://localhost:19817  (REST + MCP at /mcp)</span></pre>
+          </div>
+
+          <div class="bg-slate-950 border border-slate-700 rounded-xl overflow-hidden">
+            <div class="px-4 py-2 border-b border-slate-700 text-xs text-slate-500 font-mono flex items-center justify-between">
+              <span>claude_desktop_config.json</span>
+              <span class="text-slate-600">MCP client</span>
+            </div>
+<pre class="px-5 py-4 text-sm text-slate-300 overflow-x-auto"><span class="text-slate-500">{</span>
+  <span class="text-emerald-300">"mcpServers"</span>: <span class="text-slate-500">{</span>
+    <span class="text-emerald-300">"sieve"</span>: <span class="text-slate-500">{</span>
+      <span class="text-emerald-300">"type"</span>: <span class="text-amber-300">"sse"</span>,
+      <span class="text-emerald-300">"url"</span>: <span class="text-amber-300">"http://localhost:19817/mcp"</span>,
+      <span class="text-emerald-300">"headers"</span>: <span class="text-slate-500">{</span>
+        <span class="text-emerald-300">"Authorization"</span>: <span class="text-amber-300">"Bearer sieve_tok_xxxxx"</span>
+      <span class="text-slate-500">}</span>
+    <span class="text-slate-500">}</span>
+  <span class="text-slate-500">}</span>
+<span class="text-slate-500">}</span></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- Examples                                                         -->
+  <!-- ============================================================== -->
+  <section id="examples" class="border-t border-slate-800 bg-slate-900">
+    <div class="max-w-6xl mx-auto px-6 py-20 md:py-28">
+      <div class="max-w-2xl mb-12">
+        <h2 class="text-3xl md:text-4xl font-bold text-white tracking-tight">Define exactly what each agent can do</h2>
+      </div>
+
+      <div class="space-y-10">
+        <!-- Example 1 -->
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-8 items-start">
+          <div class="lg:col-span-2">
+            <span class="text-xs uppercase tracking-wider text-indigo-400 font-semibold">Email assistant</span>
+            <h3 class="mt-2 text-2xl font-semibold text-white">Help with email, but don't own the inbox.</h3>
+            <p class="mt-3 text-slate-400 leading-relaxed">The agent can find relevant messages and draft replies. It cannot send without approval, and it cannot see sensitive content.</p>
+          </div>
+          <div class="lg:col-span-3 bg-slate-950 border border-slate-700 rounded-xl overflow-hidden">
+            <div class="px-4 py-2 border-b border-slate-700 text-xs text-slate-500 font-mono">role: email-assistant</div>
+<pre class="px-5 py-4 text-sm text-slate-300 overflow-x-auto"><span class="text-slate-500">policies:</span>
+  <span class="text-slate-500">- service:</span> gmail
+    <span class="text-slate-500">action:</span> read_email
+    <span class="text-slate-500">allow:</span>
+      <span class="text-slate-500">labels:</span>
+        - project-x
+
+  <span class="text-slate-500">- service:</span> gmail
+    <span class="text-slate-500">action:</span> create_draft
+    <span class="text-slate-500">allow:</span> true
+
+  <span class="text-slate-500">- service:</span> gmail
+    <span class="text-slate-500">action:</span> send_email
+    <span class="text-amber-400">require_approval:</span> true
+
+  <span class="text-slate-500">- service:</span> gmail
+    <span class="text-slate-500">action:</span> read_email
+    <span class="text-rose-400">deny_if:</span>
+      <span class="text-rose-400">content_contains:</span>
+        - CONFIDENTIAL
+        - salary
+        - medical</pre>
+          </div>
+        </div>
+
+        <!-- Example 2 -->
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-8 items-start">
+          <div class="lg:col-span-2">
+            <span class="text-xs uppercase tracking-wider text-indigo-400 font-semibold">AWS staging operator</span>
+            <h3 class="mt-2 text-2xl font-semibold text-white">Routine staging ops, never production.</h3>
+            <p class="mt-3 text-slate-400 leading-relaxed">The agent can debug staging. It cannot touch production, and it cannot create dangerous network rules.</p>
+          </div>
+          <div class="lg:col-span-3 bg-slate-950 border border-slate-700 rounded-xl overflow-hidden">
+            <div class="px-4 py-2 border-b border-slate-700 text-xs text-slate-500 font-mono">role: staging-operator</div>
+<pre class="px-5 py-4 text-sm text-slate-300 overflow-x-auto"><span class="text-slate-500">policies:</span>
+  <span class="text-slate-500">- service:</span> aws
+    <span class="text-slate-500">allow:</span>
+      <span class="text-slate-500">actions:</span>
+        - cloudwatch.read_logs
+        - ecs.restart_service
+        - s3.read_object
+      <span class="text-slate-500">environment:</span> staging
+
+  <span class="text-slate-500">- service:</span> aws
+    <span class="text-rose-400">deny:</span>
+      <span class="text-slate-500">environment:</span> production
+
+  <span class="text-slate-500">- service:</span> aws
+    <span class="text-rose-400">deny_if:</span>
+      <span class="text-rose-400">security_group_allows:</span> <span class="text-emerald-300">"0.0.0.0/0"</span></pre>
+          </div>
+        </div>
+
+        <!-- Example 3 -->
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-8 items-start">
+          <div class="lg:col-span-2">
+            <span class="text-xs uppercase tracking-wider text-indigo-400 font-semibold">LLM gateway</span>
+            <h3 class="mt-2 text-2xl font-semibold text-white">Provider keys stay private; agents use what you allow.</h3>
+            <p class="mt-3 text-slate-400 leading-relaxed">Give coding agents access to LLM APIs without exposing real provider keys.</p>
+          </div>
+          <div class="lg:col-span-3 bg-slate-950 border border-slate-700 rounded-xl overflow-hidden">
+            <div class="px-4 py-2 border-b border-slate-700 text-xs text-slate-500 font-mono">role: coding-agent</div>
+<pre class="px-5 py-4 text-sm text-slate-300 overflow-x-auto"><span class="text-slate-500">policies:</span>
+  <span class="text-slate-500">- service:</span> anthropic
+    <span class="text-slate-500">allow:</span>
+      <span class="text-slate-500">models:</span>
+        - claude-sonnet
+
+  <span class="text-slate-500">- service:</span> anthropic
+    <span class="text-rose-400">deny:</span>
+      <span class="text-slate-500">models:</span>
+        - claude-opus
+
+  <span class="text-slate-500">- service:</span> llm
+    <span class="text-amber-400">require_approval_if:</span>
+      <span class="text-amber-400">prompt_contains:</span>
+        - customer data
+        - private key
+        - password
+
+  <span class="text-slate-500">- service:</span> llm
+    <span class="text-rose-400">deny_if:</span>
+      <span class="text-rose-400">estimated_cost_over:</span> 0.50</pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Script-based examples -->
+      <div class="mt-20">
+        <div class="max-w-2xl mb-12">
+          <h3 class="text-2xl md:text-3xl font-bold text-white tracking-tight">When rules aren't enough, write a script.</h3>
+          <p class="mt-3 text-slate-400">Write a short Python script. It sees the full request and response, and returns allow, deny, redact, or escalate. Any rule the service's own permissions can't express, yours can.</p>
+        </div>
+
+        <div class="space-y-10">
+          <!-- Script 1: PII redaction -->
+          <div class="grid grid-cols-1 lg:grid-cols-5 gap-8 items-start">
+            <div class="lg:col-span-2">
+              <span class="text-xs uppercase tracking-wider text-emerald-400 font-semibold">Filter responses</span>
+              <h3 class="mt-2 text-xl font-semibold text-white">Redact PII before the agent sees it.</h3>
+              <p class="mt-3 text-slate-400 leading-relaxed">Strip SSNs, credit cards, and phone numbers from every email body. The agent gets the content it needs for triage; the sensitive patterns are replaced with <code class="text-indigo-300">[REDACTED]</code> before they ever reach the model.</p>
+            </div>
+            <div class="lg:col-span-3 bg-slate-950 border border-slate-700 rounded-xl overflow-hidden">
+              <div class="px-4 py-2 border-b border-slate-700 text-xs text-slate-500 font-mono flex items-center justify-between">
+                <span>redact_pii.py</span>
+                <span class="text-slate-600">script policy</span>
+              </div>
+<pre class="px-5 py-4 text-sm text-slate-300 overflow-x-auto"><span class="text-slate-500">#!/usr/bin/env python3</span>
+<span class="text-indigo-300">import</span> json, sys, re
+
+req = json.load(sys.stdin)
+phase = req.get(<span class="text-amber-300">"metadata"</span>, {}).get(<span class="text-amber-300">"phase"</span>, <span class="text-amber-300">"pre"</span>)
+
+<span class="text-indigo-300">if</span> phase != <span class="text-amber-300">"post"</span>:
+    print(json.dumps({<span class="text-amber-300">"action"</span>: <span class="text-amber-300">"allow"</span>}))
+    sys.exit(<span class="text-emerald-300">0</span>)
+
+response = req[<span class="text-amber-300">"metadata"</span>].get(<span class="text-amber-300">"response"</span>, <span class="text-amber-300">""</span>)
+
+patterns = [
+    (r<span class="text-amber-300">"\d{3}-\d{2}-\d{4}"</span>,       <span class="text-amber-300">"[SSN REDACTED]"</span>),
+    (r<span class="text-amber-300">"\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}"</span>, <span class="text-amber-300">"[CC REDACTED]"</span>),
+    (r<span class="text-amber-300">"\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}"</span>, <span class="text-amber-300">"[PHONE REDACTED]"</span>),
+]
+
+redacted = response
+<span class="text-indigo-300">for</span> pattern, replacement <span class="text-indigo-300">in</span> patterns:
+    redacted = re.sub(pattern, replacement, redacted)
+
+print(json.dumps({<span class="text-amber-300">"action"</span>: <span class="text-amber-300">"allow"</span>, <span class="text-amber-300">"rewrite"</span>: redacted}))</pre>
+            </div>
+          </div>
+
+          <!-- Script 2: sender domain allowlist -->
+          <div class="grid grid-cols-1 lg:grid-cols-5 gap-8 items-start">
+            <div class="lg:col-span-2">
+              <span class="text-xs uppercase tracking-wider text-emerald-400 font-semibold">Scope visibility</span>
+              <h3 class="mt-2 text-xl font-semibold text-white">Only show emails from approved domains.</h3>
+              <p class="mt-3 text-slate-400 leading-relaxed">An agent helping with client work shouldn't see your personal mail, HR threads, or recruiter spam. This script drops any email not from a domain you've approved.</p>
+            </div>
+            <div class="lg:col-span-3 bg-slate-950 border border-slate-700 rounded-xl overflow-hidden">
+              <div class="px-4 py-2 border-b border-slate-700 text-xs text-slate-500 font-mono flex items-center justify-between">
+                <span>domain_allowlist.py</span>
+                <span class="text-slate-600">script policy</span>
+              </div>
+<pre class="px-5 py-4 text-sm text-slate-300 overflow-x-auto"><span class="text-slate-500">#!/usr/bin/env python3</span>
+<span class="text-indigo-300">import</span> json, sys
+
+ALLOWED = {<span class="text-amber-300">"@acme-client.com"</span>, <span class="text-amber-300">"@company.com"</span>}
+
+req = json.load(sys.stdin)
+phase = req.get(<span class="text-amber-300">"metadata"</span>, {}).get(<span class="text-amber-300">"phase"</span>, <span class="text-amber-300">"pre"</span>)
+
+<span class="text-indigo-300">if</span> phase != <span class="text-amber-300">"post"</span>:
+    print(json.dumps({<span class="text-amber-300">"action"</span>: <span class="text-amber-300">"allow"</span>}))
+    sys.exit(<span class="text-emerald-300">0</span>)
+
+data = json.loads(req[<span class="text-amber-300">"metadata"</span>].get(<span class="text-amber-300">"response"</span>, <span class="text-amber-300">"{}"</span>))
+
+<span class="text-indigo-300">if</span> <span class="text-amber-300">"emails"</span> <span class="text-indigo-300">in</span> data:
+    data[<span class="text-amber-300">"emails"</span>] = [
+        e <span class="text-indigo-300">for</span> e <span class="text-indigo-300">in</span> data[<span class="text-amber-300">"emails"</span>]
+        <span class="text-indigo-300">if</span> any(e.get(<span class="text-amber-300">"from"</span>, <span class="text-amber-300">""</span>).endswith(d) <span class="text-indigo-300">for</span> d <span class="text-indigo-300">in</span> ALLOWED)
+    ]
+    data[<span class="text-amber-300">"total"</span>] = len(data[<span class="text-amber-300">"emails"</span>])
+
+print(json.dumps({<span class="text-amber-300">"action"</span>: <span class="text-amber-300">"allow"</span>, <span class="text-amber-300">"rewrite"</span>: json.dumps(data)}))</pre>
+            </div>
+          </div>
+
+          <!-- Script 3: LLM-based sensitivity check -->
+          <div class="grid grid-cols-1 lg:grid-cols-5 gap-8 items-start">
+            <div class="lg:col-span-2">
+              <span class="text-xs uppercase tracking-wider text-emerald-400 font-semibold">LLM-powered policy</span>
+              <h3 class="mt-2 text-xl font-semibold text-white">Ask a local model if an email is sensitive.</h3>
+              <p class="mt-3 text-slate-400 leading-relaxed">Some rules are hard to express as patterns. This script sends the email to a local Ollama model and asks whether it contains sensitive information. If the model says yes, the email is blocked before the agent ever sees it.</p>
+            </div>
+            <div class="lg:col-span-3 bg-slate-950 border border-slate-700 rounded-xl overflow-hidden">
+              <div class="px-4 py-2 border-b border-slate-700 text-xs text-slate-500 font-mono flex items-center justify-between">
+                <span>sensitivity_check.py</span>
+                <span class="text-slate-600">script policy</span>
+              </div>
+<pre class="px-5 py-4 text-sm text-slate-300 overflow-x-auto"><span class="text-slate-500">#!/usr/bin/env python3</span>
+<span class="text-indigo-300">import</span> json, sys
+<span class="text-indigo-300">from</span> ollama <span class="text-indigo-300">import</span> chat
+
+req = json.load(sys.stdin)
+phase = req.get(<span class="text-amber-300">"metadata"</span>, {}).get(<span class="text-amber-300">"phase"</span>, <span class="text-amber-300">"pre"</span>)
+
+<span class="text-indigo-300">if</span> phase != <span class="text-amber-300">"post"</span>:
+    print(json.dumps({<span class="text-amber-300">"action"</span>: <span class="text-amber-300">"allow"</span>}))
+    sys.exit(<span class="text-emerald-300">0</span>)
+
+email = json.loads(req[<span class="text-amber-300">"metadata"</span>].get(<span class="text-amber-300">"response"</span>, <span class="text-amber-300">"{}"</span>))
+body = email.get(<span class="text-amber-300">"body"</span>, <span class="text-amber-300">""</span>)
+
+resp = chat(model=<span class="text-amber-300">"llama3"</span>, messages=[{
+    <span class="text-amber-300">"role"</span>: <span class="text-amber-300">"user"</span>,
+    <span class="text-amber-300">"content"</span>: f<span class="text-amber-300">"Does this email contain sensitive information "</span>
+               f<span class="text-amber-300">"(financials, legal, HR, medical, credentials)? "</span>
+               f<span class="text-amber-300">"Answer YES or NO only.\n\n{body[:2000]}"</span>
+}])
+
+answer = resp.message.content.strip().upper()
+
+<span class="text-indigo-300">if</span> answer.startswith(<span class="text-amber-300">"YES"</span>):
+    print(json.dumps({
+        <span class="text-amber-300">"action"</span>: <span class="text-amber-300">"deny"</span>,
+        <span class="text-amber-300">"reason"</span>: <span class="text-amber-300">"Email flagged as sensitive by local model"</span>
+    }))
+<span class="text-indigo-300">else</span>:
+    print(json.dumps({<span class="text-amber-300">"action"</span>: <span class="text-amber-300">"allow"</span>}))</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- Agents propose their own policies                                -->
+  <!-- ============================================================== -->
+  <section class="border-t border-slate-800 bg-slate-950/40">
+    <div class="max-w-6xl mx-auto px-6 py-20 md:py-24">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+        <div>
+          <span class="text-xs uppercase tracking-wider text-indigo-400 font-semibold">Built in</span>
+          <h2 class="mt-3 text-3xl md:text-4xl font-bold text-white tracking-tight">Agents request their own permissions.</h2>
+          <p class="mt-4 text-lg text-slate-300 leading-relaxed">
+            Instead of you configuring every rule by hand, the agent can propose the policy it needs. You review and approve it — or reject it. Faster than writing rules from scratch, and the agent gets exactly the access it asked for, nothing more.
+          </p>
+          <p class="mt-4 text-slate-400 leading-relaxed">
+            The agent calls <code class="text-indigo-300">propose_policy</code> with the rules it wants. The proposal lands in the approval queue. You read it, decide if it makes sense, and click approve. Done.
+          </p>
+        </div>
+        <div class="bg-slate-950 border border-slate-700 rounded-xl overflow-hidden">
+          <div class="px-4 py-2 border-b border-slate-700 text-xs text-slate-500 font-mono flex items-center justify-between">
+            <span>agent's MCP tool call</span>
+          </div>
+<pre class="px-5 py-4 text-sm text-slate-300 overflow-x-auto"><span class="text-slate-500">{</span>
+  <span class="text-emerald-300">"name"</span>: <span class="text-amber-300">"propose_policy"</span>,
+  <span class="text-emerald-300">"arguments"</span>: <span class="text-slate-500">{</span>
+    <span class="text-emerald-300">"name"</span>: <span class="text-amber-300">"email-triage-readonly"</span>,
+    <span class="text-emerald-300">"description"</span>: <span class="text-amber-300">"I need to read emails labeled</span>
+      <span class="text-amber-300">support-queue to triage tickets. No send,</span>
+      <span class="text-amber-300">no drafts, no access to other labels."</span>,
+    <span class="text-emerald-300">"default_action"</span>: <span class="text-amber-300">"deny"</span>,
+    <span class="text-emerald-300">"rules"</span>: <span class="text-slate-500">[</span>
+      <span class="text-slate-500">{</span>
+        <span class="text-emerald-300">"match"</span>: <span class="text-slate-500">{</span>
+          <span class="text-emerald-300">"operations"</span>: <span class="text-slate-500">[</span><span class="text-amber-300">"list_emails"</span>, <span class="text-amber-300">"read_email"</span><span class="text-slate-500">]</span>
+        <span class="text-slate-500">}</span>,
+        <span class="text-emerald-300">"action"</span>: <span class="text-amber-300">"allow"</span>
+      <span class="text-slate-500">}</span>
+    <span class="text-slate-500">]</span>
+  <span class="text-slate-500">}</span>
+<span class="text-slate-500">}</span></pre>
+          <div class="px-5 py-3 bg-slate-900/50 border-t border-slate-700 text-xs text-slate-400">
+            This goes to your approval queue. The agent can't enact it — you decide.
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- Comparison                                                       -->
+  <!-- ============================================================== -->
+  <section class="border-t border-slate-800 bg-slate-900">
+    <div class="max-w-6xl mx-auto px-6 py-20 md:py-28">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8">
+
+        <!-- Without -->
+        <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-8">
+          <div class="text-xs uppercase tracking-wider text-rose-400 font-semibold mb-6">Without Sieve</div>
+          <ul class="space-y-4">
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-rose-400/60 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              <span class="text-slate-400">Agents get raw service credentials</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-rose-400/60 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              <span class="text-slate-400">Secrets spread across projects and providers</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-rose-400/60 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              <span class="text-slate-400">Prompt instructions try to limit behavior</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-rose-400/60 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              <span class="text-slate-400">Token leaks require service-by-service rotation</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-rose-400/60 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              <span class="text-slate-400">OAuth and API scopes are often too broad</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-rose-400/60 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              <span class="text-slate-400">Hard to see what agents actually did</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-rose-400/60 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+              <span class="text-slate-400">Human review is ad hoc</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- With -->
+        <div class="rounded-xl border border-indigo-500/30 bg-indigo-500/5 p-8">
+          <div class="text-xs uppercase tracking-wider text-indigo-400 font-semibold mb-6">With Sieve</div>
+          <ul class="space-y-4">
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-indigo-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              <span class="text-white">Agents get scoped Sieve tokens</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-indigo-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              <span class="text-white">Credentials are centralized</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-indigo-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              <span class="text-white">Policies enforce behavior</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-indigo-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              <span class="text-white">Revoke one token, done</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-indigo-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              <span class="text-white">Rules can be content-, action-, and role-specific</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-indigo-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              <span class="text-white">Every request is logged</span>
+            </li>
+            <li class="flex items-start gap-3">
+              <svg class="w-5 h-5 text-indigo-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+              <span class="text-white">Sensitive actions enter an approval queue</span>
+            </li>
+          </ul>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- Final CTA                                                        -->
+  <!-- ============================================================== -->
+  <section class="border-t border-slate-800 bg-slate-950/40 relative overflow-hidden">
+    <div class="absolute inset-0 hero-glow pointer-events-none"></div>
+    <div class="relative max-w-4xl mx-auto px-6 py-20 md:py-24 text-center">
+      <h2 class="text-3xl md:text-5xl font-bold text-white tracking-tight">
+        Stop handing raw credentials<br />to agents.
+      </h2>
+      <p class="mt-6 mx-auto max-w-2xl text-lg text-slate-300 leading-relaxed">
+        Connect your services to Sieve, define the access you actually want, and give each agent a scoped token instead.
+      </p>
+      <div class="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a href="https://github.com/trilitech/Sieve#run-locally" class="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition-colors shadow-lg shadow-indigo-500/20">
+          Get started
+          <svg class="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+        </a>
+        <a href="https://github.com/trilitech/Sieve/tree/main/docs" class="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-sm font-semibold transition-colors">
+          Read the docs
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================== -->
+  <!-- Footer                                                           -->
+  <!-- ============================================================== -->
+  <footer class="border-t border-slate-800 bg-slate-900">
+    <div class="max-w-6xl mx-auto px-6 py-10 flex flex-col md:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-2.5">
+        <div class="w-7 h-7 bg-indigo-500 rounded-lg flex items-center justify-center">
+          <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+          </svg>
+        </div>
+        <span class="font-semibold text-white">Sieve</span>
+        <span class="text-sm text-slate-500">· A permission layer for AI agents</span>
+      </div>
+      <div class="flex items-center gap-6 text-sm text-slate-400">
+        <a href="https://github.com/trilitech/Sieve" class="hover:text-white transition-colors">GitHub</a>
+        <a href="https://github.com/trilitech/Sieve/tree/main/docs" class="hover:text-white transition-colors">Docs</a>
+        <a href="https://github.com/trilitech/Sieve/blob/main/SPEC.md" class="hover:text-white transition-colors">Spec</a>
+        <a href="https://github.com/trilitech/Sieve/issues" class="hover:text-white transition-colors">Issues</a>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
