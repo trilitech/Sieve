@@ -118,7 +118,7 @@ func Factory(config map[string]any) (connector.Connector, error) {
 	// missing or zero falls back to defaultMCPResponseCap (5 MiB);
 	// negative is rejected as a config-load error so operators don't
 	// silently get an effectively-unbounded behaviour.
-	cap := defaultMCPResponseCap
+	bodyCap := defaultMCPResponseCap
 	if raw, ok := config["response_body_cap_bytes"]; ok {
 		switch v := raw.(type) {
 		case int:
@@ -126,21 +126,21 @@ func Factory(config map[string]any) (connector.Connector, error) {
 				return nil, fmt.Errorf("mcp_proxy: response_body_cap_bytes must be positive, got %d", v)
 			}
 			if v > 0 {
-				cap = int64(v)
+				bodyCap = int64(v)
 			}
 		case int64:
 			if v < 0 {
 				return nil, fmt.Errorf("mcp_proxy: response_body_cap_bytes must be positive, got %d", v)
 			}
 			if v > 0 {
-				cap = v
+				bodyCap = v
 			}
 		case float64:
 			if v < 0 {
 				return nil, fmt.Errorf("mcp_proxy: response_body_cap_bytes must be positive, got %g", v)
 			}
 			if v > 0 {
-				cap = int64(v)
+				bodyCap = int64(v)
 			}
 		}
 	}
@@ -150,7 +150,7 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		authHeader:      authHeader,
 		authValue:       authValue,
 		serverName:      serverName,
-		responseBodyCap: cap,
+		responseBodyCap: bodyCap,
 		client:          &http.Client{Timeout: 2 * time.Minute},
 		toolsByName:     make(map[string]upstreamTool),
 	}, nil
@@ -336,18 +336,18 @@ func (m *MCPProxyConnector) callUpstream(ctx context.Context, method string, par
 	// Cap upstream response body at responseBodyCap bytes (default 5 MiB)
 	// to defend against malicious or compromised upstreams that stream
 	// unbounded responses and exhaust connector memory. Pattern mirrors
-	// internal/connectors/github/client.go::doRequest. Reads cap+1 so
-	// "exactly cap" is allowed and "cap+1 or more" trips the overflow check.
-	cap := m.responseBodyCap
-	if cap <= 0 {
-		cap = defaultMCPResponseCap
+	// internal/connectors/github/client.go::doRequest. Reads bodyCap+1 so
+	// "exactly bodyCap" is allowed and "bodyCap+1 or more" trips the overflow check.
+	bodyCap := m.responseBodyCap
+	if bodyCap <= 0 {
+		bodyCap = defaultMCPResponseCap
 	}
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, cap+1))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, bodyCap+1))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
-	if int64(len(respBody)) > cap {
-		return nil, fmt.Errorf("%w: response exceeded %d byte cap", ErrResponseOversized, cap)
+	if int64(len(respBody)) > bodyCap {
+		return nil, fmt.Errorf("%w: response exceeded %d byte cap", ErrResponseOversized, bodyCap)
 	}
 
 	if resp.StatusCode != http.StatusOK {

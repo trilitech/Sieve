@@ -1925,7 +1925,7 @@
         // method/path filters do the actual gating, and the role binding
         // already scopes the policy to this connection.
         if (SCOPE === "http_proxy") {
-          match.operations = ["*"];
+          match.operations = ["*", "proxy_request"];
           if (r.ops && r.ops.length > 0) match.method = r.ops;
         } else if (r.ops && r.ops.length > 0) {
           match.operations = r.ops;

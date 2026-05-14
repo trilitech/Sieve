@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/trilitech/Sieve/internal/connections"
 )
 
 // authQueryParamPattern mirrors the validator in
@@ -76,7 +78,7 @@ var staticHTTPProxyBaselineKeys = []string{
 	"Trailers",
 	"Transfer-Encoding",
 	"Upgrade",
-	"X-Forwarded-* (any header starting with this prefix)",
+	"X-Forwarded-*",
 }
 
 // handleConnectionEditPage renders the connection-edit page. GET only.
@@ -97,7 +99,7 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	data := connectionEditDataFromConnection(wrapConn(conn))
+	data := connectionEditDataFromConnection(conn)
 	if r.URL.Query().Get("saved") == "1" {
 		data.Success = true
 	}
@@ -147,17 +149,17 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	switch conn.ConnectorType {
 	case "http_proxy":
 		if errMsg := applyHTTPProxyEdit(cfg, r); errMsg != "" {
-			renderEditError(s, w, wrapConn(conn), errMsg)
+			renderEditError(s, w, conn, errMsg)
 			return
 		}
 	case "mcp_proxy":
 		if errMsg := applyMCPProxyEdit(cfg, r); errMsg != "" {
-			renderEditError(s, w, wrapConn(conn), errMsg)
+			renderEditError(s, w, conn, errMsg)
 			return
 		}
 	case "github":
 		if errMsg := applyGitHubEdit(cfg, r); errMsg != "" {
-			renderEditError(s, w, wrapConn(conn), errMsg)
+			renderEditError(s, w, conn, errMsg)
 			return
 		}
 	default:
@@ -168,7 +170,7 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.connections.UpdateConfig(id, cfg); err != nil {
-		renderEditError(s, w, wrapConn(conn), "save failed: "+err.Error())
+		renderEditError(s, w, conn, "save failed: "+err.Error())
 		return
 	}
 
@@ -246,19 +248,14 @@ func applyGitHubEdit(cfg map[string]any, r *http.Request) string {
 
 // connectionEditDataFromConnection projects a Connection (with decrypted
 // Config) into the template's expected shape.
-func connectionEditDataFromConnection(conn interface {
-	GetID() string
-	GetDisplayName() string
-	GetConnectorType() string
-	GetConfig() map[string]any
-}) *connectionEditData {
+func connectionEditDataFromConnection(conn *connections.Connection) *connectionEditData {
 	d := &connectionEditData{
 		Active:        "connections",
-		ID:            conn.GetID(),
-		DisplayName:   conn.GetDisplayName(),
-		ConnectorType: conn.GetConnectorType(),
+		ID:            conn.ID,
+		DisplayName:   conn.DisplayName,
+		ConnectorType: conn.ConnectorType,
 	}
-	cfg := conn.GetConfig()
+	cfg := conn.Config
 
 	switch d.ConnectorType {
 	case "http_proxy":
@@ -277,16 +274,16 @@ func connectionEditDataFromConnection(conn interface {
 			AuthHeaderConfigured:    authH,
 		}
 	case "mcp_proxy":
-		var cap int64
+		var bodyCap int64
 		switch v := cfg["response_body_cap_bytes"].(type) {
 		case int64:
-			cap = v
+			bodyCap = v
 		case int:
-			cap = int64(v)
+			bodyCap = int64(v)
 		case float64:
-			cap = int64(v)
+			bodyCap = int64(v)
 		}
-		d.MCPProxy = &mcpProxyEditData{ResponseBodyCapBytes: cap}
+		d.MCPProxy = &mcpProxyEditData{ResponseBodyCapBytes: bodyCap}
 	case "github":
 		users := joinStringSliceField(cfg["cross_fork_pr_allowlist"])
 		d.GitHub = &githubEditData{CrossForkPRAllowlist: users}
@@ -323,7 +320,7 @@ func joinStringSliceField(v any) string {
 // SetHeader before any WriteHeader, but Go's http stack treats any
 // pre-WriteHeader call as committing the status — so we set status here
 // FIRST, then let render write the body.)
-func renderEditError(s *Server, w http.ResponseWriter, conn connectionGetter, msg string) {
+func renderEditError(s *Server, w http.ResponseWriter, conn *connections.Connection, msg string) {
 	data := connectionEditDataFromConnection(conn)
 	data.Error = msg
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -336,13 +333,3 @@ func renderEditError(s *Server, w http.ResponseWriter, conn connectionGetter, ms
 	_ = t.ExecuteTemplate(w, "connection_edit", data)
 }
 
-// connectionGetter is the read-only shape this file uses to talk to a
-// Connection. The methods are added in connection_edit_helpers.go (or
-// extended on *connections.Connection itself if cleaner) so this file
-// can be tested with mocks.
-type connectionGetter interface {
-	GetID() string
-	GetDisplayName() string
-	GetConnectorType() string
-	GetConfig() map[string]any
-}
