@@ -28,6 +28,7 @@ func newTestWebServer(t *testing.T) (http.Handler, *testenv.Env) {
 		env.Approval, env.Audit,
 		"", // no Google credentials file in tests
 		env.Settings, scriptgenSvc,
+		env.Keyring, env.DB, "",
 	)
 	t.Cleanup(func() { srv.Close() })
 	return srv.Handler(), env

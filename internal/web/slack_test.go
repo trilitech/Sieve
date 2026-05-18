@@ -312,6 +312,7 @@ func slackUITestServer(t *testing.T) (http.Handler, *testenv.Env) {
 	srv := NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles, env.Registry,
 		env.Approval, env.Audit, "", env.Settings, scriptgenSvc,
+		env.Keyring, env.DB, "",
 	)
 	t.Cleanup(func() { srv.Close() })
 	return srv.Handler(), env
