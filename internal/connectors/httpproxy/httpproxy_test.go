@@ -276,7 +276,7 @@ func TestAuthValueScrubInResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	body := res.(map[string]any)["body"].(string)
+	body := res.(*ExecuteResult).Body
 	if strings.Contains(body, secret) {
 		t.Errorf("auth_value leaked verbatim in response body: %q", body)
 	}
@@ -314,7 +314,7 @@ func TestAuthValueScrubOptOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	body := res.(map[string]any)["body"].(string)
+	body := res.(*ExecuteResult).Body
 	if !strings.Contains(body, secret) {
 		t.Errorf("opt-out failed to disable scrub; body=%q", body)
 	}
@@ -338,7 +338,7 @@ func TestAuthValueScrubRegexEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	body := res.(map[string]any)["body"].(string)
+	body := res.(*ExecuteResult).Body
 	if strings.Contains(body, secret) {
 		t.Errorf("literal auth_value must be scrubbed; body=%q", body)
 	}
@@ -565,14 +565,53 @@ func TestExecuteOverridesAgentSuppliedAuthParam(t *testing.T) {
 	if strings.Contains(observedQuery.Encode(), "AGENT_INJECTED") {
 		t.Errorf("agent's value leaked to upstream: %q", observedQuery.Encode())
 	}
-	// Result map carries the private override signal.
-	resultMap, ok := res.(map[string]any)
+	// Typed result carries the override flag.
+	er, ok := res.(*ExecuteResult)
 	if !ok {
-		t.Fatalf("result should be map[string]any, got %T", res)
+		t.Fatalf("result should be *ExecuteResult, got %T", res)
 	}
-	overridden, _ := resultMap["_auth_query_overridden"].(bool)
-	if !overridden {
-		t.Errorf("result map missing _auth_query_overridden=true; got %v", resultMap)
+	if !er.AuthQueryOverridden {
+		t.Errorf("ExecuteResult.AuthQueryOverridden should be true; got %+v", er)
+	}
+}
+
+// Case-insensitive: ?APPID=evil for auth_query_param=appid must be dropped
+// and the override flag set, otherwise a normalising upstream would see
+// the agent's value alongside Sieve's.
+func TestExecuteOverridesCaseVariantAuthParam(t *testing.T) {
+	var observedQuery url.Values
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedQuery = r.URL.Query()
+		w.WriteHeader(200)
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	pc := makeQueryAuthProxy(t, upstream, "appid", "REAL_KEY")
+
+	res, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "/anything?APPID=AGENT_INJECTED",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Upstream sees the canonical lowercase key with the real value, and
+	// no APPID variant survives.
+	if got := observedQuery.Get("appid"); got != "REAL_KEY" {
+		t.Errorf("expected appid=REAL_KEY upstream; got %q", got)
+	}
+	if _, present := observedQuery["APPID"]; present {
+		t.Errorf("APPID case-variant leaked upstream: %v", observedQuery)
+	}
+	if strings.Contains(observedQuery.Encode(), "AGENT_INJECTED") {
+		t.Errorf("agent's value leaked to upstream: %q", observedQuery.Encode())
+	}
+	er, ok := res.(*ExecuteResult)
+	if !ok {
+		t.Fatalf("result should be *ExecuteResult, got %T", res)
+	}
+	if !er.AuthQueryOverridden {
+		t.Errorf("ExecuteResult.AuthQueryOverridden should be true for case-variant; got %+v", er)
 	}
 }
 
@@ -724,7 +763,7 @@ func TestAuthValueScrubStillFiresWithQueryAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := res.(map[string]any)["body"].(string)
+	body := res.(*ExecuteResult).Body
 	if strings.Contains(body, secret) {
 		t.Errorf("auth_value leaked to agent (W1.2 scrub did not fire on query-auth connection): %q", body)
 	}

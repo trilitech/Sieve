@@ -46,6 +46,27 @@ import (
 // audit policy_result "http_proxy.header_denied" and HTTP 400.
 var ErrHeaderDenied = errors.New("http_proxy: header denied")
 
+// ExecuteResult is the typed value returned from ProxyConnector.Execute.
+// The Connector interface returns `any`, so the API router type-asserts
+// on *ExecuteResult to read AuthQueryOverridden — the flag never appears
+// in the JSON sent back to the agent (json:"-").
+//
+// Fields with JSON tags marshal to the same `{status, status_text,
+// headers, body}` shape the curated API has always returned.
+type ExecuteResult struct {
+	Status     int               `json:"status"`
+	StatusText string            `json:"status_text"`
+	Headers    map[string]string `json:"headers"`
+	Body       string            `json:"body"`
+
+	// AuthQueryOverridden reports whether the agent-supplied URL contained
+	// a query parameter matching the configured auth_query_param (any case)
+	// that the connector dropped in favour of Sieve's auth_value. The
+	// router uses this to emit `policy_result:
+	// http_proxy.auth_query_overridden` in the audit log.
+	AuthQueryOverridden bool `json:"-"`
+}
+
 // deniedHeaderKeys is the static set of header keys the connector
 // refuses to accept from the agent. Keys are stored lowercased.
 // In addition to this set, isDeniedHeader rejects:
@@ -260,6 +281,12 @@ func (p *ProxyConnector) Type() string { return "http_proxy" }
 // fired — i.e. the agent's URL contained the configured param name with
 // one or more values that were dropped in favour of Sieve's auth_value.
 //
+// Case-insensitive: ?APPID=evil for an auth_query_param of "appid" is
+// dropped and signalled as an override. Most upstreams treat query
+// parameters case-sensitively (so APPID would be ignored), but some
+// normalise — without this sweep an agent could smuggle a value alongside
+// Sieve's via case variation.
+//
 // The agent's other query parameters are preserved unchanged. URL
 // encoding (RFC 3986) is handled by url.Values.Encode().
 //
@@ -271,8 +298,14 @@ func (p *ProxyConnector) injectAuthQueryParam(u *url.URL) bool {
 		return false
 	}
 	q := u.Query()
-	overridden := q.Has(p.authQueryParam)
-	q.Set(p.authQueryParam, p.authValue) // Set replaces any existing values
+	overridden := false
+	for k := range q {
+		if strings.EqualFold(k, p.authQueryParam) {
+			overridden = true
+			delete(q, k)
+		}
+	}
+	q.Set(p.authQueryParam, p.authValue)
 	u.RawQuery = q.Encode()
 	return overridden
 }
@@ -400,20 +433,13 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 		respBody = scrubbed
 	}
 
-	result := map[string]any{
-		"status":      resp.StatusCode,
-		"status_text": resp.Status,
-		"headers":     flattenHeaders(resp.Header),
-		"body":        string(respBody),
-	}
-	// Signal to the router that an agent attempted to inject their own value
-	// for the configured auth_query_param. The router reads this private key
-	// to choose `policy_result: http_proxy.auth_query_overridden` and strips
-	// it before serialising the response back to the agent.
-	if overridden {
-		result["_auth_query_overridden"] = true
-	}
-	return result, nil
+	return &ExecuteResult{
+		Status:              resp.StatusCode,
+		StatusText:          resp.Status,
+		Headers:             flattenHeaders(resp.Header),
+		Body:                string(respBody),
+		AuthQueryOverridden: overridden,
+	}, nil
 }
 
 func (p *ProxyConnector) Validate(ctx context.Context) error {

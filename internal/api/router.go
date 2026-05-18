@@ -297,14 +297,11 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Spec 007: detect the http_proxy auth_query_param override signal
-		// smuggled through the result map's private `_auth_query_overridden`
-		// key. Strip the key before serialising so the agent never sees it.
+		// via the typed *httpproxy.ExecuteResult returned by the connector.
+		// The flag is json:"-" so it never serialises to the agent.
 		policyResult := "allow"
-		if resultMap, ok := result.(map[string]any); ok {
-			if overridden, _ := resultMap["_auth_query_overridden"].(bool); overridden {
-				policyResult = "http_proxy.auth_query_overridden"
-				delete(resultMap, "_auth_query_overridden")
-			}
+		if er, ok := result.(*httpproxy.ExecuteResult); ok && er.AuthQueryOverridden {
+			policyResult = "http_proxy.auth_query_overridden"
 		}
 		resultJSON, _ := json.Marshal(result)
 		var reason string
@@ -394,13 +391,10 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", err))
 			return
 		}
-		// Spec 007: same private-key smuggling pattern as the pre-approval path.
+		// Spec 007: same typed-result check as the pre-approval path.
 		policyResult := "approved"
-		if resultMap, ok := result.(map[string]any); ok {
-			if overridden, _ := resultMap["_auth_query_overridden"].(bool); overridden {
-				policyResult = "http_proxy.auth_query_overridden"
-				delete(resultMap, "_auth_query_overridden")
-			}
+		if er, ok := result.(*httpproxy.ExecuteResult); ok && er.AuthQueryOverridden {
+			policyResult = "http_proxy.auth_query_overridden"
 		}
 		resultJSON, _ := json.Marshal(result)
 		var approvedReason string
