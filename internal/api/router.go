@@ -589,7 +589,7 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 	policyResult := "proxied"
 	if queryOverridden {
 		policyResult = "http_proxy.auth_query_overridden"
-	} else if strings.Contains(filterSummary, "redacted") {
+	} else if strings.Contains(filterSummary, "auth_value_scrubbed") {
 		policyResult = "http_proxy.auth_value_scrubbed"
 	}
 	rt.logAudit(tok, connID, operation, nil, policyResult, filterSummary, time.Since(start).Milliseconds())

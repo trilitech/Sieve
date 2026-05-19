@@ -108,8 +108,8 @@
         <section class="rounded-lg bg-slate-800 border border-slate-700 p-6">
           <h2 class="text-lg font-semibold text-white mb-2">Upstream response body cap (bytes)</h2>
           <p class="text-sm text-slate-400 mb-3">
-            Maximum bytes Sieve will read from a <code>tools/call</code> upstream response. Leave empty for the
-            5 MiB default (5242880 bytes). Larger workloads can raise this; values must be a positive integer.
+            Maximum bytes Sieve will read from a <code>tools/call</code> upstream response. Leave empty or enter 0 for the
+            5 MiB default (5242880 bytes). Larger workloads can raise this; enter a non-negative integer (0 = use default).
           </p>
           <input type="number" name="response_body_cap_bytes" min="0" step="1"
             value="{{if gt .ResponseBodyCapBytes 0}}{{.ResponseBodyCapBytes}}{{end}}"

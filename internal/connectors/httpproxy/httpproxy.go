@@ -121,13 +121,14 @@ func isDeniedHeader(key, authHeaderLower string, extra map[string]struct{}) (boo
 	return false, lower
 }
 
-// authQueryParamPattern is the character class accepted for the optional
-// auth_query_param config field on http_proxy connections. ASCII letters,
-// digits, underscore, hyphen, dot — covers every common API key parameter
-// name in the wild (appid, api_key, api-key, client.id, etc.) without
-// permitting URL-special chars (?, &, #, =, +, %, space, /) that would
-// either break the URL or change semantics.
-var authQueryParamPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+// AuthQueryParamPatternStr is the canonical character-class regex for the
+// optional auth_query_param config field. It is exported so other packages
+// (e.g. internal/web) can assert their copy stays in sync without creating a
+// cyclic import.
+const AuthQueryParamPatternStr = `^[A-Za-z0-9_.-]+$`
+
+// authQueryParamPattern is the compiled form of AuthQueryParamPatternStr.
+var authQueryParamPattern = regexp.MustCompile(AuthQueryParamPatternStr)
 
 // validateAuthQueryParam trims whitespace and verifies the parameter-name
 // character class. Empty / whitespace-only input is valid and means "use
@@ -325,6 +326,7 @@ func (p *ProxyConnector) AuthValueScrubFilter() *policy.ResponseFilter {
 		return nil
 	}
 	return &policy.ResponseFilter{
+		Label:          "auth_value_scrubbed",
 		RedactPatterns: []string{regexp.QuoteMeta(p.authValue)},
 	}
 }

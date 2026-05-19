@@ -8,15 +8,14 @@ import (
 	"strings"
 
 	"github.com/trilitech/Sieve/internal/connections"
+	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 )
 
-// authQueryParamPattern mirrors the validator in
-// internal/connectors/httpproxy/httpproxy.go::validateAuthQueryParam. The
-// connector package owns the canonical regex; we duplicate the string here
-// rather than import the connector package (which would create a cyclic
-// dependency through connector.Registry). Tests in both packages assert the
-// strings match.
-var authQueryParamPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+// authQueryParamPattern compiles the canonical pattern exported from
+// internal/connectors/httpproxy. Using the exported constant means the web
+// package and connector always agree on the pattern string. Tests in this
+// package assert the compiled form matches via TestAuthQueryParamPatternMatchesConnector.
+var authQueryParamPattern = regexp.MustCompile(httpproxy.AuthQueryParamPatternStr)
 
 // connectionEditData backs the templates/connection_edit.html template.
 // It carries the per-connector knobs introduced by spec 006 plus a few
@@ -62,10 +61,10 @@ type githubEditData struct {
 }
 
 // staticHTTPProxyBaselineKeys mirrors the deniedHeaderKeys map in
-// internal/connectors/httpproxy/httpproxy.go. This package can't import the
-// connector package without cyclic risk in the future; the list is short,
-// stable, and documented as a hard-coded baseline so duplicating it here
-// is acceptable. Tests verify the two stay in sync.
+// internal/connectors/httpproxy/httpproxy.go. The list is short, stable,
+// and documented as a hard-coded baseline so duplicating it here is
+// acceptable. Tests in this package (TestBaselineDenylistCannotBeReducedViaForm
+// and related) cover the deny behaviour end-to-end via the connector itself.
 var staticHTTPProxyBaselineKeys = []string{
 	"Authorization",
 	"Host",
@@ -221,11 +220,8 @@ func applyMCPProxyEdit(cfg map[string]any, r *http.Request) string {
 		return ""
 	}
 	n, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return "response_body_cap_bytes must be a positive integer"
-	}
-	if n < 0 {
-		return "response_body_cap_bytes must be positive"
+	if err != nil || n < 0 {
+		return "response_body_cap_bytes must be a non-negative integer (enter 0 or leave empty to use the 5 MiB default)"
 	}
 	cfg["response_body_cap_bytes"] = n
 	return ""
