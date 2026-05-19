@@ -1301,10 +1301,26 @@ func inferPolicyScope(cfg map[string]any) string {
 		}
 		if ops, ok := match["operations"].([]any); ok {
 			for _, op := range ops {
-				if s, _ := op.(string); s == "proxy_request" {
+				s, _ := op.(string)
+				if s == "proxy_request" {
 					return "http_proxy"
 				}
+				switch s {
+				case "list_channels", "list_users", "read_user_profile",
+					"read_channel_history", "read_thread", "post_message",
+					"search_messages":
+					return "slack"
+				}
 			}
+		}
+		if _, ok := match["channel"]; ok {
+			return "slack"
+		}
+		if _, ok := match["text_contains"]; ok {
+			return "slack"
+		}
+		if _, ok := match["user"]; ok {
+			return "slack"
 		}
 		if _, ok := match["providers"]; ok {
 			return "llm"

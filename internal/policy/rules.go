@@ -220,6 +220,32 @@ type RuleMatch struct {
 
 	// IndexName — exact match against params["index_name"] or params["index"] (DynamoDB).
 	IndexName string `json:"index_name,omitempty"`
+
+	// --- Slack ---
+
+	// Channel — glob match against params["channel"]. Used by Slack ops
+	// that take a channel target (read_channel_history, read_thread,
+	// post_message). Supports leading/trailing "*". Compared
+	// case-insensitively, so a "#general" pattern matches an agent
+	// param of either "#general" or "C0123ABCDE" only when the agent
+	// sent the literal name — Slack channel IDs and names are different
+	// values, so operators should pick whichever form their agents pass.
+	Channel string `json:"channel,omitempty"`
+
+	// SlackUser — glob match against params["user"]. Used by Slack
+	// read_user_profile to gate which user records an agent may pull
+	// (e.g. allow "U01ADMIN*" only). Distinct from the email-oriented
+	// From/To fields above. Kept as a separate Go name to avoid
+	// shadowing those existing string-slice fields.
+	SlackUser string `json:"user,omitempty"`
+
+	// TextContains — case-insensitive substring match against
+	// params["text"]. Primary gate for Slack post_message body content.
+	// Use a deny rule to block keywords; combine with `operations:
+	// ["post_message"]` to scope the rule. The field is intentionally
+	// generic enough to be reusable by any future connector whose write
+	// op uses a "text" param.
+	TextContains string `json:"text_contains,omitempty"`
 }
 
 // ScriptAction defines a script to run for action="script".
@@ -1085,6 +1111,30 @@ func (r *RulesEvaluator) matches(rule *Rule, req *PolicyRequest) bool {
 			val, _ = req.Params["index"].(string)
 		}
 		if !strings.EqualFold(m.IndexName, val) {
+			return false
+		}
+	}
+
+	// Channel check (Slack, glob).
+	if m.Channel != "" {
+		val, _ := req.Params["channel"].(string)
+		if !globMatch(m.Channel, val) {
+			return false
+		}
+	}
+
+	// SlackUser check (Slack, glob against params["user"]).
+	if m.SlackUser != "" {
+		val, _ := req.Params["user"].(string)
+		if !globMatch(m.SlackUser, val) {
+			return false
+		}
+	}
+
+	// TextContains check (Slack post_message body, case-insensitive substring).
+	if m.TextContains != "" {
+		val, _ := req.Params["text"].(string)
+		if !strings.Contains(strings.ToLower(val), strings.ToLower(m.TextContains)) {
 			return false
 		}
 	}

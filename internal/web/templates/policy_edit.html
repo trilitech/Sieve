@@ -81,6 +81,30 @@
                     <div>
                       <label class="block text-sm text-slate-400 mb-1">Operations</label>
                       <div id="ops-checkboxes" class="bg-slate-800 border border-slate-700 rounded-lg p-3 space-y-3">
+                        {{if eq .Scope "slack"}}
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_channels"><span class="text-xs text-slate-300">list_channels</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_users"><span class="text-xs text-slate-300">list_users</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_user_profile"><span class="text-xs text-slate-300">read_user_profile</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_channel_history"><span class="text-xs text-slate-300">read_channel_history</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_thread"><span class="text-xs text-slate-300">read_thread</span></label>
+                          </div>
+                        </div>
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="post_message"><span class="text-xs text-slate-300">post_message</span></label>
+                          </div>
+                        </div>
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Search <span class="text-slate-600 font-normal">(disabled in v1)</span></p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-not-allowed opacity-60"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="search_messages" disabled><span class="text-xs text-slate-400">search_messages</span></label>
+                          </div>
+                        </div>
+                        {{else}}
                         <div>
                           <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
                           <div class="grid grid-cols-2 gap-1.5">
@@ -114,6 +138,7 @@
                             <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_labels"><span class="text-xs text-slate-300">list_labels</span></label>
                           </div>
                         </div>
+                        {{end}}
                       </div>
                     </div>
 
@@ -147,6 +172,24 @@
                       <input type="text" id="rule-label" placeholder="project-x"
                              class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
                     </div>
+
+                    {{if eq .Scope "slack"}}
+                    <div id="filter-slack-channel" class="hidden">
+                      <label class="block text-sm text-slate-400 mb-1">Channel <span class="text-slate-600">(glob, e.g. #bot-* or C01234ABC)</span></label>
+                      <input type="text" id="rule-slack-channel" placeholder="#bot-*"
+                             class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                    </div>
+                    <div id="filter-slack-user" class="hidden">
+                      <label class="block text-sm text-slate-400 mb-1">User <span class="text-slate-600">(glob, e.g. U01ADMIN*)</span></label>
+                      <input type="text" id="rule-slack-user" placeholder="U01*"
+                             class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                    </div>
+                    <div id="filter-slack-text" class="hidden">
+                      <label class="block text-sm text-slate-400 mb-1">Message text contains <span class="text-slate-600">(substring; combine with deny to block keywords)</span></label>
+                      <input type="text" id="rule-slack-text" placeholder="secret"
+                             class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                    </div>
+                    {{end}}
                   </div>
                 </div>
 
@@ -317,6 +360,9 @@
         if (rule.subject) condParts.push("subject contains <strong>" + escHtml(rule.subject) + "</strong>");
         if (rule.content) condParts.push("content contains <strong>" + escHtml(rule.content) + "</strong>");
         if (rule.label) condParts.push("label <strong>" + escHtml(rule.label) + "</strong>");
+        if (rule.slack_channel) condParts.push("channel <strong>" + escHtml(rule.slack_channel) + "</strong>");
+        if (rule.slack_user) condParts.push("user <strong>" + escHtml(rule.slack_user) + "</strong>");
+        if (rule.slack_text) condParts.push("text contains <strong>" + escHtml(rule.slack_text) + "</strong>");
         const condText = condParts.length > 0 ? " and " + condParts.join(" and ") : "";
 
         let extraInfo = "";
@@ -408,6 +454,9 @@
       document.getElementById("rule-subject").value = rule.subject || "";
       document.getElementById("rule-content").value = rule.content || "";
       document.getElementById("rule-label").value = rule.label || "";
+      if (document.getElementById("rule-slack-channel")) document.getElementById("rule-slack-channel").value = rule.slack_channel || "";
+      if (document.getElementById("rule-slack-user")) document.getElementById("rule-slack-user").value = rule.slack_user || "";
+      if (document.getElementById("rule-slack-text")) document.getElementById("rule-slack-text").value = rule.slack_text || "";
 
       // Populate action
       var actionVal = rule.action;
@@ -443,6 +492,9 @@
       document.getElementById("rule-subject").value = "";
       document.getElementById("rule-content").value = "";
       document.getElementById("rule-label").value = "";
+      if (document.getElementById("rule-slack-channel")) document.getElementById("rule-slack-channel").value = "";
+      if (document.getElementById("rule-slack-user")) document.getElementById("rule-slack-user").value = "";
+      if (document.getElementById("rule-slack-text")) document.getElementById("rule-slack-text").value = "";
       document.querySelector('input[name="rule-action"][value="allow"]').checked = true;
       document.getElementById("rule-script-cmd").value = "";
       document.getElementById("rule-script-path").value = "";
@@ -470,6 +522,9 @@
       var label = document.getElementById("rule-label").value.trim();
       var redact = document.getElementById("rule-redact").value.trim();
       var reason = document.getElementById("rule-reason").value.trim();
+      var slackChannel = document.getElementById("rule-slack-channel") ? document.getElementById("rule-slack-channel").value.trim() : "";
+      var slackUser = document.getElementById("rule-slack-user") ? document.getElementById("rule-slack-user").value.trim() : "";
+      var slackText = document.getElementById("rule-slack-text") ? document.getElementById("rule-slack-text").value.trim() : "";
 
       if (from) rule.from = from;
       if (to) rule.to = to;
@@ -478,6 +533,9 @@
       if (label) rule.label = label;
       if (redact) rule.redact = redact;
       if (reason) rule.reason = reason;
+      if (slackChannel) rule.slack_channel = slackChannel;
+      if (slackUser) rule.slack_user = slackUser;
+      if (slackText) rule.slack_text = slackText;
 
       if (action === "run_script") {
         rule.script_cmd = document.getElementById("rule-script-cmd").value.trim();
@@ -526,8 +584,9 @@
       custom: null
     };
 
-    // Which filters each operation supports
-    var OP_FILTERS = {
+    // Which filters each operation supports — keyed by scope so a Slack
+    // policy doesn't try to surface Gmail labels and vice versa.
+    var OP_FILTERS_GMAIL = {
       list_emails:    ["filter-label", "filter-from", "filter-subject", "filter-content"],
       read_email:     ["filter-label", "filter-from", "filter-subject", "filter-content"],
       read_thread:    ["filter-label", "filter-from", "filter-subject", "filter-content"],
@@ -542,7 +601,19 @@
       archive:        ["filter-label"],
       list_labels:    []
     };
-    var ALL_FILTERS = ["filter-from", "filter-to", "filter-subject", "filter-content", "filter-label"];
+    var ALL_FILTERS_GMAIL = ["filter-from", "filter-to", "filter-subject", "filter-content", "filter-label"];
+    var OP_FILTERS_SLACK = {
+      "list_channels":         [],
+      "list_users":            [],
+      "read_user_profile":     ["filter-slack-user"],
+      "read_channel_history":  ["filter-slack-channel"],
+      "read_thread":           ["filter-slack-channel"],
+      "post_message":          ["filter-slack-channel", "filter-slack-text"],
+      "search_messages":       []
+    };
+    var ALL_FILTERS_SLACK = ["filter-slack-channel", "filter-slack-user", "filter-slack-text"];
+    var OP_FILTERS = SCOPE === "slack" ? OP_FILTERS_SLACK : OP_FILTERS_GMAIL;
+    var ALL_FILTERS = SCOPE === "slack" ? ALL_FILTERS_SLACK : ALL_FILTERS_GMAIL;
 
     function updateFiltersFromOps() {
       var checked = [];
@@ -677,6 +748,10 @@
         // Hyperstack scope fields
         if (r.hs_flavor) match.flavor = r.hs_flavor;
         if (r.hs_max_vms) match.max_vms = r.hs_max_vms;
+        // Slack scope fields
+        if (r.slack_channel) match.channel = r.slack_channel;
+        if (r.slack_user) match.user = r.slack_user;
+        if (r.slack_text) match.text_contains = r.slack_text;
 
         if (Object.keys(match).length > 0) rule.match = match;
         return rule;
@@ -772,6 +847,10 @@
             // Hyperstack scope fields
             if (r.match.flavor) uiRule.hs_flavor = r.match.flavor;
             if (r.match.max_vms) uiRule.hs_max_vms = r.match.max_vms;
+            // Slack scope fields
+            if (r.match.channel) uiRule.slack_channel = r.match.channel;
+            if (r.match.user) uiRule.slack_user = r.match.user;
+            if (r.match.text_contains) uiRule.slack_text = r.match.text_contains;
           }
           // Map engine action names to UI action names
           if (uiRule.action === "approval_required") uiRule.action = "require_approval";

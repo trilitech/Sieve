@@ -410,6 +410,29 @@
                             <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.list_images"><span class="text-xs text-slate-300">hyperstack.list_images</span></label>
                           </div>
                         </div>
+                        {{else if eq .Scope "slack"}}
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_channels"><span class="text-xs text-slate-300">list_channels</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_users"><span class="text-xs text-slate-300">list_users</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_user_profile"><span class="text-xs text-slate-300">read_user_profile</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_channel_history"><span class="text-xs text-slate-300">read_channel_history</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_thread"><span class="text-xs text-slate-300">read_thread</span></label>
+                          </div>
+                        </div>
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="post_message"><span class="text-xs text-slate-300">post_message</span></label>
+                          </div>
+                        </div>
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Search <span class="text-slate-600 font-normal">(disabled in v1 — user-token install required)</span></p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-not-allowed opacity-60"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="search_messages" disabled><span class="text-xs text-slate-400">search_messages</span></label>
+                          </div>
+                        </div>
                         {{end}}
                       </div>
                     </div>
@@ -758,6 +781,25 @@
                       <input type="number" id="rule-hs-max-vms" placeholder="5" min="1"
                              class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
                     </div>
+
+                    <!-- Slack scope filters -->
+                    <div id="filter-slack-channel" class="hidden">
+                      <label class="block text-sm text-slate-400 mb-1">Channel <span class="text-slate-600">(glob, e.g. #bot-* or C01234ABC)</span></label>
+                      <input type="text" id="rule-slack-channel" placeholder="#bot-*"
+                             class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                    </div>
+
+                    <div id="filter-slack-user" class="hidden">
+                      <label class="block text-sm text-slate-400 mb-1">User <span class="text-slate-600">(glob, e.g. U01ADMIN*)</span></label>
+                      <input type="text" id="rule-slack-user" placeholder="U01*"
+                             class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                    </div>
+
+                    <div id="filter-slack-text" class="hidden">
+                      <label class="block text-sm text-slate-400 mb-1">Message text contains <span class="text-slate-600">(substring; combine with deny to block keywords)</span></label>
+                      <input type="text" id="rule-slack-text" placeholder="secret"
+                             class="w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+                    </div>
                   </div>
                 </div>
 
@@ -1025,6 +1067,10 @@
         // Hyperstack filters
         if (rule.hs_flavor) condParts.push("flavor <strong>" + escHtml(rule.hs_flavor) + "</strong>");
         if (rule.hs_max_vms) condParts.push("max VMs <strong>" + rule.hs_max_vms + "</strong>");
+        // Slack filters
+        if (rule.slack_channel) condParts.push("channel <strong>" + escHtml(rule.slack_channel) + "</strong>");
+        if (rule.slack_user) condParts.push("user <strong>" + escHtml(rule.slack_user) + "</strong>");
+        if (rule.slack_text) condParts.push("text contains <strong>" + escHtml(rule.slack_text) + "</strong>");
         const condText = condParts.length > 0 ? " and " + condParts.join(" and ") : "";
 
         let extraInfo = "";
@@ -1180,6 +1226,10 @@
       // Hyperstack filters
       if (document.getElementById("rule-hs-flavor")) document.getElementById("rule-hs-flavor").value = rule.hs_flavor || "";
       if (document.getElementById("rule-hs-max-vms")) document.getElementById("rule-hs-max-vms").value = rule.hs_max_vms || "";
+      // Slack filters
+      if (document.getElementById("rule-slack-channel")) document.getElementById("rule-slack-channel").value = rule.slack_channel || "";
+      if (document.getElementById("rule-slack-user")) document.getElementById("rule-slack-user").value = rule.slack_user || "";
+      if (document.getElementById("rule-slack-text")) document.getElementById("rule-slack-text").value = rule.slack_text || "";
 
       // Populate action
       var actionVal = rule.action;
@@ -1278,6 +1328,10 @@
       // Hyperstack filters
       if (document.getElementById("rule-hs-flavor")) document.getElementById("rule-hs-flavor").value = "";
       if (document.getElementById("rule-hs-max-vms")) document.getElementById("rule-hs-max-vms").value = "";
+      // Slack filters
+      if (document.getElementById("rule-slack-channel")) document.getElementById("rule-slack-channel").value = "";
+      if (document.getElementById("rule-slack-user")) document.getElementById("rule-slack-user").value = "";
+      if (document.getElementById("rule-slack-text")) document.getElementById("rule-slack-text").value = "";
       document.querySelector('input[name="rule-action"][value="allow"]').checked = true;
       document.getElementById("rule-script-cmd").value = "";
       document.getElementById("rule-script-path").value = "";
@@ -1370,6 +1424,10 @@
       // Hyperstack filter values
       var hsFlavor = document.getElementById("rule-hs-flavor") ? document.getElementById("rule-hs-flavor").value.trim() : "";
       var hsMaxVms = document.getElementById("rule-hs-max-vms") ? document.getElementById("rule-hs-max-vms").value.trim() : "";
+      // Slack filter values
+      var slackChannel = document.getElementById("rule-slack-channel") ? document.getElementById("rule-slack-channel").value.trim() : "";
+      var slackUser = document.getElementById("rule-slack-user") ? document.getElementById("rule-slack-user").value.trim() : "";
+      var slackText = document.getElementById("rule-slack-text") ? document.getElementById("rule-slack-text").value.trim() : "";
 
       if (from) rule.from = from;
       if (to) rule.to = to;
@@ -1433,6 +1491,10 @@
       // Hyperstack
       if (hsFlavor) rule.hs_flavor = hsFlavor;
       if (hsMaxVms) rule.hs_max_vms = parseInt(hsMaxVms);
+      // Slack
+      if (slackChannel) rule.slack_channel = slackChannel;
+      if (slackUser) rule.slack_user = slackUser;
+      if (slackText) rule.slack_text = slackText;
 
       if (action === "run_script") {
         rule.script_cmd = document.getElementById("rule-script-cmd").value.trim();
@@ -1689,6 +1751,16 @@
       "hyperstack.list_images":  []
     };
     var ALL_FILTERS_HYPERSTACK = ["filter-hs-flavor", "filter-hs-max-vms"];
+    var OP_FILTERS_SLACK = {
+      "list_channels":         [],
+      "list_users":            [],
+      "read_user_profile":     ["filter-slack-user"],
+      "read_channel_history":  ["filter-slack-channel"],
+      "read_thread":           ["filter-slack-channel"],
+      "post_message":          ["filter-slack-channel", "filter-slack-text"],
+      "search_messages":       []
+    };
+    var ALL_FILTERS_SLACK = ["filter-slack-channel", "filter-slack-user", "filter-slack-text"];
 
     function getOpFilters() {
       if (SCOPE === "llm") return OP_FILTERS_LLM;
@@ -1704,6 +1776,7 @@
       if (SCOPE === "aws-ses") return OP_FILTERS_AWS_SES;
       if (SCOPE === "aws-dynamodb") return OP_FILTERS_AWS_DYNAMODB;
       if (SCOPE === "hyperstack") return OP_FILTERS_HYPERSTACK;
+      if (SCOPE === "slack") return OP_FILTERS_SLACK;
       return OP_FILTERS_GMAIL;
     }
     function getAllFilters() {
@@ -1720,6 +1793,7 @@
       if (SCOPE === "aws-ses") return ALL_FILTERS_AWS_SES;
       if (SCOPE === "aws-dynamodb") return ALL_FILTERS_AWS_DYNAMODB;
       if (SCOPE === "hyperstack") return ALL_FILTERS_HYPERSTACK;
+      if (SCOPE === "slack") return ALL_FILTERS_SLACK;
       return ALL_FILTERS_GMAIL;
     }
     // Keep backward-compatible references
@@ -1994,6 +2068,10 @@
         // Hyperstack scope fields
         if (r.hs_flavor) match.flavor = r.hs_flavor;
         if (r.hs_max_vms) match.max_vms = r.hs_max_vms;
+        // Slack scope fields
+        if (r.slack_channel) match.channel = r.slack_channel;
+        if (r.slack_user) match.user = r.slack_user;
+        if (r.slack_text) match.text_contains = r.slack_text;
 
         if (Object.keys(match).length > 0) rule.match = match;
         return rule;

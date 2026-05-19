@@ -2314,6 +2314,124 @@ func TestRulesMatchMethod(t *testing.T) {
 	}
 }
 
+func TestRulesMatchSlackChannel(t *testing.T) {
+	eval := makeRulesEvaluator(t, map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match":  map[string]any{"operations": []any{"post_message"}, "channel": "#bot-*"},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+	})
+	ctx := context.Background()
+
+	t.Run("allowed channel pattern", func(t *testing.T) {
+		dec, err := eval.Evaluate(ctx, &PolicyRequest{
+			Operation: "post_message",
+			Params:    map[string]any{"channel": "#bot-test", "text": "hi"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dec.Action != "allow" {
+			t.Fatalf("expected allow, got %s", dec.Action)
+		}
+	})
+
+	t.Run("denied non-matching channel", func(t *testing.T) {
+		dec, err := eval.Evaluate(ctx, &PolicyRequest{
+			Operation: "post_message",
+			Params:    map[string]any{"channel": "#general", "text": "hi"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dec.Action != "deny" {
+			t.Fatalf("expected default deny, got %s", dec.Action)
+		}
+	})
+}
+
+func TestRulesMatchSlackTextContains(t *testing.T) {
+	eval := makeRulesEvaluator(t, map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match":  map[string]any{"operations": []any{"post_message"}, "text_contains": "secret"},
+				"action": "deny",
+				"reason": "block messages mentioning secrets",
+			},
+		},
+		"default_action": "allow",
+	})
+	ctx := context.Background()
+
+	t.Run("denies on keyword hit", func(t *testing.T) {
+		dec, err := eval.Evaluate(ctx, &PolicyRequest{
+			Operation: "post_message",
+			Params:    map[string]any{"channel": "#general", "text": "the launch SECRET is..."},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dec.Action != "deny" {
+			t.Fatalf("expected deny for keyword hit, got %s", dec.Action)
+		}
+	})
+
+	t.Run("allows benign text", func(t *testing.T) {
+		dec, err := eval.Evaluate(ctx, &PolicyRequest{
+			Operation: "post_message",
+			Params:    map[string]any{"channel": "#general", "text": "good morning"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dec.Action != "allow" {
+			t.Fatalf("expected default allow, got %s", dec.Action)
+		}
+	})
+}
+
+func TestRulesMatchSlackUser(t *testing.T) {
+	eval := makeRulesEvaluator(t, map[string]any{
+		"rules": []any{
+			map[string]any{
+				"match":  map[string]any{"operations": []any{"read_user_profile"}, "user": "U01ADMIN*"},
+				"action": "allow",
+			},
+		},
+		"default_action": "deny",
+	})
+	ctx := context.Background()
+
+	t.Run("allowed admin user glob", func(t *testing.T) {
+		dec, err := eval.Evaluate(ctx, &PolicyRequest{
+			Operation: "read_user_profile",
+			Params:    map[string]any{"user": "U01ADMINBOSS"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dec.Action != "allow" {
+			t.Fatalf("expected allow, got %s", dec.Action)
+		}
+	})
+
+	t.Run("denied other user", func(t *testing.T) {
+		dec, err := eval.Evaluate(ctx, &PolicyRequest{
+			Operation: "read_user_profile",
+			Params:    map[string]any{"user": "U02NORMAL"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if dec.Action != "deny" {
+			t.Fatalf("expected default deny, got %s", dec.Action)
+		}
+	})
+}
+
 func TestValidatePolicy_MethodFieldOK(t *testing.T) {
 	ops := []connector.OperationDef{
 		{

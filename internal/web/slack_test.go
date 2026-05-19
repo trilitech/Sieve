@@ -563,3 +563,58 @@ func TestHandleSlackReauth_TokenPath(t *testing.T) {
 	}
 }
 
+// TestPoliciesPage_SlackScope asserts the policies create form renders
+// the Slack-specific rule builder when ?scope=slack — Slack operation
+// checkboxes (list_channels, post_message, etc.) and the Slack-specific
+// filter fields (channel, user, text-contains) must all appear, and
+// Gmail-only operations (list_emails, send_email) must not.
+func TestPoliciesPage_SlackScope(t *testing.T) {
+	handler, _ := slackUITestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/policies?scope=slack", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+
+	wantOps := []string{
+		`value="list_channels"`,
+		`value="list_users"`,
+		`value="read_user_profile"`,
+		`value="read_channel_history"`,
+		`value="read_thread"`,
+		`value="post_message"`,
+		`value="search_messages"`,
+	}
+	for _, op := range wantOps {
+		if !strings.Contains(body, op) {
+			t.Errorf("slack scope rule builder missing op checkbox %q", op)
+		}
+	}
+	wantFilters := []string{
+		`id="filter-slack-channel"`,
+		`id="filter-slack-user"`,
+		`id="filter-slack-text"`,
+		`id="rule-slack-channel"`,
+		`id="rule-slack-user"`,
+		`id="rule-slack-text"`,
+	}
+	for _, f := range wantFilters {
+		if !strings.Contains(body, f) {
+			t.Errorf("slack scope rule builder missing filter %q", f)
+		}
+	}
+	// Gmail-only ops must not leak into Slack scope.
+	for _, gmail := range []string{`value="list_emails"`, `value="send_email"`, `value="create_draft"`} {
+		if strings.Contains(body, gmail) {
+			t.Errorf("slack scope rule builder unexpectedly contains gmail op %q", gmail)
+		}
+	}
+	// JS scope variable must reflect the URL scope so submit() maps to engine fields.
+	if !strings.Contains(body, `var SCOPE = "slack"`) {
+		t.Errorf("expected JS SCOPE to be set to \"slack\"")
+	}
+}
+
