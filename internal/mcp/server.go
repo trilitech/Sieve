@@ -1046,7 +1046,23 @@ func (s *Server) logAudit(tok *tokens.Token, connID, operation string, params ma
 }
 
 // writeError writes a JSON-RPC error response directly to the http.ResponseWriter.
+//
+// JSON-RPC 2.0 says id MUST be null when the request id can't be detected
+// (parse errors, transport-level rejections like missing auth). However,
+// the MCP TypeScript SDK's response Zod schema rejects id=null — it
+// requires string|number — so a strictly-spec-compliant null response
+// makes Claude Code (and any other MCP client built on the official SDK)
+// fail to parse the error envelope, masking the real problem (e.g.
+// "missing bearer token") behind a confusing union-type error.
+//
+// To stay compatible with strict MCP clients we coerce id=nil to id=0
+// (numeric). Strict JSON-RPC 2.0 callers see a non-null id and ignore it
+// (id correlation only matters for matched request/response pairs); MCP
+// clients see a valid number and parse the error.
 func (s *Server) writeError(w http.ResponseWriter, id any, code int, message string) {
+	if id == nil {
+		id = 0
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(JSONRPCResponse{
 		JSONRPC: "2.0",

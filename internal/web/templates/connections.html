@@ -70,6 +70,12 @@
                   </button>
                 </form>
                 {{end}}
+                {{if or (eq .ConnectorType "http_proxy") (eq .ConnectorType "mcp_proxy") (eq .ConnectorType "github")}}
+                <a href="/connections/{{.ID}}/edit"
+                   class="inline-block mr-3 text-sm text-indigo-300 hover:text-indigo-200 font-medium transition-colors">
+                  Edit
+                </a>
+                {{end}}
                 <form method="POST" action="/connections/{{.ID}}/delete"
                       hx-post="/connections/{{.ID}}/delete"
                       hx-confirm="Delete connection '{{.ID}}'? This cannot be undone."

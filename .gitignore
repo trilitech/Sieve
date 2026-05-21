@@ -16,3 +16,5 @@ test-results/
 specs/
 .DS_Store
 *.DS_Store
+.claude/
+passphrase

@@ -81,3 +81,5 @@ Scripts (Python by default, any language works) read JSON from stdin, write a JS
 - `internal/testing/mockconnector` is the connector you wire up in tests when you need deterministic responses without hitting Google/AWS/etc. `internal/testing/testenv.New` automatically sets up a loaded keyring with a fixed test passphrase (`test-passphrase`) using cheap argon2 params; tests using `testenv.Env.Connections` get encrypted read/write "for free". The e2e testserver (`e2e/testserver/main.go`) takes `--test-passphrase` (default `e2e-test-passphrase`) for the same reason.
 - Don't add plaintext credential fields to the `connections` schema. If a new credential type needs storing, route it through `connections.Config` so it flows through the existing envelope-encryption path.
 - Don't add env-var-based passphrase intake. Env leaks through `/proc/<pid>/environ`, `ps`, and crash dumps. `SIEVE_PASSPHRASE_FILE` is fine (points at a file); `SIEVE_PASSPHRASE` is not.
+
+

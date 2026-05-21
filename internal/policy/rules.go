@@ -92,6 +92,14 @@ type RuleMatch struct {
 	// Path — glob match against the request path (for HTTP proxy).
 	Path string `json:"path,omitempty"`
 
+	// Method — match against the request's HTTP method (for HTTP proxy).
+	// Comparison is case-insensitive; entries are exact strings (no glob).
+	// Examples: ["GET"], ["POST", "PUT"], ["DELETE"]. Empty = match any
+	// method. Reads params["method"] (set by the API router on every
+	// proxy request) so the field is meaningful only for http_proxy
+	// connections; for other connectors the field is silently ignored.
+	Method []string `json:"method,omitempty"`
+
 	// BodyContains — case-insensitive substring check against the request body.
 	BodyContains string `json:"body_contains,omitempty"`
 
@@ -592,6 +600,27 @@ func (r *RulesEvaluator) matches(rule *Rule, req *PolicyRequest) bool {
 			matched = true
 		} else if strings.HasSuffix(pattern, "*") && strings.HasPrefix(pathLower, pattern[:len(pattern)-1]) {
 			matched = true
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	// Method check — case-insensitive equality against any of the
+	// configured methods. Reads params["method"] (set by the API router
+	// for transparent http_proxy requests) with a metadata fallback.
+	if len(m.Method) > 0 {
+		method, _ := req.Params["method"].(string)
+		if method == "" {
+			method, _ = req.Metadata["method"].(string)
+		}
+		methodUpper := strings.ToUpper(strings.TrimSpace(method))
+		matched := false
+		for _, want := range m.Method {
+			if strings.ToUpper(strings.TrimSpace(want)) == methodUpper {
+				matched = true
+				break
+			}
 		}
 		if !matched {
 			return false

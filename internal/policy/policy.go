@@ -35,6 +35,13 @@ type PolicyRequest struct {
 // These are collected during pre-phase evaluation and applied to the
 // response after the operation executes.
 type ResponseFilter struct {
+	// Label is an internal sentinel used by the API router to attribute the
+	// audit policy_result identifier to a specific filter. It is NOT
+	// serialised to policy scripts (json:"-") and has no effect on filtering
+	// behaviour. When non-empty, ApplyResponseFilters records the label
+	// instead of the generic "redacted" action string so callers can
+	// distinguish auto-attached scrub filters from operator-defined redacts.
+	Label             string   `json:"-"`
 	ExcludeContaining string   `json:"exclude_containing,omitempty"` // remove items containing this text
 	RedactPatterns    []string `json:"redact_patterns,omitempty"`    // regex patterns to redact
 	ScriptPath        string   `json:"script_path,omitempty"`        // post-filter script
@@ -160,7 +167,11 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte
 			newResult := re.ReplaceAllString(result, "[REDACTED]")
 			if newResult != result {
 				result = newResult
-				actions = append(actions, "redacted")
+				if f.Label != "" {
+					actions = append(actions, f.Label)
+				} else {
+					actions = append(actions, "redacted")
+				}
 			}
 		}
 

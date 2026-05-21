@@ -1916,7 +1916,20 @@
 
         // Build match conditions
         var match = {};
-        if (r.ops && r.ops.length > 0) match.operations = r.ops;
+        // SCOPE-specific operation handling: for http_proxy the form's
+        // GET/POST/PUT/... checkboxes are HTTP METHODS, not connector op
+        // names, even though they share the .rule-op class for UI symmetry.
+        // Route them to match.method. Pin operations to "*" (match-any) so
+        // the rule fires on both the transparent surface (where the op name
+        // is "proxy:GET:/path") and the curated MCP "proxy_request" op —
+        // method/path filters do the actual gating, and the role binding
+        // already scopes the policy to this connection.
+        if (SCOPE === "http_proxy") {
+          match.operations = ["*", "proxy_request"];
+          if (r.ops && r.ops.length > 0) match.method = r.ops;
+        } else if (r.ops && r.ops.length > 0) {
+          match.operations = r.ops;
+        }
         if (r.phase && r.phase !== "pre") match.phase = r.phase;
         if (r.from) match.from = [r.from];
         if (r.to) match.to = [r.to];

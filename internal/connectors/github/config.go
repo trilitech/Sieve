@@ -29,6 +29,14 @@ const (
 type Config struct {
 	Credentials  []Credential `json:"credentials"`
 	DefaultIndex *int         `json:"default_credential_index,omitempty"`
+
+	// CrossForkPRAllowlist names GitHub user logins (case-insensitive) whose
+	// forks the connector accepts as cross-fork PR heads via the curated
+	// github_create_pr op. Default is empty == deny all cross-fork PRs.
+	// Wildcards are NOT honoured; an entry of "*" is treated as a literal
+	// user named "*". The escape-hatch github_request op is unaffected
+	// regardless of allow-list state.
+	CrossForkPRAllowlist []string `json:"cross_fork_pr_allowlist,omitempty"`
 }
 
 // Credential is a single PAT or App installation entry within a Config.
@@ -94,7 +102,29 @@ func (c *Config) validate() error {
 			return fmt.Errorf("github: default_credential_index %d out of range", *c.DefaultIndex)
 		}
 	}
+	for i, u := range c.CrossForkPRAllowlist {
+		if strings.TrimSpace(u) == "" {
+			return fmt.Errorf("github: cross_fork_pr_allowlist[%d] is empty", i)
+		}
+	}
 	return nil
+}
+
+// allowsCrossForkUser reports whether the given GitHub user appears in
+// the connection's cross-fork allow-list. Comparison is case-insensitive
+// after trimming whitespace on both sides; an empty list (or empty user)
+// returns false, which is the default-deny semantics specified by W1.4.
+func (c *Config) allowsCrossForkUser(user string) bool {
+	needle := strings.ToLower(strings.TrimSpace(user))
+	if needle == "" {
+		return false
+	}
+	for _, u := range c.CrossForkPRAllowlist {
+		if strings.ToLower(strings.TrimSpace(u)) == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Credential) validate() error {
