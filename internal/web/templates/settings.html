@@ -175,19 +175,30 @@
           if (oldText) oldText.remove();
           modelSelect.style.display = "";
 
-          html += '<option value="">-- Select a model --</option>';
+          // Build options via createElement so model IDs / display names
+          // never reach innerHTML as HTML strings (spec 001-fix-security-vulns
+          // FR-001/FR-002).
+          modelSelect.innerHTML = "";
+          var placeholder = document.createElement("option");
+          placeholder.value = "";
+          placeholder.textContent = "-- Select a model --";
+          modelSelect.appendChild(placeholder);
           models.forEach(function(m) {
-            var selected = m.id === currentModel ? " selected" : "";
-            var label = m.display_name && m.display_name !== m.id
+            var opt = document.createElement("option");
+            opt.value = m.id;
+            opt.textContent = (m.display_name && m.display_name !== m.id)
               ? m.display_name + " (" + m.id + ")"
               : m.id;
-            html += '<option value="' + m.id + '"' + selected + '>' + label + '</option>';
+            if (m.id === currentModel) opt.selected = true;
+            modelSelect.appendChild(opt);
           });
-          // Add option for custom model.
           if (currentModel && !models.some(function(m) { return m.id === currentModel; })) {
-            html += '<option value="' + currentModel + '" selected>' + currentModel + ' (custom)</option>';
+            var customOpt = document.createElement("option");
+            customOpt.value = currentModel;
+            customOpt.textContent = currentModel + " (custom)";
+            customOpt.selected = true;
+            modelSelect.appendChild(customOpt);
           }
-          modelSelect.innerHTML = html;
           modelHidden.value = modelSelect.value;
           modelHint.textContent = models.length + " model(s) available.";
         })
@@ -211,7 +222,13 @@
     } else {
       modelSelect.innerHTML = '<option value="">-- Select a connection first --</option>';
       if (currentModel) {
-        modelSelect.innerHTML += '<option value="' + currentModel + '" selected>' + currentModel + '</option>';
+        // Build via createElement to keep operator-supplied model strings out
+        // of the innerHTML sink (spec 001-fix-security-vulns FR-001).
+        var opt = document.createElement("option");
+        opt.value = currentModel;
+        opt.textContent = currentModel;
+        opt.selected = true;
+        modelSelect.appendChild(opt);
         modelHidden.value = currentModel;
       }
     }

@@ -118,56 +118,100 @@
       renderBindings();
     }
 
+    // renderBindings is XSS-hardened (spec 001-fix-security-vulns US1).
+    // Every server-derived string (c.name, p.name, c.id, p.id) reaches the
+    // DOM via .textContent or .value — never via innerHTML or string
+    // concatenation. The only innerHTML assignment is the empty-string clear.
     function renderBindings() {
       var list = document.getElementById("bindings-list");
-      list.innerHTML = bindings.map(function(b, i) {
-        var connOptions = '<option value="">Select connection...</option>' +
-          connections.map(function(c) {
-            var sel = c.id === b.connection_id ? " selected" : "";
-            return '<option value="' + c.id + '"' + sel + '>' + c.name + ' (' + c.id + ')</option>';
-          }).join("");
+      list.innerHTML = ""; // xss-safe: constant empty-string clear
 
-        var policyChecks = policies.map(function(p) {
-          var checked = b.policy_ids.indexOf(p.id) !== -1 ? " checked" : "";
-          return '<label class="flex items-center gap-1.5 cursor-pointer">' +
-            '<input type="checkbox" class="binding-policy rounded border-slate-500 bg-slate-700 text-indigo-500" ' +
-            'data-binding="' + i + '" data-policy="' + p.id + '"' + checked + '>' +
-            '<span class="text-xs text-slate-300">' + p.name + '</span></label>';
-        }).join("");
+      bindings.forEach(function(b, i) {
+        var row = document.createElement("div");
+        row.className = "bg-slate-900 border border-slate-700 rounded-lg p-4";
 
-        return '<div class="bg-slate-900 border border-slate-700 rounded-lg p-4">' +
-          '<div class="flex items-start gap-4">' +
-            '<div class="flex-1">' +
-              '<label class="block text-xs text-slate-400 mb-1">Connection</label>' +
-              '<select class="binding-conn w-full rounded-lg bg-slate-800 border border-slate-600 px-3 py-1.5 text-sm text-white" data-index="' + i + '">' +
-                connOptions +
-              '</select>' +
-            '</div>' +
-            '<div class="flex-1">' +
-              '<label class="block text-xs text-slate-400 mb-1">Policies <span class="text-slate-600">(none = deny all)</span></label>' +
-              '<div class="space-y-1 max-h-32 overflow-y-auto">' + policyChecks + '</div>' +
-            '</div>' +
-            '<button type="button" onclick="removeBinding(' + i + ')" class="text-red-400 hover:text-red-300 text-sm mt-5">Remove</button>' +
-          '</div>' +
-        '</div>';
-      }).join("");
+        var flex = document.createElement("div");
+        flex.className = "flex items-start gap-4";
+        row.appendChild(flex);
 
-      // Attach change listeners
-      document.querySelectorAll(".binding-conn").forEach(function(sel) {
+        var connWrap = document.createElement("div");
+        connWrap.className = "flex-1";
+        var connLabel = document.createElement("label");
+        connLabel.className = "block text-xs text-slate-400 mb-1";
+        connLabel.textContent = "Connection";
+        connWrap.appendChild(connLabel);
+
+        var sel = document.createElement("select");
+        sel.className = "binding-conn w-full rounded-lg bg-slate-800 border border-slate-600 px-3 py-1.5 text-sm text-white";
+        sel.dataset.index = String(i);
+        var placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Select connection...";
+        sel.appendChild(placeholder);
+        connections.forEach(function(c) {
+          var opt = document.createElement("option");
+          opt.value = c.id;
+          opt.textContent = c.name + " (" + c.id + ")";
+          if (c.id === b.connection_id) opt.selected = true;
+          sel.appendChild(opt);
+        });
         sel.addEventListener("change", function() {
           bindings[parseInt(this.dataset.index)].connection_id = this.value;
         });
-      });
-      document.querySelectorAll(".binding-policy").forEach(function(cb) {
-        cb.addEventListener("change", function() {
-          var idx = parseInt(this.dataset.binding);
-          var pid = this.dataset.policy;
-          if (this.checked) {
-            if (bindings[idx].policy_ids.indexOf(pid) === -1) bindings[idx].policy_ids.push(pid);
-          } else {
-            bindings[idx].policy_ids = bindings[idx].policy_ids.filter(function(p) { return p !== pid; });
-          }
+        connWrap.appendChild(sel);
+        flex.appendChild(connWrap);
+
+        var polWrap = document.createElement("div");
+        polWrap.className = "flex-1";
+        var polLabel = document.createElement("label");
+        polLabel.className = "block text-xs text-slate-400 mb-1";
+        polLabel.appendChild(document.createTextNode("Policies "));
+        var hint = document.createElement("span");
+        hint.className = "text-slate-600";
+        hint.textContent = "(none = deny all)";
+        polLabel.appendChild(hint);
+        polWrap.appendChild(polLabel);
+
+        var polList = document.createElement("div");
+        polList.className = "space-y-1 max-h-32 overflow-y-auto";
+        policies.forEach(function(p) {
+          var lbl = document.createElement("label");
+          lbl.className = "flex items-center gap-1.5 cursor-pointer";
+          var cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.className = "binding-policy rounded border-slate-500 bg-slate-700 text-indigo-500";
+          cb.dataset.binding = String(i);
+          cb.dataset.policy = p.id;
+          if (b.policy_ids.indexOf(p.id) !== -1) cb.checked = true;
+          cb.addEventListener("change", function() {
+            var idx = parseInt(this.dataset.binding);
+            var pid = this.dataset.policy;
+            if (this.checked) {
+              if (bindings[idx].policy_ids.indexOf(pid) === -1) bindings[idx].policy_ids.push(pid);
+            } else {
+              bindings[idx].policy_ids = bindings[idx].policy_ids.filter(function(x) { return x !== pid; });
+            }
+          });
+          var span = document.createElement("span");
+          span.className = "text-xs text-slate-300";
+          span.textContent = p.name;
+          lbl.appendChild(cb);
+          lbl.appendChild(span);
+          polList.appendChild(lbl);
         });
+        polWrap.appendChild(polList);
+        flex.appendChild(polWrap);
+
+        var rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "text-red-400 hover:text-red-300 text-sm mt-5";
+        rm.textContent = "Remove";
+        (function(idx) {
+          rm.addEventListener("click", function() { removeBinding(idx); });
+        })(i);
+        flex.appendChild(rm);
+
+        list.appendChild(row);
       });
     }
 

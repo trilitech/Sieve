@@ -351,7 +351,7 @@
       }
       empty.classList.add("hidden");
 
-      list.innerHTML = rules.map(function(rule, i) {
+      list.innerHTML = rules.map(function(rule, i) { // xss-safe: every server-derived interpolation inside the map body is wrapped in escHtml(...)
         const c = ACTION_COLORS[rule.action] || ACTION_COLORS.deny;
         var opsText = rule.ops && rule.ops.length > 0 ? rule.ops.join(", ") : "any operation";
         var condParts = [];

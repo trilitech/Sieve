@@ -115,6 +115,23 @@ func migrateNeedsReauthToStatus(db *DB) error {
 	return nil
 }
 
+// addColumnIfMissing runs the supplied ALTER TABLE if the column is not
+// already present. Lets the security-fixes migration stay idempotent without
+// duplicating the columnExists boilerplate at every call site.
+func addColumnIfMissing(db *DB, table, column, alterSQL string) error {
+	has, err := columnExists(db, table, column)
+	if err != nil {
+		return fmt.Errorf("check %s.%s: %w", table, column, err)
+	}
+	if has {
+		return nil
+	}
+	if _, err := db.Exec(alterSQL); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
 // columnExists reports whether the named column is present on the table.
 // SQLite-only; uses PRAGMA table_info.
 func columnExists(db *DB, table, column string) (bool, error) {
@@ -357,6 +374,55 @@ func (db *DB) migrate() error {
 				hasConnectionsCol = true
 			}
 		}
+	}
+
+	// Migration 2026-05-22 (spec 001-fix-security-vulns): security fixes
+	// follow-on to Shannon assessment. Adds:
+	//   - operator_credential (singleton row holding Argon2id verifier + display name)
+	//   - operator_session (one row per active admin browser session)
+	//   - audit_log.actor_kind, audit_log.operator_display_name
+	//   - policies.lint_ack (sticky numeric-ceiling lint acknowledgement)
+	//   - connections.outbound_allowlist (per-connection SSRF override list)
+	// All additive; no destructive migrations. See specs/001-fix-security-vulns/data-model.md.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS operator_credential (
+			id                  INTEGER PRIMARY KEY CHECK (id = 1),
+			display_name        TEXT    NOT NULL,
+			argon2_salt         BLOB    NOT NULL,
+			argon2_time         INTEGER NOT NULL,
+			argon2_memory_kib   INTEGER NOT NULL,
+			argon2_parallelism  INTEGER NOT NULL,
+			verifier            BLOB    NOT NULL,
+			created_at          TEXT    NOT NULL,
+			updated_at          TEXT    NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS operator_session (
+			id              TEXT PRIMARY KEY,
+			created_at      TEXT NOT NULL,
+			last_seen_at    TEXT NOT NULL,
+			expires_at      TEXT NOT NULL,
+			csrf_token_hash BLOB NOT NULL,
+			ip              TEXT NOT NULL,
+			user_agent      TEXT NOT NULL
+		);
+	`); err != nil {
+		return fmt.Errorf("create operator_credential/operator_session: %w", err)
+	}
+	if err := addColumnIfMissing(db, "audit_log", "actor_kind",
+		`ALTER TABLE audit_log ADD COLUMN actor_kind TEXT NOT NULL DEFAULT 'agent'`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "audit_log", "operator_display_name",
+		`ALTER TABLE audit_log ADD COLUMN operator_display_name TEXT`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "policies", "lint_ack",
+		`ALTER TABLE policies ADD COLUMN lint_ack TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "connections", "outbound_allowlist",
+		`ALTER TABLE connections ADD COLUMN outbound_allowlist TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return err
 	}
 
 	if hasConnectionsCol {
