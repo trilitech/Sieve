@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/httpguard"
 	"github.com/trilitech/Sieve/internal/policy"
 )
 
@@ -255,6 +256,28 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		}
 	}
 
+	// Outbound SSRF guard (spec 001-fix-security-vulns US2): the original
+	// http.Client refused to follow redirects but did NOT validate the
+	// target IP at dial time. httpguard.Client adds scheme + IP-range
+	// validation in DialContext (including DNS-rebinding protection) while
+	// preserving the existing "surface 3xx to the agent" behavior via
+	// DisableRedirects: true. The per-connection outbound_allowlist field
+	// lets the operator opt-in to private/intranet target_urls.
+	allowlistStrings, _ := config["outbound_allowlist"].([]string)
+	if allowlistStrings == nil {
+		if raw, ok := config["outbound_allowlist"].([]any); ok {
+			for _, v := range raw {
+				if s, ok := v.(string); ok {
+					allowlistStrings = append(allowlistStrings, s)
+				}
+			}
+		}
+	}
+	allowlist, err := httpguard.ParseCIDRs(allowlistStrings)
+	if err != nil {
+		return nil, fmt.Errorf("http_proxy: outbound_allowlist: %w", err)
+	}
+
 	return &ProxyConnector{
 		targetURL:              targetURL,
 		authHeader:             authHeader,
@@ -265,12 +288,11 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		additionalDeniedLookup: addLookup,
 		authQueryParam:         authQueryParam,
 		extraHeaders:           extraHeaders,
-		client: &http.Client{
-			Timeout: 5 * time.Minute,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
+		client: httpguard.Client(httpguard.ClientOptions{
+			Allowlist:        allowlist,
+			Timeout:          5 * time.Minute,
+			DisableRedirects: true, // preserve historical "surface 3xx to agent" behavior
+		}),
 	}, nil
 }
 

@@ -813,9 +813,10 @@ func setupProxyFull(t *testing.T) (serverURL, token string, setHandler func(http
 	env.Registry.Register(httpproxyconn.Meta, httpproxyconn.Factory)
 
 	err := env.Connections.Add("proxy-conn", "http_proxy", "Test Proxy", map[string]any{
-		"target_url":  upstream.URL,
-		"auth_header": "x-api-key",
-		"auth_value":  "real-secret",
+		"target_url":         upstream.URL,
+		"auth_header":        "x-api-key",
+		"auth_value":         "real-secret",
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatalf("add proxy connection: %v", err)
@@ -937,9 +938,10 @@ func TestProxyResponseFiltersApplied(t *testing.T) {
 	env.Registry.Register(httpproxyconn.Meta, httpproxyconn.Factory)
 
 	err := env.Connections.Add("filter-conn", "http_proxy", "Filter Proxy", map[string]any{
-		"target_url":  upstream.URL,
-		"auth_header": "x-api-key",
-		"auth_value":  "real-secret",
+		"target_url":         upstream.URL,
+		"auth_header":        "x-api-key",
+		"auth_value":         "real-secret",
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatalf("add connection: %v", err)
@@ -1965,9 +1967,10 @@ func setupProxyWithAuthQueryParam(t *testing.T, queryParam, authValue string) (s
 	env.Registry.Register(httpproxyconn.Meta, httpproxyconn.Factory)
 
 	cfg := map[string]any{
-		"target_url":  upstream.URL,
-		"auth_header": "x-api-key",
-		"auth_value":  authValue,
+		"target_url":         upstream.URL,
+		"auth_header":        "x-api-key",
+		"auth_value":         authValue,
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	}
 	if queryParam != "" {
 		cfg["auth_query_param"] = queryParam

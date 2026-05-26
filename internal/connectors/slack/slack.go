@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/httpguard"
 )
 
 // ConnectorType is the stable string used by the registry, audit logs,
@@ -68,7 +69,26 @@ func Factory() connector.Factory {
 		}
 		baseURL, _ := raw["_base_url"].(string)
 		onTerminalAuth, _ := raw["_on_terminal_auth"].(func())
-		cli, err := newClient(cfg, baseURL, onTerminalAuth)
+		// Outbound SSRF guard (spec 001-fix-security-vulns US2). The Slack
+		// API base is fixed to slack.com in production so the allowlist
+		// is normally empty; tests using the mock Slack server set
+		// _base_url to a 127.0.0.1 httptest.Server and supply 127.0.0.0/8
+		// in outbound_allowlist.
+		allowlistStrings, _ := raw["outbound_allowlist"].([]string)
+		if allowlistStrings == nil {
+			if rs, ok := raw["outbound_allowlist"].([]any); ok {
+				for _, v := range rs {
+					if s, ok := v.(string); ok {
+						allowlistStrings = append(allowlistStrings, s)
+					}
+				}
+			}
+		}
+		allowlist, err := httpguard.ParseCIDRs(allowlistStrings)
+		if err != nil {
+			return nil, fmt.Errorf("slack: outbound_allowlist: %w", err)
+		}
+		cli, err := newClient(cfg, baseURL, onTerminalAuth, allowlist)
 		if err != nil {
 			return nil, err
 		}

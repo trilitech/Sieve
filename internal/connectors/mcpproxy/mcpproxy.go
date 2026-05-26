@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/httpguard"
 )
 
 // ErrResponseOversized indicates the upstream tools/call response body
@@ -145,14 +146,39 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		}
 	}
 
+	// Outbound SSRF guard (spec 001-fix-security-vulns US2): the previous
+	// http.Client allowed redirects with no destination check. httpguard.Client
+	// enforces scheme/IP-range deny rules on the first request and on every
+	// redirect, including DNS-rebinding protection at dial time. The
+	// per-connection outbound_allowlist field lets the operator opt-in to
+	// private/intranet destinations.
+	allowlistStrings, _ := config["outbound_allowlist"].([]string)
+	if allowlistStrings == nil {
+		// JSON-decoded form may arrive as []any.
+		if raw, ok := config["outbound_allowlist"].([]any); ok {
+			for _, v := range raw {
+				if s, ok := v.(string); ok {
+					allowlistStrings = append(allowlistStrings, s)
+				}
+			}
+		}
+	}
+	allowlist, err := httpguard.ParseCIDRs(allowlistStrings)
+	if err != nil {
+		return nil, fmt.Errorf("mcp_proxy: outbound_allowlist: %w", err)
+	}
+
 	return &MCPProxyConnector{
 		url:             url,
 		authHeader:      authHeader,
 		authValue:       authValue,
 		serverName:      serverName,
 		responseBodyCap: bodyCap,
-		client:          &http.Client{Timeout: 2 * time.Minute},
-		toolsByName:     make(map[string]upstreamTool),
+		client: httpguard.Client(httpguard.ClientOptions{
+			Allowlist: allowlist,
+			Timeout:   2 * time.Minute,
+		}),
+		toolsByName: make(map[string]upstreamTool),
 	}, nil
 }
 

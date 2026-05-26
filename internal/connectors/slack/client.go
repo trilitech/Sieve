@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
+
+	"github.com/trilitech/Sieve/internal/httpguard"
 )
 
 // defaultBaseURL is the production Slack Web API root. Tests override
@@ -35,7 +38,15 @@ type client struct {
 // newClient builds a client from the validated Config plus the
 // optional `_base_url` and `_on_terminal_auth` injections. Returns
 // an error if the config has no usable bearer token.
-func newClient(cfg *Config, baseURL string, onTerminalAuth func()) (*client, error) {
+//
+// Outbound SSRF guard (spec 001-fix-security-vulns US2): replaces the
+// previous http.DefaultClient — which had no timeout and followed
+// default redirects with no destination check. httpguard.Client
+// enforces scheme + IP-range deny rules on every dial and redirect.
+// Tests using the mock Slack server set _base_url to an httptest.Server
+// on 127.0.0.1; the per-connection outbound_allowlist field carries
+// 127.0.0.0/8 in that case so the loopback dial is permitted.
+func newClient(cfg *Config, baseURL string, onTerminalAuth func(), allowlist []netip.Prefix) (*client, error) {
 	tok := cfg.accessToken()
 	if tok == "" {
 		return nil, fmt.Errorf("slack: empty access token")
@@ -46,7 +57,9 @@ func newClient(cfg *Config, baseURL string, onTerminalAuth func()) (*client, err
 	// Normalize: drop a trailing slash so we can concatenate /api/...
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &client{
-		httpClient:     http.DefaultClient,
+		httpClient: httpguard.Client(httpguard.ClientOptions{
+			Allowlist: allowlist,
+		}),
 		baseURL:        baseURL,
 		token:          tok,
 		onTerminalAuth: onTerminalAuth,

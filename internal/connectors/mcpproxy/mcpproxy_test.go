@@ -33,7 +33,12 @@ func mockMCP(t *testing.T, after func(w http.ResponseWriter, r *http.Request)) *
 
 func makeMCP(t *testing.T, ts *httptest.Server, capBytes int64) *MCPProxyConnector {
 	t.Helper()
-	cfg := map[string]any{"url": ts.URL}
+	// httpguard (spec 001-fix-security-vulns US2) refuses loopback dials by
+	// default; httptest.Server binds to 127.0.0.1.
+	cfg := map[string]any{
+		"url":                ts.URL,
+		"outbound_allowlist": []string{"127.0.0.0/8"},
+	}
 	if capBytes > 0 {
 		cfg["response_body_cap_bytes"] = capBytes
 	}
