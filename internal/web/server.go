@@ -99,12 +99,29 @@ type Server struct {
 // funcMap returns the template function map used across all templates.
 func funcMap() template.FuncMap {
 	return template.FuncMap{
-		"json": func(v any) template.JS {
+		// json marshals v to a JSON string with aggressive escaping for
+		// values destined for <script type="application/json"> blocks.
+		// Returns a plain string -- template.JS was the legacy "this is
+		// already-safe JavaScript" marker, which is the wrong shape for
+		// serialized user-controlled data (Shannon INJ-VULN-06; spec
+		// 001-fix-security-vulns US5 / FR-019..FR-021). Callers MUST
+		// embed the result inside <script type="application/json" id="...">
+		// and read it via JSON.parse on .textContent.
+		"json": func(v any) string {
 			b, err := json.MarshalIndent(v, "", "  ")
 			if err != nil {
-				return template.JS(fmt.Sprintf("null /* error: %v */", err))
+				return fmt.Sprintf("null /* error: %v */", err)
 			}
-			return template.JS(b)
+			// json.MarshalIndent already escapes <, >, & (SetEscapeHTML
+			// default). Belt-and-suspenders: also escape "/" so a
+			// closing </script> inside a string value cannot terminate
+			// the surrounding script element, and U+2028 / U+2029 which
+			// break some JSON.parse paths.
+			out := string(b)
+			out = strings.ReplaceAll(out, "</", "<\\/")
+			out = strings.ReplaceAll(out, "\u2028", "\\u2028")
+			out = strings.ReplaceAll(out, "\u2029", "\\u2029")
+			return out
 		},
 		"jsonAttr": func(v any) string {
 			b, err := json.Marshal(v)
@@ -2041,7 +2058,15 @@ func (s *Server) buildDocsIndex() (DocNavIndex, error) {
 	idx := BuildIndex(m, slugs, docTitleForSlug)
 	corpus, err := BuildSearchIndex(idx, m, readDocBody)
 	if err == nil {
-		idx.SearchIndexJSON = template.JS(corpus)
+		// Plain string — embedded into <script type="application/json">
+		// in docs.html and consumed via JSON.parse(textContent) (spec
+		// 001-fix-security-vulns US5 / FR-019). corpus is already
+		// json.Marshal output; the consumer template applies the same
+		// </ and U+2028/U+2029 escaping as the `json` FuncMap helper
+		// via the docs template's inline encoder, since the corpus
+		// goes through Go's html/template auto-escaper inside <script
+		// type="application/json"> — which is text-content, not JS.
+		idx.SearchIndexJSON = string(corpus)
 	}
 	return idx, nil
 }

@@ -281,6 +281,11 @@
     </div>
   </main>
 
+  {{/* Stored policy config travels as JSON text — parsed via JSON.parse on
+       .textContent below. Never embedded inline as JavaScript source
+       (Shannon INJ-VULN-06 / spec 001-fix-security-vulns US5). */}}
+  <script type="application/json" id="policy-config-data">{{json .Policy.PolicyConfig}}</script>
+
   <script>
     // --- Rule state ---
     let rules = [];
@@ -766,9 +771,23 @@
       return true;
     }
 
-    // Load existing rules from the policy config
+    // Load existing rules from the policy config. The config arrives as
+    // text inside a <script type="application/json"> block above and is
+    // parsed via JSON.parse — never embedded inline as JavaScript.
+    // Pre-fix this was the json template helper inlined into a <script>
+    // block, which made the policy config part of the page's JavaScript
+    // source (Shannon INJ-VULN-06). The new path keeps user-controlled
+    // data as text.
     (function() {
-      var existingConfig = {{json .Policy.PolicyConfig}};
+      var configEl = document.getElementById("policy-config-data");
+      var existingConfig = null;
+      if (configEl) {
+        try {
+          existingConfig = JSON.parse(configEl.textContent);
+        } catch (_) {
+          existingConfig = null;
+        }
+      }
       if (existingConfig && existingConfig.rules) {
         // Transform engine format rules back to UI format
         existingConfig.rules.forEach(function(r) {

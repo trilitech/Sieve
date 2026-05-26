@@ -2,7 +2,6 @@ package web
 
 import (
 	"fmt"
-	"html/template"
 	"sort"
 	"strings"
 )
@@ -68,7 +67,7 @@ type DocNavIndex struct {
 	Current         *DocPage
 	CurrentCategory *DocCategory // category landing flag — non-nil when rendering /docs/category/{id}
 	Breadcrumbs     []Breadcrumb
-	SearchIndexJSON template.JS // pre-marshalled JSON corpus, embedded into the page
+	SearchIndexJSON string // pre-marshalled JSON corpus, embedded into a <script type="application/json"> block and consumed via JSON.parse(textContent). Plain string per spec 001-fix-security-vulns US5 (FR-019) — template.JS was the wrong type for serialized data.
 }
 
 // Manifest returns the live category mapping. Pure; no I/O. Edit this function
