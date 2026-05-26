@@ -1305,13 +1305,53 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
 		return
 	}
+	// Numeric-ceiling lint (US6 / FR-022..FR-024b): warn-once on the
+	// deny + ceiling + non-deny-default composition. On create there's
+	// no prior sticky ack, so any fire requires acknowledge_lint=true.
+	if warn := policy.DenyCeilingLint(policyType, policyConfig); warn != nil {
+		if r.FormValue("acknowledge_lint") != "true" {
+			writeLintWarningResponse(w, warn)
+			return
+		}
+	}
 
-	if _, err := s.policies.Create(name, policyType, policyConfig); err != nil {
+	pol, err := s.policies.Create(name, policyType, policyConfig)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Store sticky acknowledgement for any lint that fired.
+	if warn := policy.DenyCeilingLint(policyType, policyConfig); warn != nil {
+		ack := map[string]any{
+			warn.Rule: map[string]any{
+				"acknowledged_at": time.Now().UTC().Format(time.RFC3339),
+				"by":              "operator", // FR-024 audit identity wires through US9
+				"fingerprint":     warn.Fingerprint,
+			},
+		}
+		if err := s.policies.SetLintAck(pol.ID, ack); err != nil {
+			// Log-and-continue: the policy is saved; the sticky ack is
+			// best-effort. A future save will re-warn until ack persists.
+			http.Error(w, "policy saved but lint ack failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 
 	http.Redirect(w, r, "/policies", http.StatusSeeOther)
+}
+
+// writeLintWarningResponse returns the structured lint warning to the
+// caller. JSON for fetch-style callers (admin JS); fallback text/html
+// 400 page for the form submission path. Spec 001-fix-security-vulns
+// US6 / FR-023.
+func writeLintWarningResponse(w http.ResponseWriter, warn *policy.LintWarning) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	body := map[string]any{
+		"error": "lint_acknowledgement_required",
+		"lints": []*policy.LintWarning{warn},
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func (s *Server) handlePolicyEdit(w http.ResponseWriter, r *http.Request) {
@@ -1439,10 +1479,47 @@ func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
 		return
 	}
+	// Numeric-ceiling lint with sticky ack (US6 / FR-024a). If the
+	// existing policy already has an ack whose fingerprint matches the
+	// current shape, the warning is silenced. Otherwise the operator
+	// must re-acknowledge.
+	warn := policy.DenyCeilingLint(policyType, policyConfig)
+	if warn != nil {
+		existing, _ := s.policies.Get(id)
+		var existingAck map[string]any
+		if existing != nil {
+			existingAck = existing.LintAck
+		}
+		if !policy.StickyAcknowledgmentMatches(existingAck, warn.Rule, warn.Fingerprint) {
+			if r.FormValue("acknowledge_lint") != "true" {
+				writeLintWarningResponse(w, warn)
+				return
+			}
+		}
+	}
 
 	if err := s.policies.Update(id, name, policyType, policyConfig); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Sticky-ack maintenance (US6 / FR-024a). Three cases:
+	//   - Lint fired AND no prior matching sticky ack → operator just
+	//     supplied acknowledge_lint=true; persist a fresh ack row.
+	//   - Lint fired AND prior matching sticky ack → keep the row.
+	//   - Lint did NOT fire → composition was removed; clear the ack
+	//     so a future re-introduction re-warns.
+	if warn != nil {
+		ack := map[string]any{
+			warn.Rule: map[string]any{
+				"acknowledged_at": time.Now().UTC().Format(time.RFC3339),
+				"by":              "operator",
+				"fingerprint":     warn.Fingerprint,
+			},
+		}
+		_ = s.policies.SetLintAck(id, ack)
+	} else {
+		// Clear any acks — composition removed.
+		_ = s.policies.SetLintAck(id, nil)
 	}
 
 	http.Redirect(w, r, "/policies", http.StatusSeeOther)
