@@ -46,6 +46,14 @@ func NewScriptEvaluator(config map[string]any) (*ScriptEvaluator, error) {
 		return nil, fmt.Errorf("script evaluator: script path is required")
 	}
 
+	// Command allowlist enforcement (spec 001-fix-security-vulns US4 /
+	// FR-013..FR-018). Stored policies that pre-date the allowlist and
+	// reference a disallowed interpreter MUST fail at evaluation time
+	// with the documented error — see FR-018a (hard-break migration).
+	if err := ValidateCommand(sc.Command, CurrentCommandAllowlist()); err != nil {
+		return nil, fmt.Errorf("script evaluator: %w", err)
+	}
+
 	if _, err := os.Stat(sc.Script); err != nil {
 		return nil, fmt.Errorf("script evaluator: script not found: %w", err)
 	}

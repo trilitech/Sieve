@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -1277,6 +1278,13 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
 		return
 	}
+	// Script-command allowlist enforcement (US4): rejects top-level
+	// script policies and nested rules[].script actions whose command
+	// field is not on the operator-configured allowlist.
+	if msg := validatePolicyCommandAllowlist(policyType, policyConfig); msg != "" {
+		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
+		return
+	}
 
 	if _, err := s.policies.Create(name, policyType, policyConfig); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1405,6 +1413,12 @@ func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
 		return
 	}
+	// Script-command allowlist enforcement (US4) — applies on UPDATE so
+	// an existing benign policy cannot be flipped to bash/sh/perl.
+	if msg := validatePolicyCommandAllowlist(policyType, policyConfig); msg != "" {
+		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
+		return
+	}
 
 	if err := s.policies.Update(id, name, policyType, policyConfig); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1412,6 +1426,50 @@ func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/policies", http.StatusSeeOther)
+}
+
+// validatePolicyCommandAllowlist enforces the script-command allowlist at
+// policy CREATE/UPDATE (spec 001-fix-security-vulns US4 / FR-013..FR-018a).
+//
+// The allowlist applies in two places per FR-013/FR-015:
+//   1. Top-level script-type policy_config (policy_type == "script").
+//   2. Nested script actions inside a rules-type policy
+//      (rules[i].action == "script" with rules[i].script.command).
+//
+// The package-level allowlist (policy.CurrentCommandAllowlist) is wired at
+// startup from settings.CommandAllowlist(); when unset the bundled-Python
+// interpreter is the only permitted value. Returns a non-empty error string
+// when validation fails — caller surfaces it as HTTP 400.
+func validatePolicyCommandAllowlist(policyType string, config map[string]any) string {
+	allow := policy.CurrentCommandAllowlist()
+	if policyType == "script" {
+		cmd, _ := config["command"].(string)
+		if err := policy.ValidateCommand(cmd, allow); err != nil {
+			return fmt.Sprintf("script policy: %v", err)
+		}
+		return ""
+	}
+	// Rules-type policy: walk rules[] for action=script entries.
+	rules, _ := config["rules"].([]any)
+	for i, ri := range rules {
+		rm, ok := ri.(map[string]any)
+		if !ok {
+			continue
+		}
+		action, _ := rm["action"].(string)
+		if action != "script" {
+			continue
+		}
+		sm, ok := rm["script"].(map[string]any)
+		if !ok {
+			continue
+		}
+		cmd, _ := sm["command"].(string)
+		if err := policy.ValidateCommand(cmd, allow); err != nil {
+			return fmt.Sprintf("rule %d (script action): %v", i+1, err)
+		}
+	}
+	return ""
 }
 
 // validatePolicyRules gathers all operations from all live connections and
@@ -1672,6 +1730,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"LLMModel":        allSettings[settings.KeyLLMModel],
 		"LLMMaxTokens":    maxTokens,
 		"PublicBaseURL":   allSettings[settings.KeyPublicBaseURL],
+		"CommandAllowlist": allSettings[settings.KeyCommandAllowlist],
 		"Success":         r.URL.Query().Get("saved") == "1",
 		"RotationSuccess": rotationSuccess,
 		"RotationCount":   rotationCount,
@@ -1705,12 +1764,38 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		pairs[settings.KeyPublicBaseURL] = ""
 	}
 
+	// command_allowlist is a newline-separated list of absolute interpreter
+	// paths. Each non-empty line MUST be an absolute path; empty submission
+	// reverts to the bundled-Python default. After save, push the new value
+	// into the policy package's in-process allowlist so subsequent policy
+	// CREATE/UPDATE and evaluation calls see the updated rules.
+	allowlistRaw := r.FormValue("command_allowlist")
+	if v := strings.TrimSpace(allowlistRaw); v != "" {
+		for _, line := range strings.Split(v, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if !filepath.IsAbs(line) {
+				http.Error(w, fmt.Sprintf("command_allowlist entry %q must be an absolute path", line), http.StatusBadRequest)
+				return
+			}
+		}
+		pairs[settings.KeyCommandAllowlist] = v
+	} else {
+		pairs[settings.KeyCommandAllowlist] = ""
+	}
+
 	for k, v := range pairs {
 		if err := s.settings.Set(k, v); err != nil {
 			http.Error(w, fmt.Sprintf("failed to save %s: %v", k, err), http.StatusInternalServerError)
 			return
 		}
 	}
+
+	// Reload the in-process command allowlist so subsequent policy CRUD
+	// + evaluation calls observe the new value without a process restart.
+	policy.SetCommandAllowlist(s.settings.CommandAllowlist())
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }

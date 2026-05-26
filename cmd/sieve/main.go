@@ -72,6 +72,7 @@ import (
 	"github.com/trilitech/Sieve/internal/database"
 	"github.com/trilitech/Sieve/internal/mcp"
 	"github.com/trilitech/Sieve/internal/policies"
+	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
@@ -511,6 +512,11 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 
 	webHTTP := &http.Server{Addr: webAddr, Handler: webSrv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	apiHTTP := &http.Server{Addr: apiAddr, Handler: agentMux, ReadHeaderTimeout: 10 * time.Second}
+
+	// Wire the command allowlist for script-policy validation (spec
+	// 001-fix-security-vulns US4 / FR-016). Empty settings value falls back
+	// to the bundled-Python default via policy.ValidateCommand semantics.
+	policy.SetCommandAllowlist(settingsSvc.CommandAllowlist())
 
 	// Startup exposure check (spec 001-fix-security-vulns US3 / FR-033 / US12):
 	// the admin UI is documented to bind 127.0.0.1 in production. When the
