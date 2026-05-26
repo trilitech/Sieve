@@ -357,7 +357,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /docs/category/{id}", s.handleDocsCategory)
 	mux.HandleFunc("GET /docs/{name}", s.handleDocs)
 
-	return mux
+	// Wrap the admin mux with the sensitive-response header writer so
+	// every admin response carries Cache-Control: no-store etc. Spec
+	// 001-fix-security-vulns US11 / FR-044..FR-045.
+	return noCacheAllAdmin(mux)
 }
 
 func (s *Server) render(w http.ResponseWriter, page string, data any) {

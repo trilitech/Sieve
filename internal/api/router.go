@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/ratelimit"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/secrets"
 	"github.com/trilitech/Sieve/internal/tokens"
@@ -52,6 +54,10 @@ type Router struct {
 	roles       *roles.Service
 	approval    *approval.Queue
 	audit       *audit.Logger
+	// limiter throttles bearer-token validation failures per source IP.
+	// Spec 001-fix-security-vulns US10 / FR-040..FR-043. Defaults: 10
+	// tokens, 1 refill / 6s = 10 failures per 60s window.
+	limiter *ratelimit.Limiter
 }
 
 // NewRouter creates a new Router with the given service dependencies.
@@ -70,6 +76,15 @@ func NewRouter(
 		roles:       rolesSvc,
 		approval:    approvalQ,
 		audit:       auditLog,
+		limiter:     ratelimit.NewLimiter(0, 0, 0), // documented defaults
+	}
+}
+
+// SetRateLimiter replaces the default per-IP auth limiter. Used by the
+// process bootstrap to wire operator-tuned settings (window / capacity).
+func (rt *Router) SetRateLimiter(l *ratelimit.Limiter) {
+	if l != nil {
+		rt.limiter = l
 	}
 }
 
@@ -103,13 +118,51 @@ func (rt *Router) Handler() http.Handler {
 	// connector that works with any HTTP API without provider-specific code.
 	mux.HandleFunc("/proxy/", rt.handleProxy)
 
-	return rt.authMiddleware(mux)
+	// Wrap responses in the sensitive-data header set so intermediate
+	// proxies don't cache agent-API responses (which can carry entity
+	// data tied to a specific bearer token). The cache headers wrap
+	// authMiddleware so 401 responses also carry them — caches MUST NOT
+	// retain failed auth attempts. Spec 001-fix-security-vulns US11 /
+	// FR-045.
+	return noCacheMiddleware(rt.authMiddleware(mux))
+}
+
+// noCacheMiddleware sets Cache-Control: no-store and companion headers
+// on every response. Mirrors internal/web.WriteSensitive — duplicated
+// here to keep the api package free of an import on internal/web (the
+// constitution forbids cross-layer imports).
+func noCacheMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Cache-Control", "no-store, no-cache, max-age=0, must-revalidate, private")
+		h.Set("Pragma", "no-cache")
+		h.Set("Expires", "0")
+		h.Set("Vary", "Authorization")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // authMiddleware extracts and validates the Bearer token from the Authorization
 // header, storing it in the request context. Returns 401 if missing or invalid.
+//
+// Per-IP token-bucket throttling (spec 001-fix-security-vulns US10 /
+// FR-040..FR-043) wraps the validation path: failed auth attempts deplete
+// the bucket; success refunds. When the bucket is empty, HTTP 429 with
+// Retry-After is returned instead of 401.
 func (rt *Router) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := sourceIPKey(r)
+
+		// Rate-limit BEFORE Argon2id / DB validation runs. Keeps the
+		// brute-force budget tight regardless of upstream auth cost.
+		if rt.limiter != nil {
+			if ok, retry := rt.limiter.Allow(key); !ok {
+				w.Header().Set("Retry-After", retryAfterSeconds(retry))
+				writeError(w, http.StatusTooManyRequests, "too many auth attempts, retry later")
+				return
+			}
+		}
+
 		auth := r.Header.Get("Authorization")
 		if auth == "" {
 			writeError(w, http.StatusUnauthorized, "missing authorization header")
@@ -128,9 +181,37 @@ func (rt *Router) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Successful auth refunds the token consumed at the top so a
+		// legitimate high-throughput agent never accumulates penalty.
+		if rt.limiter != nil {
+			rt.limiter.Refund(key)
+		}
+
 		ctx := context.WithValue(r.Context(), tokenContextKey, tok)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// sourceIPKey extracts the source IP for rate-limit keying. Strips port;
+// deliberately ignores X-Forwarded-For (an unauthenticated header an
+// attacker would set to evade the limiter). Operators behind a trusted
+// reverse proxy who need XFF-based keying should add an explicit
+// "trusted proxy" setting in a future iteration.
+func sourceIPKey(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// retryAfterSeconds renders a Duration as the Retry-After header value
+// (an integer count of seconds, RFC 9110 §10.2.3 — delta-seconds form).
+func retryAfterSeconds(d time.Duration) string {
+	s := int(d.Seconds())
+	if s < 1 {
+		s = 1
+	}
+	return fmt.Sprintf("%d", s)
 }
 
 // listConnections returns the connections accessible to the authenticated token.

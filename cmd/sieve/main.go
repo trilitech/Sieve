@@ -73,6 +73,7 @@ import (
 	"github.com/trilitech/Sieve/internal/mcp"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/ratelimit"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
@@ -504,6 +505,14 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	// agent) is structural, not cosmetic — admin endpoints stay on 19816,
 	// agent endpoints stay on 19817.
 	apiRouter := api.NewRouter(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
+	// Per-IP token-bucket on the bearer-token validation path (spec
+	// 001-fix-security-vulns US10 / FR-040..FR-043). Settings-tuned;
+	// defaults: 10 failures per 60s window.
+	apiRouter.SetRateLimiter(ratelimit.NewLimiter(
+		settingsSvc.RateLimitFailures(),
+		settingsSvc.RateLimitWindow()/time.Duration(max(settingsSvc.RateLimitFailures(), 1)),
+		0, // documented LRU bound
+	))
 	mcpSrv := mcp.NewServer(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
 
 	agentMux := http.NewServeMux()
