@@ -527,32 +527,56 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	// to the bundled-Python default via policy.ValidateCommand semantics.
 	policy.SetCommandAllowlist(settingsSvc.CommandAllowlist())
 
+	// Per-listener TLS configuration (spec 001-fix-security-vulns US12 /
+	// FR-048..FR-050). Both-or-neither per listener; HSTS automatically
+	// set on every TLS response by hstsMiddleware (inside serveListener).
+	adminTLS := tlsPair{
+		CertPath: settingsSvc.AdminTLSCertPath(),
+		KeyPath:  settingsSvc.AdminTLSKeyPath(),
+	}
+	apiTLS := tlsPair{
+		CertPath: settingsSvc.APITLSCertPath(),
+		KeyPath:  settingsSvc.APITLSKeyPath(),
+	}
+	if _, err := adminTLS.enabled(); err != nil {
+		return fmt.Errorf("admin TLS config: %w", err)
+	}
+	if _, err := apiTLS.enabled(); err != nil {
+		return fmt.Errorf("agent API TLS config: %w", err)
+	}
+	adminTLSOn, _ := adminTLS.enabled()
+	apiTLSOn, _ := apiTLS.enabled()
+
 	// Startup exposure check (spec 001-fix-security-vulns US3 / FR-033 / US12):
 	// the admin UI is documented to bind 127.0.0.1 in production. When the
-	// operator overrides that to a non-loopback interface without configuring
-	// TLS, log a prominent warning naming the exposure. Don't refuse to
-	// start — some deployments are intentional (e.g., WireGuard-tunneled).
+	// operator overrides that to a non-loopback interface WITHOUT TLS, log
+	// a prominent warning naming the exposure. Don't refuse to start —
+	// some deployments are intentional (e.g., WireGuard-tunneled).
 	if host, _, err := net.SplitHostPort(webAddr); err == nil {
 		ip := net.ParseIP(host)
 		nonLoopback := host != "" && host != "localhost" && (ip == nil || !ip.IsLoopback())
-		// TLS configuration check is deferred to US12; for now we only have
-		// the binding signal. The warning is unconditional when non-loopback.
-		if nonLoopback {
-			log.Printf("WARNING: admin UI is bound to non-loopback address %q. The admin plane is intentionally unauthenticated in v1 (per CLAUDE.md). Anyone who can reach this port has full admin powers. Either bind to 127.0.0.1 or restrict reachability at the network layer. See specs/001-fix-security-vulns for the upcoming admin-credential work.", webAddr)
+		if nonLoopback && !adminTLSOn {
+			log.Printf("WARNING: admin UI is bound to non-loopback address %q WITHOUT TLS. Anyone who can reach this port can capture admin traffic in cleartext. Configure admin.tls_cert_path / admin.tls_key_path in settings, bind to 127.0.0.1, or restrict reachability at the network layer.", webAddr)
 		}
 	}
 
 	// --- Start ---
 	errCh := make(chan error, 2)
+	scheme := func(on bool) string {
+		if on {
+			return "https"
+		}
+		return "http"
+	}
 	go func() {
-		log.Printf("web UI:  http://%s  (admin only — do not expose to agents)", webAddr)
-		if err := webHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("web UI:  %s://%s  (admin only — do not expose to agents)", scheme(adminTLSOn), webAddr)
+		if err := serveListener(webHTTP, adminTLS); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("web: %w", err)
 		}
 	}()
 	go func() {
-		log.Printf("agent:   http://%s  (REST + MCP at /mcp)", apiAddr)
-		if err := apiHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("agent:   %s://%s  (REST + MCP at /mcp)", scheme(apiTLSOn), apiAddr)
+		if err := serveListener(apiHTTP, apiTLS); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("api: %w", err)
 		}
 	}()

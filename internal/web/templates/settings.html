@@ -88,6 +88,38 @@
             <p class="text-xs text-slate-400 mt-1">Interpreters a script-type policy is permitted to invoke. Default <code class="text-slate-300">/opt/sieve-py/bin/python3</code> matches the bundled Python venv. Symlinks are resolved before comparison so an attacker cannot bypass the list by symlinking into an allowed name. Stored policies that reference a disallowed command will fail at evaluation with a clear error.</p>
           </div>
 
+          <div class="border-t border-slate-700 pt-5 mt-1">
+            <p class="text-sm font-medium text-slate-300 mb-1">TLS (optional)</p>
+            <p class="text-xs text-slate-400 mb-3">Configure per-listener cert + key paths to serve HTTPS. Both fields in a pair must be set; leaving both empty keeps the listener on plaintext HTTP (the default for loopback). HSTS is set automatically on TLS responses.</p>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label for="admin.tls_cert_path" class="block text-xs text-slate-400 mb-1">Admin cert path</label>
+                <input type="text" id="admin.tls_cert_path" name="admin.tls_cert_path" value="{{.AdminTLSCertPath}}"
+                       placeholder="/etc/sieve/admin.crt"
+                       class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2 text-sm placeholder-slate-400 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label for="admin.tls_key_path" class="block text-xs text-slate-400 mb-1">Admin key path</label>
+                <input type="text" id="admin.tls_key_path" name="admin.tls_key_path" value="{{.AdminTLSKeyPath}}"
+                       placeholder="/etc/sieve/admin.key"
+                       class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2 text-sm placeholder-slate-400 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label for="api.tls_cert_path" class="block text-xs text-slate-400 mb-1">Agent API cert path</label>
+                <input type="text" id="api.tls_cert_path" name="api.tls_cert_path" value="{{.APITLSCertPath}}"
+                       placeholder="/etc/sieve/api.crt"
+                       class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2 text-sm placeholder-slate-400 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label for="api.tls_key_path" class="block text-xs text-slate-400 mb-1">Agent API key path</label>
+                <input type="text" id="api.tls_key_path" name="api.tls_key_path" value="{{.APITLSKeyPath}}"
+                       placeholder="/etc/sieve/api.key"
+                       class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2 text-sm placeholder-slate-400 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+            </div>
+            <p class="text-xs text-slate-500 mt-2">Changes take effect after restart.</p>
+          </div>
+
           <div>
             <label for="public_base_url" class="block text-sm font-medium text-slate-300 mb-1.5">Public base URL <span class="text-xs text-slate-500 font-normal">(OAuth callbacks)</span></label>
             <input type="url" id="public_base_url" name="public_base_url" value="{{.PublicBaseURL}}"

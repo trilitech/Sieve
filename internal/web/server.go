@@ -1828,6 +1828,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"LLMMaxTokens":    maxTokens,
 		"PublicBaseURL":   allSettings[settings.KeyPublicBaseURL],
 		"CommandAllowlist": allSettings[settings.KeyCommandAllowlist],
+		"AdminTLSCertPath": allSettings[settings.KeyAdminTLSCertPath],
+		"AdminTLSKeyPath":  allSettings[settings.KeyAdminTLSKeyPath],
+		"APITLSCertPath":   allSettings[settings.KeyAPITLSCertPath],
+		"APITLSKeyPath":    allSettings[settings.KeyAPITLSKeyPath],
 		"Success":         r.URL.Query().Get("saved") == "1",
 		"RotationSuccess": rotationSuccess,
 		"RotationCount":   rotationCount,
@@ -1859,6 +1863,17 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Empty submission clears the override (revert to loopback default).
 		pairs[settings.KeyPublicBaseURL] = ""
+	}
+
+	// TLS cert/key paths (FR-048..FR-050). Each pair is both-or-neither —
+	// validated at startup by tlsPair.enabled(), but the form-save here
+	// only persists the strings.
+	for _, key := range []string{
+		settings.KeyAdminTLSCertPath, settings.KeyAdminTLSKeyPath,
+		settings.KeyAPITLSCertPath, settings.KeyAPITLSKeyPath,
+	} {
+		// form name == settings key.
+		pairs[key] = strings.TrimSpace(r.FormValue(key))
 	}
 
 	// command_allowlist is a newline-separated list of absolute interpreter
