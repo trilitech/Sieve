@@ -3,6 +3,7 @@
 package testenv
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,9 +13,11 @@ import (
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/settings"
 	mockconn "github.com/trilitech/Sieve/internal/testing/mockconnector"
 	"github.com/trilitech/Sieve/internal/tokens"
@@ -34,6 +37,16 @@ type Env struct {
 	Keyring     *secrets.Keyring
 	Mock        *mockconn.Mock
 	DBPath      string
+
+	// Operator + session services for tests that need to drive the
+	// authenticated admin surface introduced by spec 001-fix-security-vulns
+	// US7. Populated by New() with fast Argon2id params so tests don't
+	// burn 200ms per Verify. WithOperator() seeds the credential and
+	// returns a logged-in session; the per-Env operatorSession field
+	// caches it for AdminClient() to attach automatically.
+	Operator       *operator.Service
+	Session        *session.Manager
+	operatorActive *session.Session // populated by WithOperator
 }
 
 // New creates a fresh test environment with a temp database.
@@ -70,6 +83,12 @@ func New(t *testing.T) *Env {
 	approvalQ := approval.NewQueue(db)
 	auditLog := audit.NewLogger(db)
 	settingsSvc := settings.NewService(db)
+	opSvc := operator.NewService(db)
+	// Fast argon2 params so tests don't pay the production 150-300ms
+	// Verify cost. The verifier shape is identical; only the latency
+	// differs.
+	opSvc.Time, opSvc.MemoryKiB, opSvc.Parallelism = operator.FastParams()
+	sessionMgr := session.NewManager(db, 0) // default idle timeout (8h)
 
 	if err := policiesSvc.SeedPresets(); err != nil {
 		t.Fatalf("seed presets: %v", err)
@@ -93,7 +112,79 @@ func New(t *testing.T) *Env {
 		Keyring:     keyring,
 		Mock:        mock,
 		DBPath:      dbPath,
+		Operator:    opSvc,
+		Session:     sessionMgr,
 	}
+}
+
+// WithOperator seeds the singleton operator_credential row and issues a
+// live session that subsequent admin-authenticated calls can attach to
+// via AdminClient(). Idempotent across rotations within a single test:
+// a second WithOperator() call rotates the credential and re-issues the
+// session.
+//
+// Returns the Env for fluent chaining: env := testenv.New(t).WithOperator("test-pass", "test-operator").
+func (e *Env) WithOperator(credential, displayName string) *Env {
+	// First call: Setup. Subsequent calls: rotate.
+	exists, err := e.Operator.Exists()
+	if err != nil {
+		panic("testenv: operator.Exists: " + err.Error())
+	}
+	if !exists {
+		if err := e.Operator.Setup(credential, displayName); err != nil {
+			panic("testenv: operator.Setup: " + err.Error())
+		}
+	} else {
+		if err := e.Operator.Rotate(credential, displayName); err != nil {
+			panic("testenv: operator.Rotate: " + err.Error())
+		}
+		// Rotation invalidates active sessions (FR-032a).
+		_ = e.Session.DeleteAll()
+	}
+	s, err := e.Session.Issue("127.0.0.1", "testenv")
+	if err != nil {
+		panic("testenv: session.Issue: " + err.Error())
+	}
+	e.operatorActive = s
+	return e
+}
+
+// Login issues a fresh session (without rotating credentials) and
+// returns the cookie a test should attach to subsequent admin requests.
+// Most tests should prefer WithOperator() — Login() is for tests that
+// explicitly drive multiple concurrent sessions or simulate logout.
+func (e *Env) Login() *http.Cookie {
+	if e.Session == nil {
+		panic("testenv: Session manager nil — call New() first")
+	}
+	s, err := e.Session.Issue("127.0.0.1", "testenv")
+	if err != nil {
+		panic("testenv: Login: " + err.Error())
+	}
+	e.operatorActive = s
+	return session.NewCookie(s.Plaintext, false /* not TLS in tests */)
+}
+
+// SessionCookie returns the http.Cookie carrying the active operator
+// session. Used by tests to attach the cookie to requests. Returns nil
+// if no operator session has been established via WithOperator() or
+// Login().
+func (e *Env) SessionCookie() *http.Cookie {
+	if e.operatorActive == nil {
+		return nil
+	}
+	return session.NewCookie(e.operatorActive.Plaintext, false)
+}
+
+// CSRFToken returns the plaintext CSRF token bound to the active
+// operator session. Tests attach this to state-changing requests via
+// the X-CSRF-Token header (preferred for fetch-style callers) or the
+// csrf_token form field.
+func (e *Env) CSRFToken() string {
+	if e.operatorActive == nil {
+		return ""
+	}
+	return e.operatorActive.CSRFToken
 }
 
 // SetupConnectionAndRole creates a mock connection, a role with the given
