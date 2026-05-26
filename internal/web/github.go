@@ -214,11 +214,12 @@ func (s *Server) handleGitHubAppStart(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:   time.Now(),
 	})
 
-	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		scheme = "https"
-	}
-	base := scheme + "://" + r.Host
+	// Manifest URLs are derived from the operator-configured public base URL,
+	// never from r.Host / X-Forwarded-Host / X-Forwarded-Proto — GitHub
+	// registers the callback URLs at App creation time, so its own redirect-
+	// URI allowlist cannot protect Sieve here. Forged-Host injection of the
+	// manifest is the AUTH-VULN-06 attack (Shannon assessment).
+	base := s.publicBaseURL(r)
 	redirectURL := base + "/connections/github/app/created"
 	setupURL := base + "/connections/github/app/installed"
 

@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -575,7 +576,7 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 	// after receiving valid credentials. This avoids orphaned connections that
 	// appear in the UI but have no working credentials.
 	if connectorType == "google" {
-		conf, err := s.googleOAuthConfig(r.Host)
+		conf, err := s.googleOAuthConfig(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -636,7 +637,7 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	conf, err := s.googleOAuthConfig(r.Host)
+	conf, err := s.googleOAuthConfig(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -716,9 +717,28 @@ func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
+// publicBaseURL returns the externally-visible base URL Sieve uses to
+// construct OAuth callback / redirect / setup / manifest URLs. Reads from
+// settings.PublicBaseURL() — never from inbound Host / X-Forwarded-Host /
+// X-Forwarded-Proto headers, which an attacker could forge to redirect
+// an OAuth flow to an attacker-controlled callback (Shannon AUTH-VULN-06,
+// spec 001-fix-security-vulns US3 / FR-010..FR-012).
+//
+// The *http.Request argument is intentionally accepted (and ignored) so
+// every call site reads with awareness of the forged-header threat — the
+// signature carries the reminder that r.Host MUST NOT be used here.
+func (s *Server) publicBaseURL(_ *http.Request) string {
+	if s.settings != nil {
+		if u := s.settings.PublicBaseURL(); u != "" {
+			return strings.TrimRight(u, "/")
+		}
+	}
+	return "http://127.0.0.1:19816"
+}
+
 // --- OAuth handlers ---
 
-func (s *Server) googleOAuthConfig(host string) (*oauth2.Config, error) {
+func (s *Server) googleOAuthConfig(r *http.Request) (*oauth2.Config, error) {
 	data, err := os.ReadFile(s.googleCredentialsFile)
 	if err != nil {
 		return nil, fmt.Errorf("read credentials file: %w", err)
@@ -738,7 +758,11 @@ func (s *Server) googleOAuthConfig(host string) (*oauth2.Config, error) {
 	}
 
 	// Single callback URL — connection ID is carried in the state parameter.
-	conf.RedirectURL = fmt.Sprintf("http://%s/oauth/callback", host)
+	// Derived from settings.public_base_url (spec 001-fix-security-vulns US3);
+	// MUST NOT be built from r.Host because an attacker reaching the admin
+	// listener could forge the Host header and redirect the OAuth callback
+	// to an attacker-controlled server.
+	conf.RedirectURL = s.publicBaseURL(r) + "/oauth/callback"
 	return conf, nil
 }
 
@@ -780,7 +804,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conf, err := s.googleOAuthConfig(r.Host)
+	conf, err := s.googleOAuthConfig(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1647,6 +1671,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"LLMConnection":   allSettings[settings.KeyLLMConnection],
 		"LLMModel":        allSettings[settings.KeyLLMModel],
 		"LLMMaxTokens":    maxTokens,
+		"PublicBaseURL":   allSettings[settings.KeyPublicBaseURL],
 		"Success":         r.URL.Query().Get("saved") == "1",
 		"RotationSuccess": rotationSuccess,
 		"RotationCount":   rotationCount,
@@ -1664,6 +1689,20 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		settings.KeyLLMConnection: r.FormValue("llm_connection"),
 		settings.KeyLLMModel:      r.FormValue("llm_model"),
 		settings.KeyLLMMaxTokens:  r.FormValue("llm_max_tokens"),
+	}
+	// public_base_url is optional (empty = use loopback default). Validate
+	// the supplied value parses as a URL with http/https scheme so an
+	// operator can't accidentally persist garbage that would later be
+	// embedded into an OAuth manifest. Spec 001-fix-security-vulns US3.
+	if v := strings.TrimSpace(r.FormValue("public_base_url")); v != "" {
+		if u, err := url.Parse(v); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			http.Error(w, "public_base_url must be a URL like https://sieve.example.com (http/https only, non-empty host)", http.StatusBadRequest)
+			return
+		}
+		pairs[settings.KeyPublicBaseURL] = v
+	} else {
+		// Empty submission clears the override (revert to loopback default).
+		pairs[settings.KeyPublicBaseURL] = ""
 	}
 
 	for k, v := range pairs {

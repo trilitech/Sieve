@@ -171,7 +171,13 @@ func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, dis
 	q := url.Values{}
 	q.Set("client_id", clientID)
 	q.Set("scope", slackDefaultBotScopes)
-	q.Set("redirect_uri", fmt.Sprintf("http://%s/oauth/callback", r.Host))
+	// redirect_uri MUST come from publicBaseURL — Slack's OAuth flow
+	// validates that the redirect_uri presented to oauth.v2.access (below)
+	// matches the one used at install time, so this value is also the value
+	// passed to slackOAuthExchange. Forging Host would let an attacker
+	// register a Slack install whose token-exchange callback hits their
+	// own server. Spec 001-fix-security-vulns US3 / FR-010..FR-012.
+	q.Set("redirect_uri", s.publicBaseURL(r)+"/oauth/callback")
 	q.Set("state", state)
 	target := slackEndpoint(slackAuthorizeURL) + "?" + q.Encode()
 	http.Redirect(w, r, target, http.StatusFound)
@@ -382,7 +388,10 @@ func (s *Server) handleSlackOAuthClearConfig(w http.ResponseWriter, r *http.Requ
 // handleOAuthCallback after state validation. Persists via Add for a
 // new install or via UpdateConfig+SetStatus(active) for a reauth.
 func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pending pendingOAuth, code string) {
-	cfg, err := s.slackOAuthExchange(r.Context(), r.Host, code)
+	// Pass publicBaseURL's host portion to slackOAuthExchange so the
+	// redirect_uri sent to oauth.v2.access matches what was used at install
+	// time (Slack validates equality). r.Host MUST NOT be used.
+	cfg, err := s.slackOAuthExchange(r.Context(), s.publicBaseURL(r), code)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -411,7 +420,12 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 // install. Called from handleOAuthCallback once the dispatcher has
 // confirmed pending.ConnectorType == "slack". Returns the connection
 // config that handleOAuthCallback then persists via Add or UpdateConfig.
-func (s *Server) slackOAuthExchange(ctx context.Context, host, code string) (map[string]any, error) {
+//
+// `baseURL` is the public base URL Sieve uses to construct the redirect_uri
+// — supplied by completeSlackOAuth via publicBaseURL so it matches what was
+// sent to Slack at install time (Slack validates equality). MUST NOT be
+// derived from r.Host (spec 001-fix-security-vulns US3).
+func (s *Server) slackOAuthExchange(ctx context.Context, baseURL, code string) (map[string]any, error) {
 	clientID, clientSecret, err := s.slackOAuthCreds()
 	if err != nil {
 		return nil, fmt.Errorf("Slack OAuth credentials: %w", err)
@@ -424,7 +438,7 @@ func (s *Server) slackOAuthExchange(ctx context.Context, host, code string) (map
 	q.Set("client_id", clientID)
 	q.Set("client_secret", clientSecret)
 	q.Set("code", code)
-	q.Set("redirect_uri", fmt.Sprintf("http://%s/oauth/callback", host))
+	q.Set("redirect_uri", strings.TrimRight(baseURL, "/")+"/oauth/callback")
 	req, err := http.NewRequestWithContext(ctx, "POST", slackEndpoint(slackTokenURL), strings.NewReader(q.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("build oauth.v2.access: %w", err)

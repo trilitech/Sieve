@@ -49,6 +49,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -510,6 +511,21 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 
 	webHTTP := &http.Server{Addr: webAddr, Handler: webSrv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	apiHTTP := &http.Server{Addr: apiAddr, Handler: agentMux, ReadHeaderTimeout: 10 * time.Second}
+
+	// Startup exposure check (spec 001-fix-security-vulns US3 / FR-033 / US12):
+	// the admin UI is documented to bind 127.0.0.1 in production. When the
+	// operator overrides that to a non-loopback interface without configuring
+	// TLS, log a prominent warning naming the exposure. Don't refuse to
+	// start — some deployments are intentional (e.g., WireGuard-tunneled).
+	if host, _, err := net.SplitHostPort(webAddr); err == nil {
+		ip := net.ParseIP(host)
+		nonLoopback := host != "" && host != "localhost" && (ip == nil || !ip.IsLoopback())
+		// TLS configuration check is deferred to US12; for now we only have
+		// the binding signal. The warning is unconditional when non-loopback.
+		if nonLoopback {
+			log.Printf("WARNING: admin UI is bound to non-loopback address %q. The admin plane is intentionally unauthenticated in v1 (per CLAUDE.md). Anyone who can reach this port has full admin powers. Either bind to 127.0.0.1 or restrict reachability at the network layer. See specs/001-fix-security-vulns for the upcoming admin-credential work.", webAddr)
+		}
+	}
 
 	// --- Start ---
 	errCh := make(chan error, 2)
