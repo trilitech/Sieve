@@ -123,9 +123,6 @@ func (g *gitHubAppState) sweep(now time.Time) {
 // handleGitHubPAT validates a fine-grained PAT against GitHub's /user or
 // /orgs/{name} endpoint and persists a new `github` connection on success.
 func (s *Server) handleGitHubPAT(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -181,9 +178,6 @@ func (s *Server) handleGitHubPAT(w http.ResponseWriter, r *http.Request) {
 // on GitHub, and GitHub redirects back to /connections/github/app/created
 // with a code that we exchange for the App credentials.
 func (s *Server) handleGitHubAppStart(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -286,9 +280,6 @@ var githubAppStartTemplate = template.Must(template.New("ghapp-start").Parse(`<!
 // confirms App creation on GitHub. We exchange the one-time code for the
 // App's ID + private key + slug, then redirect the user to the install URL.
 func (s *Server) handleGitHubAppCreated(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	state := r.URL.Query().Get("state")
 	code := r.URL.Query().Get("code")
 	if state == "" || code == "" {
@@ -363,9 +354,6 @@ func (s *Server) handleGitHubAppCreated(w http.ResponseWriter, r *http.Request) 
 // finishes installing the App on an account/org. We inspect the installation
 // to learn its scope and persist the final connection.
 func (s *Server) handleGitHubAppInstalled(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	state := r.URL.Query().Get("state")
 	installStr := r.URL.Query().Get("installation_id")
 	if state == "" || installStr == "" {

@@ -176,6 +176,51 @@ func (e *Env) SessionCookie() *http.Cookie {
 	return session.NewCookie(e.operatorActive.Plaintext, false)
 }
 
+// AdminClient returns an *http.Client that automatically attaches the
+// active operator session cookie + CSRF header to every request, and
+// surfaces 3xx responses without following them (so tests can inspect
+// the Location header on login / redirect outcomes).
+//
+// Tests use the pattern:
+//   env := testenv.New(t).WithOperator("p","a")
+//   srv.SetAuth(env.Operator, env.Session)
+//   ts := httptest.NewServer(srv.Handler())
+//   resp, err := env.AdminClient().Get(ts.URL + "/policies")
+func (e *Env) AdminClient() *http.Client {
+	cookie := e.SessionCookie()
+	csrfToken := e.CSRFToken()
+	return &http.Client{
+		Transport: &csrfRoundTripper{
+			cookie:    cookie,
+			csrfToken: csrfToken,
+			base:      http.DefaultTransport,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+// csrfRoundTripper injects the session cookie + CSRF header into every
+// outbound test request. Tests can use this to drive admin endpoints
+// as if logged in.
+type csrfRoundTripper struct {
+	cookie    *http.Cookie
+	csrfToken string
+	base      http.RoundTripper
+}
+
+func (rt *csrfRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if rt.cookie != nil {
+		req.AddCookie(rt.cookie)
+	}
+	if rt.csrfToken != "" {
+		// X-CSRF-Token header — accepted in addition to the form field.
+		req.Header.Set("X-CSRF-Token", rt.csrfToken)
+	}
+	return rt.base.RoundTrip(req)
+}
+
 // CSRFToken returns the plaintext CSRF token bound to the active
 // operator session. Tests attach this to state-changing requests via
 // the X-CSRF-Token header (preferred for fetch-style callers) or the

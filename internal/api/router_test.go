@@ -1384,7 +1384,9 @@ func TestStory63_AgentSelfApproveProtection(t *testing.T) {
 		t.Fatalf("submit approval: %v", err)
 	}
 
-	// Create the web server (needed to test rejectIfAgentToken).
+	// Create the web server (needed to test the agent-bearer 403 path
+	// under requireOperatorSession — FR-036).
+	env.WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	webSrv := web.NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles,
@@ -1394,6 +1396,7 @@ func TestStory63_AgentSelfApproveProtection(t *testing.T) {
 		scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",
 	)
+	webSrv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(webSrv.Close)
 	ts := httptest.NewServer(webSrv.Handler())
 	t.Cleanup(ts.Close)

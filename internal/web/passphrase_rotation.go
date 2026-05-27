@@ -44,9 +44,6 @@ func SetRotateLockoutCooldownForTest(d time.Duration) (restore func()) {
 //  7. keyring.Rotate (verifies current passphrase, runs the SQL tx and the
 //     in-memory KEK swap, writes the audit row inside the same tx)
 func (s *Server) handleRotatePassphrase(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	if !s.checkRotationOrigin(r) {
 		http.Error(w, "rotation requires same-origin admin UI submission", http.StatusForbidden)
 		return

@@ -75,9 +75,12 @@ func operatorDisplayName(r *http.Request, s *Server) string {
 // this branch and makes auth mandatory.
 func (s *Server) requireOperatorSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Auth not wired → pass through (transitional).
+		// Auth services MUST be wired before any admin endpoint is
+		// reachable. The previous commit (foundation) tolerated nil
+		// services as a transitional pass-through; this commit makes
+		// the gate mandatory per FR-028.
 		if s.operatorSvc == nil || s.sessionMgr == nil {
-			next.ServeHTTP(w, r)
+			http.Error(w, "admin auth not configured", http.StatusInternalServerError)
 			return
 		}
 
@@ -101,11 +104,23 @@ func (s *Server) requireOperatorSession(next http.Handler) http.Handler {
 
 		cookie, err := r.Cookie(session.CookieName)
 		if err != nil || cookie.Value == "" {
+			// FR-036: when the requester is presenting a Sieve agent
+			// bearer token (sieve_tok_*), surface 403 with the documented
+			// "not accessible to agents" message so a confused agent
+			// implementation gets a clearer signal than 401 / redirect.
+			if isAgentTokenRequest(r) {
+				http.Error(w, "admin endpoints are not accessible to agents", http.StatusForbidden)
+				return
+			}
 			redirectOrUnauthorized(w, r)
 			return
 		}
 		sess, err := s.sessionMgr.Lookup(cookie.Value)
 		if err != nil {
+			if isAgentTokenRequest(r) {
+				http.Error(w, "admin endpoints are not accessible to agents", http.StatusForbidden)
+				return
+			}
 			redirectOrUnauthorized(w, r)
 			return
 		}
@@ -121,6 +136,56 @@ func (s *Server) requireOperatorSession(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), sessionCtxKey{}, sess)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// requireOperatorSessionExceptCSRF is requireOperatorSession with the
+// CSRF check skipped. Used by /logout — the operator clicking logout
+// shouldn't fail because the form's CSRF token expired, and the worst
+// a CSRF attacker can do at /logout is force a re-login.
+func (s *Server) requireOperatorSessionExceptCSRF(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.operatorSvc == nil || s.sessionMgr == nil {
+			http.Error(w, "admin auth not configured", http.StatusInternalServerError)
+			return
+		}
+		exists, err := s.operatorSvc.Exists()
+		if err != nil {
+			http.Error(w, "auth check failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			if r.Method == http.MethodGet {
+				http.Redirect(w, r, "/setup", http.StatusSeeOther)
+				return
+			}
+			// /logout under "no credential" is a no-op redirect; let
+			// the handler decide.
+			next.ServeHTTP(w, r)
+			return
+		}
+		cookie, err := r.Cookie(session.CookieName)
+		if err != nil || cookie.Value == "" {
+			// /logout with no cookie: bounce to login (idempotent UX).
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		sess, err := s.sessionMgr.Lookup(cookie.Value)
+		if err != nil {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		ctx := context.WithValue(r.Context(), sessionCtxKey{}, sess)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// isAgentTokenRequest reports whether the request carries the
+// "Authorization: Bearer sieve_tok_*" header that identifies an
+// agent. FR-036: the middleware surfaces 403 for these so operators
+// inspecting agent behavior get a clear "wrong port" signal.
+func isAgentTokenRequest(r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	return strings.HasPrefix(auth, "Bearer sieve_tok_")
 }
 
 func redirectOrUnauthorized(w http.ResponseWriter, r *http.Request) {

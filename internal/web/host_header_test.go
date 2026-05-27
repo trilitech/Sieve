@@ -19,7 +19,7 @@ import (
 
 func newHostHeaderTestServer(t *testing.T) (*httptest.Server, *testenv.Env, *Server) {
 	t.Helper()
-	env := testenv.New(t)
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles,
@@ -27,6 +27,7 @@ func newHostHeaderTestServer(t *testing.T) (*httptest.Server, *testenv.Env, *Ser
 		"", env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",
 	)
+	srv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(srv.Close)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -75,7 +76,7 @@ func TestPublicBaseURLSettingOverridesDefault(t *testing.T) {
 // redirect_url, setup_url, url must all use the configured public_base_url
 // (or the loopback default), never the forged host.
 func TestGitHubAppManifestIgnoresHostHeader(t *testing.T) {
-	ts, _, _ := newHostHeaderTestServer(t)
+	ts, env, _ := newHostHeaderTestServer(t)
 
 	form := url.Values{}
 	form.Set("id", "test-app")
@@ -91,7 +92,7 @@ func TestGitHubAppManifestIgnoresHostHeader(t *testing.T) {
 	req.Header.Set("Host", "attacker.example")
 	req.Host = "attacker.example"
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ import (
 
 func newPolicyAllowlistTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
 	t.Helper()
-	env := testenv.New(t)
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles,
@@ -27,6 +27,7 @@ func newPolicyAllowlistTestServer(t *testing.T) (*httptest.Server, *testenv.Env)
 		"", env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",
 	)
+	srv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(srv.Close)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -36,7 +37,7 @@ func newPolicyAllowlistTestServer(t *testing.T) (*httptest.Server, *testenv.Env)
 	return ts, env
 }
 
-func postPolicyCreate(t *testing.T, ts *httptest.Server, name, policyType, configJSON string) *http.Response {
+func postPolicyCreate(t *testing.T, ts *httptest.Server, env *testenv.Env, name, policyType, configJSON string) *http.Response {
 	t.Helper()
 	form := url.Values{}
 	form.Set("name", name)
@@ -45,10 +46,7 @@ func postPolicyCreate(t *testing.T, ts *httptest.Server, name, policyType, confi
 	req, _ := http.NewRequest("POST", ts.URL+"/policies/create",
 		strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err := client.Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +54,8 @@ func postPolicyCreate(t *testing.T, ts *httptest.Server, name, policyType, confi
 }
 
 func TestPolicyCreate_RejectsBashCommand(t *testing.T) {
-	ts, _ := newPolicyAllowlistTestServer(t)
-	resp := postPolicyCreate(t, ts, "bash-attempt", "script",
+	ts, env := newPolicyAllowlistTestServer(t)
+	resp := postPolicyCreate(t, ts, env, "bash-attempt", "script",
 		`{"command":"bash","script":"/dev/stdin"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -70,8 +68,8 @@ func TestPolicyCreate_RejectsBashCommand(t *testing.T) {
 }
 
 func TestPolicyCreate_RejectsBinShCommand(t *testing.T) {
-	ts, _ := newPolicyAllowlistTestServer(t)
-	resp := postPolicyCreate(t, ts, "sh-attempt", "script",
+	ts, env := newPolicyAllowlistTestServer(t)
+	resp := postPolicyCreate(t, ts, env, "sh-attempt", "script",
 		`{"command":"/bin/sh","script":"/dev/stdin"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -80,8 +78,8 @@ func TestPolicyCreate_RejectsBinShCommand(t *testing.T) {
 }
 
 func TestPolicyCreate_RejectsPerlCommand(t *testing.T) {
-	ts, _ := newPolicyAllowlistTestServer(t)
-	resp := postPolicyCreate(t, ts, "perl-attempt", "script",
+	ts, env := newPolicyAllowlistTestServer(t)
+	resp := postPolicyCreate(t, ts, env, "perl-attempt", "script",
 		`{"command":"/usr/bin/perl","script":"/dev/stdin"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -90,8 +88,8 @@ func TestPolicyCreate_RejectsPerlCommand(t *testing.T) {
 }
 
 func TestPolicyCreate_RejectsRelativePath(t *testing.T) {
-	ts, _ := newPolicyAllowlistTestServer(t)
-	resp := postPolicyCreate(t, ts, "rel-attempt", "script",
+	ts, env := newPolicyAllowlistTestServer(t)
+	resp := postPolicyCreate(t, ts, env, "rel-attempt", "script",
 		`{"command":"../../bin/bash","script":"/dev/stdin"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -100,7 +98,7 @@ func TestPolicyCreate_RejectsRelativePath(t *testing.T) {
 }
 
 func TestPolicyCreate_AcceptsBundledPython(t *testing.T) {
-	ts, _ := newPolicyAllowlistTestServer(t)
+	ts, env := newPolicyAllowlistTestServer(t)
 	// The default allowlist contains exactly the bundled Python path,
 	// which may not exist on disk in the test container; the policy
 	// validates by literal-string match, so this should succeed.
@@ -108,7 +106,7 @@ func TestPolicyCreate_AcceptsBundledPython(t *testing.T) {
 	// os.Stat doesn't intercept the success path here — note: policy
 	// CREATE itself doesn't construct an evaluator (that happens at
 	// evaluation time), so /dev/null is fine for this test.
-	resp := postPolicyCreate(t, ts, "python-ok", "script",
+	resp := postPolicyCreate(t, ts, env, "python-ok", "script",
 		`{"command":"/opt/sieve-py/bin/python3","script":"/dev/null"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -119,11 +117,11 @@ func TestPolicyCreate_AcceptsBundledPython(t *testing.T) {
 }
 
 func TestPolicyCreate_RejectsRulesNestedScriptCommand(t *testing.T) {
-	ts, _ := newPolicyAllowlistTestServer(t)
+	ts, env := newPolicyAllowlistTestServer(t)
 	// Rules-type policy with action=script and bash as the nested
 	// command — the path Shannon INJ-VULN-03 exercised.
 	cfg := `{"rules":[{"action":"script","script":{"command":"bash","path":"/dev/stdin"}}],"default_action":"deny"}`
-	resp := postPolicyCreate(t, ts, "rules-nested-bash", "rules", cfg)
+	resp := postPolicyCreate(t, ts, env, "rules-nested-bash", "rules", cfg)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("got status %d, want 400 (rules-nested bash should be rejected)", resp.StatusCode)
@@ -154,10 +152,7 @@ func TestPolicyUpdate_RejectsFlippingToBash(t *testing.T) {
 		ts.URL+"/policies/"+pol.ID+"/update",
 		strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err := client.Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,11 +163,11 @@ func TestPolicyUpdate_RejectsFlippingToBash(t *testing.T) {
 }
 
 func TestPolicyCreate_OperatorExtendsAllowlist(t *testing.T) {
-	ts, _ := newPolicyAllowlistTestServer(t)
+	ts, env := newPolicyAllowlistTestServer(t)
 	// Operator added /usr/bin/node to the allowlist before creating.
 	policy.SetCommandAllowlist([]string{"/opt/sieve-py/bin/python3", "/usr/bin/node"})
 	t.Cleanup(func() { policy.SetCommandAllowlist(nil) })
-	resp := postPolicyCreate(t, ts, "node-ok", "script",
+	resp := postPolicyCreate(t, ts, env, "node-ok", "script",
 		`{"command":"/usr/bin/node","script":"/dev/null"}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {

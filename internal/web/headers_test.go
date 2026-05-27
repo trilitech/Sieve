@@ -26,7 +26,7 @@ var sensitiveHeaders = map[string]string{
 
 func newHeadersTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
 	t.Helper()
-	env := testenv.New(t)
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles,
@@ -34,6 +34,7 @@ func newHeadersTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
 		"", env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",
 	)
+	srv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(srv.Close)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -65,9 +66,9 @@ func TestTokenCreateResponseHeaders(t *testing.T) {
 	form := url.Values{}
 	form.Set("name", "headers-test")
 	form.Set("role_id", role.ID)
-	resp, err := http.Post(ts.URL+"/tokens/create",
-		"application/x-www-form-urlencoded",
-		strings.NewReader(form.Encode()))
+	req, _ := http.NewRequest("POST", ts.URL+"/tokens/create", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,9 +95,9 @@ func TestAdminMutationPostResponseHeaders(t *testing.T) {
 	form := url.Values{}
 	form.Set("name", "mutation-test")
 	form.Set("role_id", role.ID)
-	resp, err := http.Post(ts.URL+"/tokens/create",
-		"application/x-www-form-urlencoded",
-		strings.NewReader(form.Encode()))
+	req, _ := http.NewRequest("POST", ts.URL+"/tokens/create", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

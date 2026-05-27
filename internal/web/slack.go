@@ -16,8 +16,8 @@ package web
 //     fresh OAuth flow. Reuses the same pendingOAuth machinery so the
 //     callback path is shared.
 //
-// All three are gated by rejectIfAgentToken — agents must never reach
-// admin-side connection mutation paths.
+// All three are gated by the requireOperatorSession middleware — agents
+// must never reach admin-side connection mutation paths.
 
 import (
 	"context"
@@ -120,9 +120,6 @@ func (s *Server) slackOAuthIsConfigured() bool {
 // a fresh connection. Reads id + display_name from the form, validates,
 // and delegates to beginSlackOAuth.
 func (s *Server) handleSlackOAuthStart(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -187,9 +184,6 @@ func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, dis
 // pastes a pre-existing xoxb- token from a Slack app they own; we
 // validate against auth.test and persist on success.
 func (s *Server) handleSlackToken(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -236,9 +230,6 @@ func (s *Server) handleSlackToken(w http.ResponseWriter, r *http.Request) {
 // after stashing the existing display_name so the admin doesn't
 // have to re-enter it.
 func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 	if id == "" {
 		http.Error(w, "id required", http.StatusBadRequest)
@@ -330,13 +321,10 @@ func slackAuthTest(ctx context.Context, token string) (teamID, teamName, botUser
 // let admins paste API keys directly. After save, the connections
 // page reloads with the OAuth Install button enabled.
 //
-// This endpoint is admin-only (rejectIfAgentToken). Credentials are
+// This endpoint is admin-only (requireOperatorSession). Credentials are
 // envelope-encrypted under the keyring KEK and stored as a reserved
 // `_oauth_app:slack` row in the connections table.
 func (s *Server) handleSlackOAuthConfigure(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -373,9 +361,6 @@ func (s *Server) handleSlackOAuthConfigure(w http.ResponseWriter, r *http.Reques
 // credentials. Useful when rotating the Slack app or moving away
 // from OAuth toward bot-token-only installs.
 func (s *Server) handleSlackOAuthClearConfig(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	if err := s.connections.DeleteOAuthApp("slack"); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

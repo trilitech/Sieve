@@ -27,7 +27,7 @@ import (
 // auth.test (returns canned team metadata).
 func slackTestServer(t *testing.T) (handler http.Handler, mockSlack *httptest.Server, env *testenv.Env) {
 	t.Helper()
-	env = testenv.New(t)
+	env = testenv.New(t).WithOperator("test-pass", "test-op")
 	// Register the slack connector factory in the test env's registry
 	// so connections.Service can construct a Connector for it. testenv
 	// only registers `mock` by default.
@@ -65,6 +65,8 @@ func slackTestServer(t *testing.T) (handler http.Handler, mockSlack *httptest.Se
 		oauthPending: make(map[string]pendingOAuth),
 		githubApp:    newGitHubAppState(),
 		stopCleanup:  make(chan struct{}),
+		operatorSvc:  env.Operator,
+		sessionMgr:   env.Session,
 	}
 	t.Cleanup(func() { srv.Close() })
 	return srv.Handler(), mockSlack, env
@@ -104,10 +106,31 @@ func slackMockHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// formPost issues a POST with form-encoded body.
-func formPost(handler http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
+// formPost issues a POST with form-encoded body. Attaches the env's
+// active operator session cookie + CSRF token so requests pass the
+// requireOperatorSession middleware.
+func formPost(handler http.Handler, env *testenv.Env, path string, form url.Values) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if c := env.SessionCookie(); c != nil {
+		req.AddCookie(c)
+	}
+	if tok := env.CSRFToken(); tok != "" {
+		req.Header.Set("X-CSRF-Token", tok)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// getRequest builds a GET request with the env's session cookie attached.
+// Use for tests that want to assert on the response of an authenticated
+// GET (info-disclosing pages like /connections, /tokens, etc.).
+func getRequest(handler http.Handler, env *testenv.Env, path string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	if c := env.SessionCookie(); c != nil {
+		req.AddCookie(c)
+	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
@@ -118,7 +141,7 @@ func formPost(handler http.Handler, path string, form url.Values) *httptest.Resp
 func TestHandleSlackToken_HappyPath(t *testing.T) {
 	handler, _, env := slackTestServer(t)
 
-	rec := formPost(handler, "/connections/slack/token", url.Values{
+	rec := formPost(handler, env, "/connections/slack/token", url.Values{
 		"id":           {"acme"},
 		"display_name": {"Acme Slack"},
 		"bot_token":    {"xoxb-real-token"},
@@ -148,8 +171,8 @@ func TestHandleSlackToken_HappyPath(t *testing.T) {
 // TestHandleSlackToken_RejectsBadPrefix asserts non-bot tokens are
 // rejected without an upstream call.
 func TestHandleSlackToken_RejectsBadPrefix(t *testing.T) {
-	handler, _, _ := slackTestServer(t)
-	rec := formPost(handler, "/connections/slack/token", url.Values{
+	handler, _, env := slackTestServer(t)
+	rec := formPost(handler, env, "/connections/slack/token", url.Values{
 		"id":           {"bad"},
 		"display_name": {"Bad"},
 		"bot_token":    {"xoxp-user-token"},
@@ -163,7 +186,7 @@ func TestHandleSlackToken_RejectsBadPrefix(t *testing.T) {
 // invalid_auth must surface as a 400 (admin error) and NOT persist.
 func TestHandleSlackToken_RejectsBadAuthTest(t *testing.T) {
 	handler, _, env := slackTestServer(t)
-	rec := formPost(handler, "/connections/slack/token", url.Values{
+	rec := formPost(handler, env, "/connections/slack/token", url.Values{
 		"id":           {"bad-auth"},
 		"display_name": {"BadAuth"},
 		"bot_token":    {"xoxb-bad-token"},
@@ -185,6 +208,9 @@ func TestHandleSlackToken_RejectsAgentToken(t *testing.T) {
 		"display_name": {"Agent"},
 		"bot_token":    {"xoxb-real"},
 	}
+	// Deliberately NO session cookie — the agent's bearer token must
+	// surface 403 (FR-036) so a confused agent client gets a clear
+	// "wrong port" signal rather than a 401 / redirect.
 	req := httptest.NewRequest(http.MethodPost, "/connections/slack/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Bearer sieve_tok_abc")
@@ -199,9 +225,9 @@ func TestHandleSlackToken_RejectsAgentToken(t *testing.T) {
 // stash a pendingOAuth entry keyed by random state and redirect to
 // the Slack authorize endpoint with that state.
 func TestHandleSlackOAuthStart_PendingState(t *testing.T) {
-	handler, mockSlack, _ := slackTestServer(t)
+	handler, mockSlack, env := slackTestServer(t)
 
-	rec := formPost(handler, "/connections/slack/oauth/start", url.Values{
+	rec := formPost(handler, env, "/connections/slack/oauth/start", url.Values{
 		"id":           {"oauth-conn"},
 		"display_name": {"OAuth Conn"},
 	})
@@ -228,7 +254,7 @@ func TestHandleSlackOAuthStart_RejectsExistingConnection(t *testing.T) {
 	if err := env.Connections.Add("dup", "mock", "Dup", map[string]any{}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	rec := formPost(handler, "/connections/slack/oauth/start", url.Values{
+	rec := formPost(handler, env, "/connections/slack/oauth/start", url.Values{
 		"id":           {"dup"},
 		"display_name": {"Dup"},
 	})
@@ -241,9 +267,9 @@ func TestHandleSlackOAuthStart_RejectsExistingConnection(t *testing.T) {
 // missing we surface a clear 400 instead of redirecting to a malformed
 // URL. The token-entry path remains usable.
 func TestHandleSlackOAuthStart_NoCredentials(t *testing.T) {
-	handler, _, _ := slackTestServer(t)
+	handler, _, env := slackTestServer(t)
 	t.Setenv("SLACK_CLIENT_ID", "")
-	rec := formPost(handler, "/connections/slack/oauth/start", url.Values{
+	rec := formPost(handler, env, "/connections/slack/oauth/start", url.Values{
 		"id":           {"x"},
 		"display_name": {"X"},
 	})
@@ -262,7 +288,7 @@ func TestHandleOAuthCallback_SlackHappyPath(t *testing.T) {
 	// Pre-seed oauthPending. The struct itself is unexported but we
 	// access it through the Server pointer the slackTestServer helper
 	// returned — re-derive via a fresh start-handler call.
-	startRec := formPost(handler, "/connections/slack/oauth/start", url.Values{
+	startRec := formPost(handler, env, "/connections/slack/oauth/start", url.Values{
 		"id":           {"acme-oauth"},
 		"display_name": {"Acme OAuth"},
 	})
@@ -306,7 +332,7 @@ func TestHandleOAuthCallback_SlackHappyPath(t *testing.T) {
 // template parsing and the OAuth-cleanup goroutine.
 func slackUITestServer(t *testing.T) (http.Handler, *testenv.Env) {
 	t.Helper()
-	env := testenv.New(t)
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	env.Registry.Register(slackconn.Meta(), slackconn.Factory())
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := NewServer(
@@ -314,6 +340,7 @@ func slackUITestServer(t *testing.T) (http.Handler, *testenv.Env) {
 		env.Approval, env.Audit, "", env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "",
 	)
+	srv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(func() { srv.Close() })
 	return srv.Handler(), env
 }
@@ -328,11 +355,9 @@ func slackUITestServer(t *testing.T) (http.Handler, *testenv.Env) {
 func TestConnectionsPage_SlackCard_OAuthEnabled(t *testing.T) {
 	t.Setenv("SLACK_CLIENT_ID", "test-client-id")
 	t.Setenv("SLACK_CLIENT_SECRET", "test-client-secret")
-	handler, _ := slackUITestServer(t)
+	handler, env := slackUITestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	rec := getRequest(handler, env, "/connections")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -366,11 +391,9 @@ func TestConnectionsPage_SlackCard_OAuthEnabled(t *testing.T) {
 func TestConnectionsPage_SlackCard_OAuthDisabled(t *testing.T) {
 	t.Setenv("SLACK_CLIENT_ID", "")
 	t.Setenv("SLACK_CLIENT_SECRET", "")
-	handler, _ := slackUITestServer(t)
+	handler, env := slackUITestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	rec := getRequest(handler, env, "/connections")
 	body := rec.Body.String()
 
 	if strings.Contains(body, `action="/connections/slack/oauth/start"`) {
@@ -397,7 +420,7 @@ func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
 	t.Setenv("SLACK_CLIENT_SECRET", "")
 	handler, env := slackUITestServer(t)
 
-	rec := formPost(handler, "/connections/slack/oauth/configure", url.Values{
+	rec := formPost(handler, env, "/connections/slack/oauth/configure", url.Values{
 		"client_id":     {"1234567890.0987654321"},
 		"client_secret": {"abcdef0123456789abcdef0123456789"},
 	})
@@ -426,8 +449,7 @@ func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
 
 	// Subsequent /connections render shows the install button, no
 	// configure form.
-	rec2 := httptest.NewRecorder()
-	handler.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/connections", nil))
+	rec2 := getRequest(handler, env, "/connections")
 	body := rec2.Body.String()
 	if !strings.Contains(body, `action="/connections/slack/oauth/start"`) {
 		t.Errorf("install button should appear after configure")
@@ -442,7 +464,7 @@ func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
 // hit Slack here — that would require the OAuth flow to start, which
 // only happens when the install button is clicked.
 func TestHandleSlackOAuthConfigure_ValidatesShape(t *testing.T) {
-	handler, _ := slackUITestServer(t)
+	handler, env := slackUITestServer(t)
 
 	cases := []struct {
 		name string
@@ -456,7 +478,7 @@ func TestHandleSlackOAuthConfigure_ValidatesShape(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := formPost(handler, "/connections/slack/oauth/configure", tc.form)
+			rec := formPost(handler, env, "/connections/slack/oauth/configure", tc.form)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
 			}
@@ -500,7 +522,7 @@ func TestHandleSlackOAuthClearConfig(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	rec := formPost(handler, "/connections/slack/oauth/clear", url.Values{})
+	rec := formPost(handler, env, "/connections/slack/oauth/clear", url.Values{})
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d", rec.Code)
 	}
@@ -526,7 +548,7 @@ func TestHandleConnectionAdd_RejectsSlack(t *testing.T) {
 		"display_name":   {"Sneaky"},
 		"connector_type": {"slack"},
 	}
-	rec := formPost(handler, "/connections/add", form)
+	rec := formPost(handler, env, "/connections/add", form)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -558,7 +580,7 @@ func TestHandleSlackReauth_TokenPath(t *testing.T) {
 		t.Fatalf("set status: %v", err)
 	}
 
-	rec := formPost(handler, "/connections/slack/seeded/reauth", url.Values{
+	rec := formPost(handler, env, "/connections/slack/seeded/reauth", url.Values{
 		"bot_token": {"xoxb-fresh-token"},
 	})
 	if rec.Code != http.StatusSeeOther {
@@ -580,11 +602,9 @@ func TestHandleSlackReauth_TokenPath(t *testing.T) {
 // filter fields (channel, user, text-contains) must all appear, and
 // Gmail-only operations (list_emails, send_email) must not.
 func TestPoliciesPage_SlackScope(t *testing.T) {
-	handler, _ := slackUITestServer(t)
+	handler, env := slackUITestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/policies?scope=slack", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	rec := getRequest(handler, env, "/policies?scope=slack")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
 	}

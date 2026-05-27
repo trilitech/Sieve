@@ -338,11 +338,10 @@ func TestMiddleware_RedirectsToSetupWhenNoCredential(t *testing.T) {
 	}
 }
 
-func TestMiddleware_PassThroughWhenAuthNotWired(t *testing.T) {
-	// Server constructed without SetAuth — middleware should be a
-	// no-op so existing tests keep working in the incremental
-	// rollout phase. This branch is removed in the follow-up commit
-	// that makes auth mandatory.
+func TestMiddleware_500WhenAuthNotWired(t *testing.T) {
+	// Server constructed without SetAuth — middleware MUST refuse
+	// to serve admin routes per FR-028. This replaces the earlier
+	// transitional pass-through.
 	env := testenv.New(t)
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := NewServer(
@@ -363,7 +362,7 @@ func TestMiddleware_PassThroughWhenAuthNotWired(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 204 {
-		t.Errorf("status=%d, want 204 (pass-through)", resp.StatusCode)
+	if resp.StatusCode != 500 {
+		t.Errorf("status=%d, want 500 (auth not configured)", resp.StatusCode)
 	}
 }

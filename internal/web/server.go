@@ -391,10 +391,72 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /docs/category/{id}", s.handleDocsCategory)
 	mux.HandleFunc("GET /docs/{name}", s.handleDocs)
 
-	// Wrap the admin mux with the sensitive-response header writer so
-	// every admin response carries Cache-Control: no-store etc. Spec
-	// 001-fix-security-vulns US11 / FR-044..FR-045.
-	return noCacheAllAdmin(mux)
+	// Wrap the admin mux with: (1) the operator-session gate (US7 /
+	// FR-028..FR-029), which exempts public auth pages and OAuth
+	// callbacks; (2) the sensitive-response header writer (US11 /
+	// FR-044..FR-045) so every admin response carries Cache-Control:
+	// no-store etc. Header wrapping is outermost so 401/403/redirect
+	// responses also get the headers.
+	return noCacheAllAdmin(s.adminAuthWrapper(mux))
+}
+
+// authExemptPaths is the set of admin paths that bypass the
+// requireOperatorSession middleware. Login + setup are bootstrap;
+// OAuth callbacks identify the operator via the OAuth state parameter
+// instead of a Sieve session. Spec 001-fix-security-vulns US7
+// (FR-028..FR-029 exemption set).
+var authExemptPaths = map[string]bool{
+	"/login":  true,
+	"/setup":  true,
+	"/logout": true, // session needed, but CSRF gate skipped — see authExemptCSRF
+	"/oauth/callback":                  true,
+	"/connections/github/app/created":  true,
+	"/connections/github/app/installed": true,
+}
+
+// authExemptPrefixes is the set of path prefixes that bypass auth
+// entirely — currently just the bundled documentation. Operators
+// reading docs without logging in is a feature.
+var authExemptPrefixes = []string{
+	"/docs",
+}
+
+// authExemptCSRF is the set of paths that need a session but skip
+// the CSRF check. Logout is the only case: it's a recoverable
+// destructive action and a CSRF attacker forcing a logout costs
+// the operator a re-login at worst.
+var authExemptCSRF = map[string]bool{
+	"/logout": true,
+}
+
+// adminAuthWrapper routes admin requests through requireOperatorSession
+// unless the path is exempt. Exempt paths are served directly by the
+// wrapped mux (no session lookup, no CSRF check). The middleware
+// itself short-circuits to pass-through when SetAuth was never
+// called (transitional; tests that don't yet seed an operator stay
+// functional).
+func (s *Server) adminAuthWrapper(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if authExemptPaths[path] {
+			// Logout still needs a session lookup so we know whose to
+			// delete; the middleware no-ops the CSRF check via
+			// authExemptCSRF.
+			if path == "/logout" {
+				s.requireOperatorSessionExceptCSRF(next).ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		for _, prefix := range authExemptPrefixes {
+			if path == prefix || strings.HasPrefix(path, prefix+"/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		s.requireOperatorSession(next).ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) render(w http.ResponseWriter, page string, data any) {
@@ -726,9 +788,6 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 // explicitly; (2) re-auth flows do NOT clear it — only the explicit
 // Enable button does. Gated by rejectIfAgentToken.
 func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 	if err := s.connections.SetStatus(id, connections.StatusDisabled); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -746,9 +805,6 @@ func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request)
 // The action itself always succeeds — only the destination state
 // varies. Gated by rejectIfAgentToken.
 func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 
 	// Inspect reauth_reason: a non-empty value indicates the credential
@@ -1670,25 +1726,16 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "approvals", data)
 }
 
-// rejectIfAgentToken checks whether the request carries an Authorization header
-// with a Sieve bearer token. Agents communicate via the MCP API port using
-// bearer tokens; the web UI is intended for human operators only. Rejecting
-// requests that carry a Sieve token prevents an agent from approving its own
-// pending operations by hitting the web UI endpoint directly.
-// NOTE: The web UI port (19816) should NOT be exposed to agents.
-func rejectIfAgentToken(w http.ResponseWriter, r *http.Request) bool {
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer sieve_tok_") {
-		http.Error(w, "approval endpoints are not accessible to agents", http.StatusForbidden)
-		return true
-	}
-	return false
-}
+// The historical rejectIfAgentToken helper (spec FR-034 / US8) has been
+// removed. The requireOperatorSession middleware in auth.go is its
+// strict superset: a request without a valid operator-session cookie is
+// rejected (401 for browsers / 403 when the request carries a Sieve
+// bearer token — see isAgentTokenRequest), regardless of whether the
+// individual handler used to invoke rejectIfAgentToken. The middleware
+// runs from Server.Handler() via adminAuthWrapper and gates every admin
+// endpoint that isn't in authExemptPaths/authExemptPrefixes.
 
 func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 
 	// Check if this is a policy proposal — if so, create the policy on approval.
@@ -1727,9 +1774,6 @@ func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleApprovalReject(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 	if err := s.approval.Reject(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1951,9 +1995,6 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 // handleListModels fetches available models from an LLM connection by calling
 // its /v1/models endpoint. Both Anthropic and OpenAI use this standard path.
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	connID := r.URL.Query().Get("connection_id")
 	if connID == "" {
 		w.Header().Set("Content-Type", "application/json")
@@ -2053,9 +2094,6 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 // --- Script generation API handler ---
 
 func (s *Server) handleGenerateScript(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	var req struct {
 		Description string `json:"description"`
 		Scope       string `json:"scope"`
@@ -2092,9 +2130,6 @@ func (s *Server) handleGenerateScript(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	var req struct {
 		Filename string `json:"filename"`
 		Content  string `json:"content"`

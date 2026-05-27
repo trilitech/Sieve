@@ -31,7 +31,7 @@ var (
 // ("test-passphrase"); rotations target a fresh value the test picks.
 func newRotationTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
 	t.Helper()
-	env := testenv.New(t)
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles,
@@ -39,6 +39,7 @@ func newRotationTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
 		"", env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",
 	)
+	srv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(srv.Close)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -78,10 +79,6 @@ func TestRotateHandlerSuccess(t *testing.T) {
 	form.Set("new_passphrase", "rotated-passphrase")
 	form.Set("new_passphrase_confirm", "rotated-passphrase")
 
-	client := &http.Client{
-		// Don't follow the 303 — we want to assert on the redirect itself.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
 	req, err := http.NewRequest("POST", ts.URL+"/settings/rotate-passphrase", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +86,7 @@ func TestRotateHandlerSuccess(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
 
-	resp, err := client.Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -168,7 +165,13 @@ func TestRotateHandlerRejectsAgentToken(t *testing.T) {
 	req.Header.Set("Origin", ts.URL)
 	req.Header.Set("Authorization", "Bearer sieve_tok_abc123")
 
-	resp, err := http.DefaultClient.Do(req)
+	// Deliberately NOT env.AdminClient — the request must NOT carry an
+	// operator session. The middleware sees the agent bearer header
+	// without a session cookie and returns 403 (FR-036).
+	bareClient := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := bareClient.Do(req)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -214,13 +217,6 @@ func rotateRequest(t *testing.T, ts *httptest.Server, current, newPP, confirm st
 	return req
 }
 
-// rotateClient returns an http.Client that does NOT follow redirects so
-// callers can assert on the 303 status itself.
-func rotateClient() *http.Client {
-	return &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-}
 
 // TestRotateHandlerWrongPassphrase verifies the wrong-current-passphrase
 // branch: HTTP 200 re-render with the typed chip; no audit row written.
@@ -228,7 +224,7 @@ func TestRotateHandlerWrongPassphrase(t *testing.T) {
 	ts, env := newRotationTestServer(t)
 
 	req := rotateRequest(t, ts, "this-is-not-the-current-passphrase", "new", "new")
-	resp, err := rotateClient().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -250,7 +246,7 @@ func TestRotateHandlerWrongPassphrase(t *testing.T) {
 func TestRotateHandlerConfirmMismatch(t *testing.T) {
 	ts, env := newRotationTestServer(t)
 	req := rotateRequest(t, ts, "test-passphrase", "alpha", "beta")
-	resp, err := rotateClient().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -268,7 +264,7 @@ func TestRotateHandlerConfirmMismatch(t *testing.T) {
 func TestRotateHandlerSameAsCurrent(t *testing.T) {
 	ts, env := newRotationTestServer(t)
 	req := rotateRequest(t, ts, "test-passphrase", "test-passphrase", "test-passphrase")
-	resp, err := rotateClient().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -301,7 +297,7 @@ func TestRotateHandlerLockoutAtFifthFailure(t *testing.T) {
 	// gets 423).
 	for i := 0; i < 5; i++ {
 		req := rotateRequest(t, ts, "wrong", "new", "new")
-		resp, err := rotateClient().Do(req)
+		resp, err := env.AdminClient().Do(req)
 		if err != nil {
 			t.Fatalf("attempt %d: %v", i+1, err)
 		}
@@ -313,7 +309,7 @@ func TestRotateHandlerLockoutAtFifthFailure(t *testing.T) {
 
 	// 6th submission: cooldown is active. Status 423 Locked.
 	req := rotateRequest(t, ts, "test-passphrase", "new", "new")
-	resp, err := rotateClient().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatalf("6th attempt: %v", err)
 	}
@@ -336,7 +332,7 @@ func TestRotateHandlerLockoutAtFifthFailure(t *testing.T) {
 	// Submit a 7th request while still locked — no additional audit row
 	// must be written (only the lockout-trigger event is recorded).
 	req2 := rotateRequest(t, ts, "test-passphrase", "new", "new")
-	resp2, err := rotateClient().Do(req2)
+	resp2, err := env.AdminClient().Do(req2)
 	if err != nil {
 		t.Fatalf("7th attempt: %v", err)
 	}
@@ -364,7 +360,7 @@ func TestRotateHandlerCooldownClears(t *testing.T) {
 
 	// A correct submission MUST proceed (cooldown elapsed → counter reset).
 	req := rotateRequest(t, ts, "test-passphrase", "after-cooldown", "after-cooldown")
-	resp, err := rotateClient().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -399,7 +395,7 @@ func TestRotateHandlerRejectsCrossOrigin(t *testing.T) {
 	// Cross-origin: Origin set to a different host than r.Host.
 	req := rotateRequest(t, ts, "test-passphrase", "x", "x")
 	req.Header.Set("Origin", "http://evil.example")
-	resp, err := rotateClient().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +407,7 @@ func TestRotateHandlerRejectsCrossOrigin(t *testing.T) {
 	// Missing both Origin and Referer: also 403.
 	req2 := rotateRequest(t, ts, "test-passphrase", "x", "x")
 	req2.Header.Del("Origin")
-	resp2, err := rotateClient().Do(req2)
+	resp2, err := env.AdminClient().Do(req2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +428,7 @@ func TestRotateHandlerRejectsCrossOrigin(t *testing.T) {
 // TestRotateHandlerNoEchoOnFailure verifies that failed submissions
 // MUST NOT echo the typed values back into the rendered HTML.
 func TestRotateHandlerNoEchoOnFailure(t *testing.T) {
-	ts, _ := newRotationTestServer(t)
+	ts, env := newRotationTestServer(t)
 
 	const sentinel = "secret-sentinel-value-1234567890"
 
@@ -440,7 +436,7 @@ func TestRotateHandlerNoEchoOnFailure(t *testing.T) {
 	// they don't match, the page re-renders with an error and MUST NOT
 	// contain the sentinel anywhere.
 	req := rotateRequest(t, ts, sentinel, sentinel+"-A", sentinel+"-B")
-	resp, err := rotateClient().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +448,7 @@ func TestRotateHandlerNoEchoOnFailure(t *testing.T) {
 
 	// Wrong-current-passphrase path — same expectation.
 	req2 := rotateRequest(t, ts, sentinel, "x", "x")
-	resp2, err := rotateClient().Do(req2)
+	resp2, err := env.AdminClient().Do(req2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,11 +466,11 @@ func TestRotateHandlerNoEchoOnFailure(t *testing.T) {
 // session — and the *fact that a rotation just failed* is itself signal
 // we don't want to leak even if the form fields are scrubbed.
 func TestRotateHandlerFailureNotCached(t *testing.T) {
-	ts, _ := newRotationTestServer(t)
+	ts, env := newRotationTestServer(t)
 
 	// Confirmation-mismatch — drives renderRotationError.
 	req := rotateRequest(t, ts, "test-passphrase", "newA", "newB")
-	resp, err := rotateClient().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

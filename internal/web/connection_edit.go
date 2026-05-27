@@ -87,10 +87,6 @@ var staticHTTPProxyBaselineKeys = []string{
 // (auth_value_scrub, additional_denied_headers, response_body_cap_bytes,
 // cross_fork_pr_allowlist) for editing.
 func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
-
 	id := r.PathValue("id")
 	conn, err := s.connections.GetWithConfig(id)
 	if err != nil {
@@ -117,9 +113,6 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 //  5. Redirects to the edit page with ?saved=1 on success, or re-renders
 //     with a scoped error and the operator's typed values preserved.
 func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	if !s.checkRotationOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return

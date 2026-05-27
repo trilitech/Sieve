@@ -20,7 +20,7 @@ import (
 
 func newLintTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
 	t.Helper()
-	env := testenv.New(t)
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles,
@@ -28,21 +28,19 @@ func newLintTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
 		"", env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",
 	)
+	srv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(srv.Close)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, env
 }
 
-func postPolicyCreateForm(t *testing.T, ts *httptest.Server, form url.Values) *http.Response {
+func postPolicyCreateForm(t *testing.T, ts *httptest.Server, env *testenv.Env, form url.Values) *http.Response {
 	t.Helper()
 	req, _ := http.NewRequest("POST", ts.URL+"/policies/create",
 		strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err := client.Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,13 +51,13 @@ func postPolicyCreateForm(t *testing.T, ts *httptest.Server, form url.Values) *h
 // path: a deny rule with a numeric ceiling + a non-deny default. The
 // save endpoint MUST return 400 and a structured lint payload.
 func TestPolicyCreate_LintBlocksWithoutAck(t *testing.T) {
-	ts, _ := newLintTestServer(t)
+	ts, env := newLintTestServer(t)
 	form := url.Values{}
 	form.Set("name", "ceiling-bad")
 	form.Set("policy_type", "rules")
 	form.Set("policy_config",
 		`{"default_action":"allow","rules":[{"action":"deny","match":{"max_tokens":500}}]}`)
-	resp := postPolicyCreateForm(t, ts, form)
+	resp := postPolicyCreateForm(t, ts, env, form)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status=%d, want 400", resp.StatusCode)
@@ -87,7 +85,7 @@ func TestPolicyCreate_LintAccepted(t *testing.T) {
 	form.Set("policy_config",
 		`{"default_action":"allow","rules":[{"action":"deny","match":{"max_tokens":500}}]}`)
 	form.Set("acknowledge_lint", "true")
-	resp := postPolicyCreateForm(t, ts, form)
+	resp := postPolicyCreateForm(t, ts, env, form)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		body := readAll(t, resp.Body)
@@ -119,7 +117,7 @@ func TestPolicyUpdate_StickyAckSilencesCosmeticEdit(t *testing.T) {
 	form.Set("policy_config",
 		`{"default_action":"allow","rules":[{"action":"deny","match":{"max_tokens":500}}]}`)
 	form.Set("acknowledge_lint", "true")
-	resp := postPolicyCreateForm(t, ts, form)
+	resp := postPolicyCreateForm(t, ts, env, form)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("setup create failed status=%d", resp.StatusCode)
@@ -138,10 +136,7 @@ func TestPolicyUpdate_StickyAckSilencesCosmeticEdit(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/policies/"+pol.ID+"/update",
 		strings.NewReader(uForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err = client.Do(req)
+	resp, err = env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +160,7 @@ func TestPolicyUpdate_LintRefiresOnCompositionChange(t *testing.T) {
 	form.Set("policy_config",
 		`{"default_action":"allow","rules":[{"action":"deny","match":{"max_tokens":500}}]}`)
 	form.Set("acknowledge_lint", "true")
-	resp := postPolicyCreateForm(t, ts, form)
+	resp := postPolicyCreateForm(t, ts, env, form)
 	resp.Body.Close()
 	pol, err := env.Policies.GetByName("refire-test")
 	if err != nil {
@@ -181,10 +176,7 @@ func TestPolicyUpdate_LintRefiresOnCompositionChange(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/policies/"+pol.ID+"/update",
 		strings.NewReader(uForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err = client.Do(req)
+	resp, err = env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +197,7 @@ func TestPolicyUpdate_ClearsAckOnCompositionRemoval(t *testing.T) {
 	form.Set("policy_config",
 		`{"default_action":"allow","rules":[{"action":"deny","match":{"max_tokens":500}}]}`)
 	form.Set("acknowledge_lint", "true")
-	resp := postPolicyCreateForm(t, ts, form)
+	resp := postPolicyCreateForm(t, ts, env, form)
 	resp.Body.Close()
 	pol, err := env.Policies.GetByName("clear-ack")
 	if err != nil {
@@ -224,10 +216,7 @@ func TestPolicyUpdate_ClearsAckOnCompositionRemoval(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/policies/"+pol.ID+"/update",
 		strings.NewReader(uForm.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err = client.Do(req)
+	resp, err = env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
