@@ -50,8 +50,10 @@ import (
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/settings"
 	"github.com/trilitech/Sieve/internal/tokens"
 	"golang.org/x/oauth2"
@@ -94,6 +96,14 @@ type Server struct {
 
 	stopCleanup     chan struct{} // closed by Close() to stop the cleanup goroutine
 	stopCleanupOnce sync.Once     // ensures Close() is safe under concurrent calls
+
+	// Operator + session services for the admin-authentication path
+	// (spec 001-fix-security-vulns US7). Populated by SetAuth; nil
+	// when running in tests/dev that don't need the auth gate. When
+	// non-nil, requireOperatorSession middleware enforces session +
+	// CSRF on every wrapped endpoint.
+	operatorSvc *operator.Service
+	sessionMgr  *session.Manager
 }
 
 // funcMap returns the template function map used across all templates.
@@ -280,11 +290,35 @@ func NewServer(
 	return s
 }
 
+// SetAuth wires the operator + session services that drive the
+// admin-authentication path (spec 001-fix-security-vulns US7).
+// Call this after NewServer to enable login / logout / setup
+// handlers and the requireOperatorSession middleware. When nil
+// values are passed (or SetAuth is never called) the auth surface
+// is disabled — existing dev/test flows that don't yet seed an
+// operator stay functional.
+//
+// Production wiring lives in cmd/sieve/main.go.
+func (s *Server) SetAuth(op *operator.Service, sess *session.Manager) {
+	s.operatorSvc = op
+	s.sessionMgr = sess
+}
+
 // Handler returns the HTTP handler with all routes registered.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Dashboard redirect
+	// --- Operator authentication (spec 001-fix-security-vulns US7) ---
+	// These routes are intentionally public: login itself can't require
+	// a session, and setup is one-shot for fresh installs. The follow-up
+	// commit wraps every OTHER admin route with requireOperatorSession.
+	mux.HandleFunc("GET /login", s.handleLoginGet)
+	mux.HandleFunc("POST /login", s.handleLoginPost)
+	mux.HandleFunc("POST /logout", s.handleLogout)
+	mux.HandleFunc("GET /setup", s.handleSetupGet)
+	mux.HandleFunc("POST /setup", s.handleSetupPost)
+
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/connections", http.StatusFound)
 	})

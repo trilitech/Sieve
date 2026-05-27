@@ -71,9 +71,11 @@ import (
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
 	"github.com/trilitech/Sieve/internal/database"
 	"github.com/trilitech/Sieve/internal/mcp"
+	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/ratelimit"
+	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
@@ -498,6 +500,35 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 		keyring, db, webAddr,
 	)
 	defer webSrv.Close()
+
+	// Operator + session services drive the admin-authentication path
+	// (spec 001-fix-security-vulns US7). When this commit's auth
+	// middleware lands wired onto every admin endpoint, an operator
+	// credential will be MANDATORY before the admin UI serves anything
+	// other than /login + /setup. Until then, SetAuth here enables the
+	// login + setup pages while leaving existing handlers reachable
+	// without a session — see internal/web/auth.go.
+	opSvc := operator.NewService(db)
+	sessionMgr := session.NewManager(db, settingsSvc.SessionIdleTimeout())
+	webSrv.SetAuth(opSvc, sessionMgr)
+
+	// Background sweep of expired admin sessions (FR-033c). 5-minute
+	// cadence is the documented default; tests can drive SweepExpired
+	// directly.
+	sessionSweepCtx, sessionSweepCancel := context.WithCancel(context.Background())
+	defer sessionSweepCancel()
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-sessionSweepCtx.Done():
+				return
+			case <-t.C:
+				_, _ = sessionMgr.SweepExpired()
+			}
+		}
+	}()
 
 	// --- API + MCP server (port 19817, agent-facing) ---
 	// Both share one listener; we mux /mcp to the MCP server, everything
