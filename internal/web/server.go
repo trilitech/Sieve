@@ -1147,6 +1147,11 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Audit producer (US9 / FR-037). Plaintext token redacted by
+	// audit.RedactSensitive via the LogOperator helper. Failures don't
+	// block the user-visible response — best-effort persistence.
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "token.create", result.Token.ID,
+		map[string]any{"name": name, "role_id": roleID}, "success")
 
 	// Re-fetch list for rendering
 	toks, err := s.tokens.List()
@@ -1191,6 +1196,7 @@ func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "token.revoke", id, nil, "success")
 	http.Redirect(w, r, "/tokens", http.StatusSeeOther)
 }
 
@@ -1246,10 +1252,13 @@ func (s *Server) handleRoleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := s.roles.Create(name, bindings); err != nil {
+	role, err := s.roles.Create(name, bindings)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "role.create", role.ID,
+		map[string]any{"name": name, "binding_count": len(bindings)}, "success")
 
 	http.Redirect(w, r, "/roles", http.StatusSeeOther)
 }
@@ -1260,6 +1269,7 @@ func (s *Server) handleRoleDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "role.delete", id, nil, "success")
 	http.Redirect(w, r, "/roles", http.StatusSeeOther)
 }
 
@@ -1410,12 +1420,14 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.create", pol.ID,
+		map[string]any{"name": name, "policy_type": policyType}, "success")
 	// Store sticky acknowledgement for any lint that fired.
 	if warn := policy.DenyCeilingLint(policyType, policyConfig); warn != nil {
 		ack := map[string]any{
 			warn.Rule: map[string]any{
 				"acknowledged_at": time.Now().UTC().Format(time.RFC3339),
-				"by":              "operator", // FR-024 audit identity wires through US9
+				"by":              operatorDisplayName(r, s),
 				"fingerprint":     warn.Fingerprint,
 			},
 		}
@@ -1592,6 +1604,8 @@ func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.update", id,
+		map[string]any{"name": name, "policy_type": policyType}, "success")
 	// Sticky-ack maintenance (US6 / FR-024a). Three cases:
 	//   - Lint fired AND no prior matching sticky ack → operator just
 	//     supplied acknowledge_lint=true; persist a fresh ack row.
@@ -1696,6 +1710,7 @@ func (s *Server) handlePolicyDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.delete", id, nil, "success")
 	http.Redirect(w, r, "/policies", http.StatusSeeOther)
 }
 
@@ -1770,6 +1785,7 @@ func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "approval.approve", id, nil, "success")
 	http.Redirect(w, r, "/approvals", http.StatusSeeOther)
 }
 
@@ -1779,6 +1795,7 @@ func (s *Server) handleApprovalReject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "approval.reject", id, nil, "success")
 	http.Redirect(w, r, "/approvals", http.StatusSeeOther)
 }
 
@@ -2148,16 +2165,20 @@ func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize filename — only allow alphanumeric, underscore, hyphen, dot.
-	safe := ""
-	for _, c := range req.Filename {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' {
-			safe += string(c)
-		}
+	// Filename validation (spec 001-fix-security-vulns US7 / FR-046,
+	// FR-047): single-segment safe filename only. No path separators,
+	// no ".." segments, no leading "." (hidden files), no empty name.
+	// The pre-fix code accepted the operator's filename after a loose
+	// allowlist filter; Shannon INJ-VULN-04 traced an arbitrary-file-
+	// write path through it that would have worked under a writable
+	// policies/ mount.
+	if msg := validateScriptFilename(req.Filename); msg != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid filename: " + msg})
+		return
 	}
-	if safe == "" {
-		safe = "generated_policy.py"
-	}
+	safe := req.Filename
 	if !strings.HasSuffix(safe, ".py") {
 		safe += ".py"
 	}
@@ -2173,9 +2194,38 @@ func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "script.save", safe, nil, "success")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"path": "./" + path})
+}
+
+// validateScriptFilename enforces single-segment safe-filename
+// semantics for /api/save-script (FR-046, FR-047). Returns the empty
+// string when the name is acceptable, or a human-readable reason
+// otherwise. Caller surfaces the reason in the 400 response body.
+func validateScriptFilename(name string) string {
+	if name == "" {
+		return "filename is empty"
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return "filename must be a single path segment (no separators)"
+	}
+	if name == "." || name == ".." || strings.HasPrefix(name, ".") {
+		return "filename must not start with '.'"
+	}
+	if strings.Contains(name, "..") {
+		return "filename must not contain '..'"
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_' || c == '-' || c == '.') {
+			return "filename contains a disallowed character"
+		}
+	}
+	return ""
 }
 
 // listDocSlugs returns the slugs of every .md file in docs/, in any order.
