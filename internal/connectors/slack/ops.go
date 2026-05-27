@@ -196,19 +196,20 @@ func (c *Connector) opReadThread(ctx context.Context, params map[string]any) (an
 	}, nil
 }
 
-// opSearchMessages always returns the documented operation_not_enabled
-// shape per research R1a — search.messages requires a user-token
+// opSearchMessages always returns the typed connector.ErrOperationNotEnabled
+// sentinel per spec 002 (FR-006): search.messages requires a user-token
 // install, which is out of scope for v1 (Q2 clarification 2026-05-01,
 // classic-bot-scopes-only).
 //
 // The connector exposes this op anyway so the operation surface stays
 // stable and policies that mention `search_messages` continue to bind
-// even after v2 unlocks user-token installs.
+// even after v2 unlocks user-token installs. Returning a typed error
+// (rather than a phantom-success map with "error" inside) lets the API
+// layer map this to HTTP 501 and the MCP layer to a tool-error result,
+// so agent SDKs branch on the status code / prefix without inspecting
+// response bodies.
 func (c *Connector) opSearchMessages(ctx context.Context, params map[string]any) (any, error) {
-	return map[string]any{
-		"error":   "operation_not_enabled",
-		"message": "slack search.messages requires user-token install; v1 supports bot tokens only",
-	}, nil
+	return nil, fmt.Errorf("%w: slack search.messages requires user-token install; v1 supports bot tokens only", connector.ErrOperationNotEnabled)
 }
 
 func (c *Connector) opPostMessage(ctx context.Context, params map[string]any) (any, error) {

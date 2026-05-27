@@ -94,6 +94,12 @@ func main() {
 	// A second connection for multi-binding tests.
 	must(connSvc.Add("second-conn", "mock", "Second Connection", map[string]any{}))
 
+	// A third connection seeded into status='reauth_required' for SC-001
+	// Playwright assertions: the UI MUST show exactly one badge — never
+	// a contradictory "Active" pill alongside the "Reauth required" one.
+	must(connSvc.Add("reauth-conn", "mock", "Needs Re-auth", map[string]any{}))
+	must(connSvc.SetStatusWithReason("reauth-conn", connections.StatusReauthRequired, "seeded for e2e SC-001 assertion"))
+
 	// Get the read-only preset for a pre-built role+token.
 	readOnly, err := policiesSvc.GetByName("read-only")
 	mustErr(err, "get read-only")

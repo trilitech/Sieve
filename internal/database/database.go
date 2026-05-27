@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -52,6 +53,68 @@ func (db *DB) Close() error {
 	return db.DB.Close()
 }
 
+// migrateNeedsReauthToStatus performs the spec 002 FR-001..FR-003
+// unification in one pass:
+//   - converges (needs_reauth=1, status='active') rows to
+//     status='reauth_required' (preserving reauth_reason).
+//   - drops the now-unused needs_reauth column.
+//
+// Both steps are skipped if the needs_reauth column has already been
+// dropped (idempotent across restarts). Safe with keyring unloaded —
+// touches no encrypted data.
+//
+// Sieve is pre-launch, so there is no deprecation window: the column
+// goes away in the same migration that converts data. SQLite 3.35+
+// supports native ALTER TABLE DROP COLUMN; the mattn/go-sqlite3 driver
+// bundles a recent SQLite that supports this syntax.
+func migrateNeedsReauthToStatus(db *DB) error {
+	hasCol, err := columnExists(db, "connections", "needs_reauth")
+	if err != nil {
+		return fmt.Errorf("check needs_reauth column: %w", err)
+	}
+	if !hasCol {
+		// Already migrated and dropped on a prior run.
+		return nil
+	}
+
+	rows, err := db.Query(
+		`SELECT id, reauth_reason FROM connections
+		 WHERE needs_reauth = 1 AND status = 'active'`,
+	)
+	if err != nil {
+		return fmt.Errorf("scan candidates: %w", err)
+	}
+	for rows.Next() {
+		var id string
+		var reason *string
+		if scanErr := rows.Scan(&id, &reason); scanErr != nil {
+			rows.Close()
+			return fmt.Errorf("scan candidate row: %w", scanErr)
+		}
+		r := ""
+		if reason != nil {
+			r = *reason
+		}
+		log.Printf("migration status_migration: connection %q needs_reauth=1 → status=reauth_required (reason=%q)", id, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate candidates: %w", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE connections SET status = 'reauth_required'
+		 WHERE needs_reauth = 1 AND status = 'active'`,
+	); err != nil {
+		return fmt.Errorf("transition rows: %w", err)
+	}
+	// Drop the column — no consumer reads it after FR-002.
+	if _, err := db.Exec(`ALTER TABLE connections DROP COLUMN needs_reauth`); err != nil {
+		return fmt.Errorf("drop needs_reauth column: %w", err)
+	}
+	log.Printf("migration status_migration: dropped connections.needs_reauth column")
+	return nil
+}
+
 // columnExists reports whether the named column is present on the table.
 // SQLite-only; uses PRAGMA table_info.
 func columnExists(db *DB, table, column string) (bool, error) {
@@ -89,7 +152,6 @@ func (db *DB) migrate() error {
 		enc_version       INTEGER NOT NULL,
 		status            TEXT NOT NULL DEFAULT 'active',
 		created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
-		needs_reauth      INTEGER NOT NULL DEFAULT 0,
 		reauth_reason     TEXT
 	);
 
@@ -181,7 +243,6 @@ func (db *DB) migrate() error {
 				enc_version       INTEGER NOT NULL,
 				status            TEXT NOT NULL DEFAULT 'active',
 				created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
-				needs_reauth      INTEGER NOT NULL DEFAULT 0,
 				reauth_reason     TEXT
 			);
 		`); err != nil {
@@ -203,18 +264,14 @@ func (db *DB) migrate() error {
 		}
 	}
 
-	// Migration: add needs_reauth / reauth_reason columns for tracking which
-	// OAuth-backed connections have refresh tokens that no longer work
-	// (revoked, expired, or rotated out). Idempotent — only adds the columns
-	// if they aren't already there. Existing rows default to needs_reauth=0.
-	hasReauth, err := columnExists(db, "connections", "needs_reauth")
+	// Migration: add reauth_reason column for tracking why a connection
+	// is in status='reauth_required'. (The legacy needs_reauth column was
+	// removed in spec 002 — see migrateNeedsReauthToStatus below.)
+	hasReason, err := columnExists(db, "connections", "reauth_reason")
 	if err != nil {
-		return fmt.Errorf("check connections.needs_reauth: %w", err)
+		return fmt.Errorf("check connections.reauth_reason: %w", err)
 	}
-	if !hasReauth {
-		if _, err := db.Exec(`ALTER TABLE connections ADD COLUMN needs_reauth INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return fmt.Errorf("add needs_reauth column: %w", err)
-		}
+	if !hasReason {
 		if _, err := db.Exec(`ALTER TABLE connections ADD COLUMN reauth_reason TEXT`); err != nil {
 			return fmt.Errorf("add reauth_reason column: %w", err)
 		}
@@ -243,6 +300,17 @@ func (db *DB) migrate() error {
 
 	// Migrate existing Gmail connections to the new "google" connector type.
 	db.Exec(`UPDATE connections SET connector_type = 'google' WHERE connector_type = 'gmail'`)
+
+	// FR-001/FR-003 one-time migration: converge rows where the legacy
+	// needs_reauth=1 signal was set without the status column being
+	// updated (PR #5 → PR #10 overlap window). After this migration, the
+	// status column is the canonical lifecycle signal and needs_reauth is
+	// no longer read by any production code path. Idempotent — a second
+	// run finds zero matching rows. Safe with keyring unloaded — this is
+	// a plaintext-column update only.
+	if err := migrateNeedsReauthToStatus(db); err != nil {
+		return fmt.Errorf("migrate needs_reauth → status: %w", err)
+	}
 
 	if hasOldColumn {
 		// SQLite doesn't support DROP COLUMN in older versions, so we rebuild

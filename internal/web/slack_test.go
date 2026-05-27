@@ -405,14 +405,23 @@ func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
 		t.Fatalf("expected 303 redirect, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 
-	// Persisted in settings.
-	cid, _ := env.Settings.Get("slack_client_id")
-	csec, _ := env.Settings.Get("slack_client_secret")
-	if cid != "1234567890.0987654321" {
-		t.Errorf("client_id not persisted: %q", cid)
+	// Persisted as an envelope-encrypted _oauth_app:slack row (spec 002 US3).
+	creds, err := env.Connections.GetOAuthApp("slack")
+	if err != nil {
+		t.Fatalf("GetOAuthApp: %v", err)
 	}
-	if csec != "abcdef0123456789abcdef0123456789" {
-		t.Errorf("client_secret not persisted: %q", csec)
+	if creds == nil {
+		t.Fatal("expected _oauth_app:slack row, got nil")
+	}
+	if creds.ClientID != "1234567890.0987654321" {
+		t.Errorf("client_id not persisted: %q", creds.ClientID)
+	}
+	if creds.ClientSecret != "abcdef0123456789abcdef0123456789" {
+		t.Errorf("client_secret not persisted: %q", creds.ClientSecret)
+	}
+	// FR-013: secret must not survive in the plaintext settings table.
+	if v, _ := env.Settings.Get("slack_client_secret"); v != "" {
+		t.Errorf("client_secret leaked into settings: %q", v)
 	}
 
 	// Subsequent /connections render shows the install button, no
@@ -477,16 +486,17 @@ func TestHandleSlackOAuthConfigure_RejectsAgentToken(t *testing.T) {
 
 // TestHandleSlackOAuthClearConfig wipes persisted creds. After clear
 // the configure form returns and the install button disappears.
+// Spec 002 US3: creds now live in the _oauth_app:slack row, not settings.
 func TestHandleSlackOAuthClearConfig(t *testing.T) {
 	t.Setenv("SLACK_CLIENT_ID", "")
 	t.Setenv("SLACK_CLIENT_SECRET", "")
 	handler, env := slackUITestServer(t)
 
-	// Pre-populate.
-	if err := env.Settings.Set("slack_client_id", "1234567890.0987654321"); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if err := env.Settings.Set("slack_client_secret", "abcdef0123456789abcdef0123456789"); err != nil {
+	// Pre-populate via the encrypted storage path.
+	if err := env.Connections.PutOAuthApp("slack", connections.OAuthAppCredentials{
+		ClientID:     "1234567890.0987654321",
+		ClientSecret: "abcdef0123456789abcdef0123456789",
+	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -494,11 +504,12 @@ func TestHandleSlackOAuthClearConfig(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d", rec.Code)
 	}
-	if v, _ := env.Settings.Get("slack_client_id"); v != "" {
-		t.Errorf("client_id not cleared: %q", v)
+	creds, err := env.Connections.GetOAuthApp("slack")
+	if err != nil {
+		t.Fatalf("GetOAuthApp after clear: %v", err)
 	}
-	if v, _ := env.Settings.Get("slack_client_secret"); v != "" {
-		t.Errorf("client_secret not cleared: %q", v)
+	if creds != nil {
+		t.Errorf("oauth_app:slack row not cleared: %+v", creds)
 	}
 }
 

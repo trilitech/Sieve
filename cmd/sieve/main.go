@@ -469,6 +469,17 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	approvalQ := approval.NewQueue(db)
 	auditLog := audit.NewLogger(db)
 	settingsSvc := settings.NewService(db)
+
+	// Spec 002 US3 / FR-012: one-time migration of any legacy plaintext
+	// Slack OAuth credentials from the settings table into an envelope-
+	// encrypted _oauth_app:slack row. Runs synchronously after the
+	// keyring loads (whether Setup or Load path) so the encryption
+	// material is available. Idempotent — no-op after first conversion.
+	// Failure is logged but not fatal: the OAuth UI surfaces 503 until
+	// the operator addresses whatever broke the migration.
+	if err := connSvc.MigrateLegacySlackOAuth(); err != nil {
+		log.Printf("warning: Slack OAuth credential migration deferred: %v", err)
+	}
 	scriptgenSvc := scriptgen.NewService(connSvc, settingsSvc)
 
 	if err := policiesSvc.SeedPresets(); err != nil {
@@ -579,11 +590,13 @@ const reauthSweepInterval = time.Hour
 // reauthSweeper runs Validate() against every connection on a periodic
 // loop. The loop honors ctx so a SIGTERM during shutdown stops it.
 //
-//	connector returns ErrNeedsReauth → MarkNeedsReauth (idempotent if already set).
-//	connector returns nil but the flag is set    → ClearNeedsReauth (auto-recover).
-//	connector returns some other error           → leave the flag alone (could be
-//	                                               a transient network blip; not
-//	                                               our place to declare it dead).
+//	connector returns ErrNeedsReauth → SetStatusWithReason(reauth_required)
+//	                                   (idempotent if status already reauth_required).
+//	connector returns nil but status==reauth_required → SetStatus(active)
+//	                                                   (auto-recover from blips).
+//	connector returns some other error → leave the status alone (could be a
+//	                                     transient network blip; not our
+//	                                     place to declare it dead).
 //
 // First sweep runs after one interval, not at startup, so the server isn't
 // hammering external APIs in its first second of life.
@@ -623,16 +636,16 @@ func runReauthSweep(ctx context.Context, connSvc *connections.Service) {
 
 		switch {
 		case errors.Is(err, connector.ErrNeedsReauth):
-			// onRefreshFailure inside the connector has already flipped the
-			// flag in the DB; this is just the safety net for connectors
-			// that don't wire the callback.
-			if !c.NeedsReauth {
-				_ = connSvc.MarkNeedsReauth(c.ID, "validate detected refresh failure")
-				log.Printf("reauth sweep: connection %q flagged: needs re-authentication", c.ID)
+			// onRefreshFailure inside the connector has already transitioned
+			// status in the DB for connectors wired to the callback; this is
+			// the safety net for connectors that don't.
+			if c.Status != connections.StatusReauthRequired {
+				_ = connSvc.SetStatusWithReason(c.ID, connections.StatusReauthRequired, "validate detected refresh failure")
+				log.Printf("reauth sweep: connection %q transitioned to reauth_required", c.ID)
 			}
-		case err == nil && c.NeedsReauth:
-			_ = connSvc.ClearNeedsReauth(c.ID)
-			log.Printf("reauth sweep: connection %q recovered, clearing needs_reauth flag", c.ID)
+		case err == nil && c.Status == connections.StatusReauthRequired:
+			_ = connSvc.SetStatus(c.ID, connections.StatusActive)
+			log.Printf("reauth sweep: connection %q recovered, transitioning to active", c.ID)
 		}
 	}
 }

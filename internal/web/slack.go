@@ -24,6 +24,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,7 +35,7 @@ import (
 
 	"github.com/trilitech/Sieve/internal/connections"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
-	"github.com/trilitech/Sieve/internal/settings"
+	"github.com/trilitech/Sieve/internal/secrets"
 )
 
 // Slack OAuth endpoints. Constants here so the test suite can swap
@@ -64,34 +65,56 @@ func slackEndpoint(production string) string {
 	return strings.Replace(production, "https://slack.com", strings.TrimRight(slackOAuthEndpointOverride, "/"), 1)
 }
 
-// slackOAuthClientID and slackOAuthClientSecret resolve the operator's
-// Slack OAuth app credentials. Lookup order:
+// slackOAuthCreds resolves the operator's Slack OAuth app credentials
+// from the encrypted _oauth_app:slack row (spec 002 US3). Falls back
+// to the SLACK_CLIENT_ID / SLACK_CLIENT_SECRET environment variables
+// when no row is stored — that fallback path is for 12-factor /
+// automated deployments only and is unaffected by the FR-009 "no
+// plaintext credentials" rule (env vars are not the keyring KEK).
 //
-//   1. The settings table (settings.KeySlackClientID /
-//      KeySlackClientSecret) — operator-set via the connections
-//      page's "Set up Slack OAuth" form. This is the recommended
-//      path because it persists across restarts and survives
-//      Docker container recreations.
-//   2. SLACK_CLIENT_ID / SLACK_CLIENT_SECRET environment variables
-//      — fallback for operators who prefer 12-factor config or
-//      automated deployments.
-//
-// If neither is set, the OAuth path is unavailable and the UI
-// shows a configure-form instead of the install button. This
-// matches the Google connector's behavior when no credentials
-// JSON is present.
-func (s *Server) slackOAuthClientID() string {
-	if v, _ := s.settings.Get(settings.KeySlackClientID); v != "" {
-		return v
+// Returns (clientID, clientSecret). Either may be empty if no source
+// has the value; the OAuth UI hides the install button when the
+// credentials are missing. Returns secrets.ErrKeyringNotLoaded as the
+// hidden error when the keyring is locked and a stored row exists —
+// callers that surface to HTTP should map it to 503.
+func (s *Server) slackOAuthCreds() (clientID, clientSecret string, err error) {
+	creds, err := s.connections.GetOAuthApp("slack")
+	if err == nil && creds != nil {
+		return creds.ClientID, creds.ClientSecret, nil
 	}
-	return os.Getenv("SLACK_CLIENT_ID")
+	if err != nil && !errors.Is(err, secrets.ErrKeyringNotLoaded) {
+		// Real error reading the row. Surface to the caller; the OAuth
+		// flow should fail fast rather than silently fall back to env.
+		return "", "", err
+	}
+	if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+		// Keyring locked: the operator stored creds but we can't decrypt.
+		// Surface so the calling handler returns 503.
+		return "", "", err
+	}
+	// No stored row — try env vars as a fallback.
+	return os.Getenv("SLACK_CLIENT_ID"), os.Getenv("SLACK_CLIENT_SECRET"), nil
 }
 
-func (s *Server) slackOAuthClientSecret() string {
-	if v, _ := s.settings.Get(settings.KeySlackClientSecret); v != "" {
-		return v
+// slackOAuthClientID returns just the public client_id (or env fallback).
+// Convenience for code paths that only need the public identifier.
+func (s *Server) slackOAuthClientID() string {
+	id, _, _ := s.slackOAuthCreds()
+	return id
+}
+
+// slackOAuthIsConfigured reports whether both client_id and client_secret
+// are resolvable from either the encrypted _oauth_app:slack row or the
+// env-var fallback. Used by the connections template to decide whether
+// to show the install button or the configure form. Returns false (not
+// configured) if the keyring is locked — operators see the configure
+// form, which fails fast with 503 on submit until they unlock.
+func (s *Server) slackOAuthIsConfigured() bool {
+	id, secret, err := s.slackOAuthCreds()
+	if err != nil {
+		return false
 	}
-	return os.Getenv("SLACK_CLIENT_SECRET")
+	return id != "" && secret != ""
 }
 
 // handleSlackOAuthStart kicks off the Slack OAuth v2 install flow for
@@ -303,8 +326,9 @@ func slackAuthTest(ctx context.Context, token string) (teamID, teamName, botUser
 // page reloads with the OAuth Install button enabled.
 //
 // This endpoint is admin-only (rejectIfAgentToken). Credentials are
-// persisted in the settings table; the DB file is chmod 0600 — same
-// exposure class as Google's `*client_secret*.json` file path.
+// envelope-encrypted under the keyring KEK and stored as a reserved
+// `_oauth_app:slack` row in the connections table (spec 002 US3 /
+// FR-009). The plaintext settings storage path was retired.
 func (s *Server) handleSlackOAuthConfigure(w http.ResponseWriter, r *http.Request) {
 	if rejectIfAgentToken(w, r) {
 		return
@@ -319,9 +343,6 @@ func (s *Server) handleSlackOAuthConfigure(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "client_id and client_secret are both required", http.StatusBadRequest)
 		return
 	}
-	// Light shape validation. Slack client IDs look like
-	// "1234567890.1234567890" and secrets are 32-char hex; not worth
-	// strict regex (Slack can change format), but reject obvious junk.
 	if !strings.ContainsRune(clientID, '.') || len(clientID) < 10 {
 		http.Error(w, "client_id doesn't look like a Slack OAuth client ID (expected format: 1234567890.1234567890)", http.StatusBadRequest)
 		return
@@ -330,12 +351,15 @@ func (s *Server) handleSlackOAuthConfigure(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "client_secret too short — copy the full value from your Slack app's Basic Information page", http.StatusBadRequest)
 		return
 	}
-	if err := s.settings.Set(settings.KeySlackClientID, clientID); err != nil {
-		http.Error(w, "save client_id: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := s.settings.Set(settings.KeySlackClientSecret, clientSecret); err != nil {
-		http.Error(w, "save client_secret: "+err.Error(), http.StatusInternalServerError)
+	if err := s.connections.PutOAuthApp("slack", connections.OAuthAppCredentials{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+	}); err != nil {
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, "save Slack OAuth credentials: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
@@ -348,11 +372,7 @@ func (s *Server) handleSlackOAuthClearConfig(w http.ResponseWriter, r *http.Requ
 	if rejectIfAgentToken(w, r) {
 		return
 	}
-	if err := s.settings.Delete(settings.KeySlackClientID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := s.settings.Delete(settings.KeySlackClientSecret); err != nil {
+	if err := s.connections.DeleteOAuthApp("slack"); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -394,8 +414,10 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 // confirmed pending.ConnectorType == "slack". Returns the connection
 // config that handleOAuthCallback then persists via Add or UpdateConfig.
 func (s *Server) slackOAuthExchange(ctx context.Context, host, code string) (map[string]any, error) {
-	clientID := s.slackOAuthClientID()
-	clientSecret := s.slackOAuthClientSecret()
+	clientID, clientSecret, err := s.slackOAuthCreds()
+	if err != nil {
+		return nil, fmt.Errorf("Slack OAuth credentials: %w", err)
+	}
 	if clientID == "" || clientSecret == "" {
 		return nil, fmt.Errorf("Slack OAuth credentials missing")
 	}

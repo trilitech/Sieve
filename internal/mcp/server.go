@@ -389,19 +389,17 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	}
 
 	// Pre-flight reauth check — skip policy and Execute if the connection's
-	// credentials are already known to be dead. The text content gives the
-	// agent enough information to surface the re-auth URL to its human.
-	if conn.NeedsReauth {
+	// credentials are already known to be dead. The text content uses the
+	// canonical "reauth_required:" prefix (FR-020 / MCP error envelope)
+	// so agent SDKs branch on the prefix without parsing the prose.
+	if conn.Status == connections.StatusReauthRequired {
 		durationMs := time.Since(start).Milliseconds()
 		s.logAudit(tok, connID, opName, call.Arguments, "reauth_required", conn.ReauthReason, durationMs)
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      id,
 			Result: ToolCallResult{
-				Content: []ContentBlock{{Type: "text", Text: fmt.Sprintf(
-					"Connection %q needs re-authentication. Reason: %s. A human must visit the Sieve admin UI and click Re-authenticate on this connection (URL: /connections/%s/reauth).",
-					connID, conn.ReauthReason, connID,
-				)}},
+				Content: []ContentBlock{{Type: "text", Text: mcpReauthRequiredText(connID, conn.ReauthReason)}},
 				IsError: true,
 			},
 		}
@@ -515,7 +513,15 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 				Error:   &JSONRPCError{Code: -32000, Message: "rotation in progress, retry shortly"},
 			}
 		}
-		if resp := connectionStateError(id, err); resp != nil {
+		// Look up reauth_reason so the structured tool error matches the
+		// post-execution path byte-for-byte (FR-020).
+		reauthReason := ""
+		if errors.Is(err, connections.ErrReauthRequired) {
+			if c, e := s.connections.Get(connID); e == nil {
+				reauthReason = c.ReauthReason
+			}
+		}
+		if resp := connectionStateError(id, connID, reauthReason, err); resp != nil {
 			s.logAudit(tok, connID, opName, call.Arguments, "deny("+errorCode(err)+")", "", time.Since(start).Milliseconds())
 			return resp
 		}
@@ -530,11 +536,28 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
+		// Spec 002 FR-006: gated operation surfaces as a tool error with
+		// the canonical "operation_not_enabled:" prefix so agent SDKs
+		// branch on it without parsing prose. Audit category distinct
+		// from "error" and "allow" so analytics can count gated calls.
+		if errors.Is(err, connector.ErrOperationNotEnabled) {
+			reason := strings.TrimPrefix(err.Error(), connector.ErrOperationNotEnabled.Error()+": ")
+			s.logAudit(tok, connID, opName, call.Arguments, "operation_not_enabled", reason, durationMs)
+			return &JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      id,
+				Result: ToolCallResult{
+					Content: []ContentBlock{{Type: "text", Text: "operation_not_enabled: " + reason}},
+					IsError: true,
+				},
+			}
+		}
 		// Translate the reauth sentinel into a human-actionable tool error
-		// pointing at the re-auth URL. The needs_reauth flag was set in DB
-		// by the gmail token source's onRefreshFailure callback by the time
-		// this error surfaces, so future calls will hit the pre-flight path
-		// above without re-running policy and Execute.
+		// pointing at the re-auth URL. The status was set in DB by the
+		// connector's onRefreshFailure callback by the time this error
+		// surfaces, so future calls will hit the pre-flight path above
+		// without re-running policy and Execute. Same content shape as
+		// the pre-flight branch — byte-equal by construction (FR-020).
 		if errors.Is(err, connector.ErrNeedsReauth) {
 			reason := err.Error()
 			if c2, e := s.connections.Get(connID); e == nil && c2.ReauthReason != "" {
@@ -545,10 +568,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 				JSONRPC: "2.0",
 				ID:      id,
 				Result: ToolCallResult{
-					Content: []ContentBlock{{Type: "text", Text: fmt.Sprintf(
-						"Connection %q needs re-authentication. Reason: %s. A human must visit the Sieve admin UI and click Re-authenticate on this connection (URL: /connections/%s/reauth).",
-						connID, reason, connID,
-					)}},
+					Content: []ContentBlock{{Type: "text", Text: mcpReauthRequiredText(connID, reason)}},
 					IsError: true,
 				},
 			}
@@ -1078,6 +1098,23 @@ func (s *Server) writeError(w http.ResponseWriter, id any, code int, message str
 	})
 }
 
+// mcpReauthRequiredText builds the canonical MCP tool-error text for a
+// "connection needs re-auth" condition. The stable "reauth_required: "
+// prefix lets agent SDKs branch on a fixed token without parsing the
+// prose tail (see specs/002-pr10-review-fixes/contracts/mcp-error-envelope.md).
+// Both detection paths (pre-flight gate and post-flight ErrNeedsReauth)
+// route through this helper so their content blocks are byte-equal
+// (FR-018 / FR-020).
+func mcpReauthRequiredText(connID, reason string) string {
+	if reason == "" {
+		reason = "credentials no longer valid"
+	}
+	return fmt.Sprintf(
+		"reauth_required: Connection %q needs re-authentication. Reason: %s. A human must visit the Sieve admin UI and click Re-authenticate on this connection (URL: /connections/%s/reauth).",
+		connID, reason, connID,
+	)
+}
+
 // connectionStateError translates connections.ErrReauthRequired and
 // connections.ErrConnectionDisabled into a structured IsError tool-call
 // result (MCP's mechanism for tool-level errors, distinct from JSON-RPC
@@ -1086,14 +1123,17 @@ func (s *Server) writeError(w http.ResponseWriter, id any, code int, message str
 //
 // FR-009 / FR-009a: agents must receive a stable error code without
 // leaking credentials or upstream response details.
-func connectionStateError(id any, err error) *JSONRPCResponse {
+//
+// connID is needed so the reauth text matches the post-execution path
+// (FR-020). When unknown (caller doesn't have an id in scope), pass "".
+func connectionStateError(id any, connID string, reason string, err error) *JSONRPCResponse {
 	switch {
 	case errors.Is(err, connections.ErrReauthRequired):
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      id,
 			Result: ToolCallResult{
-				Content: []ContentBlock{{Type: "text", Text: "reauth_required: connection requires reauthentication"}},
+				Content: []ContentBlock{{Type: "text", Text: mcpReauthRequiredText(connID, reason)}},
 				IsError: true,
 			},
 		}

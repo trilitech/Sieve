@@ -120,7 +120,10 @@ func (c *client) get(ctx context.Context, method string, params url.Values) (map
 		return nil, fmt.Errorf("slack: %s: %w", method, err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("slack: read %s response: %w", method, err)
+	}
 	var env errorEnvelope
 	_ = json.Unmarshal(body, &env)
 	if isTerminalAuthError(resp.StatusCode, env) {

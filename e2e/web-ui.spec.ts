@@ -1614,9 +1614,17 @@ test.describe('Slack connector — UI surfaces', () => {
 
   test('Slack tile appears in connector picker with token-entry form', async ({ page }) => {
     await page.goto(`${s.web_url}/connections`);
-    // The connector picker section advertises Slack via Meta() →
-    // Catalog → template. Look for the connector name we registered.
-    await expect(page.locator('text=Slack').first()).toBeVisible();
+    // The Slack connector tile is rendered conditionally by the
+    // template based on connector_type=='slack'. Look for an
+    // unambiguous surface (the configure form or the install button)
+    // inside the connector picker section, not just the literal
+    // "Slack" text — that also matches the sidebar nav link which is
+    // hidden behind the collapsed menu.
+    await expect(
+      page.locator(
+        'form[action="/connections/slack/oauth/configure"], form[action="/connections/slack/oauth/start"]'
+      ).first()
+    ).toBeVisible();
   });
 
   test('disable button transitions a connection to disabled status', async ({ page, request }) => {
@@ -1675,14 +1683,132 @@ test.describe('Slack connector — UI surfaces', () => {
   test('reauth_required connection returns 403 with reauth_required code', async ({ request }) => {
     // Companion to the disabled test: drive the same path but with the
     // reauth_required sentinel. Both surfaces use the same mapper
-    // (writeConnectionError / connectionStateError), so this is the
-    // sister assertion that catches a regression in the other branch.
+    // (writeReauthError / connectionStateError), so this is the sister
+    // assertion that catches a regression in the other branch.
     //
-    // We can't put a real connection into reauth_required from the
-    // public web surface (it's connector-driven), so we reach into the
-    // testserver via a SetStatus call... which is also not exposed.
-    // Instead: skip if no testing endpoint exists. The unit test in
-    // internal/api/router_status_test.go covers this comprehensively.
-    test.skip(true, 'reauth_required transitions are connector-internal; covered by api/router_status_test.go');
+    // testserver/main.go seeds a `reauth-conn` row already in
+    // status='reauth_required' for exactly this case (spec 002 US5).
+    // Bind it to the seed role first so the auth/role gate doesn't
+    // mask the status-gate failure.
+    const role = await request.get(`${s.web_url}/api/roles/${s.seed_role_id}`);
+    void role;
+    // The seed_token's role binds test-conn only; we want the seeded
+    // reauth-conn instead. Easiest: PATCH the role's bindings via the
+    // admin update endpoint. The testserver does not expose a CSRF-
+    // safe REST update, so we add reauth-conn through the seed role's
+    // bindings page directly.
+    await request.post(`${s.web_url}/roles/${s.seed_role_id}/update`, {
+      form: {
+        name: 'seed-role',
+        bindings: JSON.stringify([
+          { connection_id: 'test-conn', policy_ids: [s.read_only_policy_id] },
+          { connection_id: 'reauth-conn', policy_ids: [s.read_only_policy_id] },
+        ]),
+      },
+    });
+
+    const resp = await request.post(`${s.api_url}/api/v1/connections/reauth-conn/ops/list_emails`, {
+      headers: { Authorization: `Bearer ${s.seed_token}` },
+      data: '{}',
+    });
+    expect(resp.status()).toBe(403);
+
+    const body = await resp.json();
+    expect(body.error).toBe('reauth_required');
+    expect(body.connection_id).toBe('reauth-conn');
+    expect(body.reauth_url).toBe('/connections/reauth-conn/reauth');
+    expect(body.message).toBeTruthy();
+  });
+
+  // Spec 002 SC-001: the admin UI MUST never show two contradictory
+  // status badges for the same connection. Seeded `reauth-conn` is in
+  // status='reauth_required' — its row must show exactly one badge
+  // ("Reauth required") and never an "Active" badge in the same row.
+  test('SC-001: reauth_required row shows exactly one status badge', async ({ page }) => {
+    await page.goto(`${s.web_url}/connections`);
+
+    const row = page.locator('tr:has-text("reauth-conn")');
+    await expect(row).toBeVisible();
+
+    // Exactly one "Reauth required" pill in this row.
+    const reauthBadges = row.locator('span:has-text("Reauth required")');
+    expect(await reauthBadges.count()).toBe(1);
+
+    // Zero "Active" pills in the same row — the canonical lifecycle
+    // signal is the status enum, not the legacy needs_reauth boolean.
+    const activeBadges = row.locator('span:has-text("Active")');
+    expect(await activeBadges.count()).toBe(0);
+  });
+
+  // Spec 002 FR-013: a stored OAuth client secret MUST never be
+  // re-rendered to the operator. The configure form (visible when no
+  // creds are stored) accepts the values; after save, the install
+  // button + a "Reset" link replace it. Driving the round-trip via the
+  // configure handler is sufficient — the server normalises storage
+  // (encrypted _oauth_app:slack row) regardless of how the form was
+  // submitted.
+  test('OAuth flow: configure → install button → reset cycle', async ({ page, request }) => {
+    // Initial state: no creds → configure form is visible.
+    await page.goto(`${s.web_url}/connections`);
+    await expect(page.locator('form[action="/connections/slack/oauth/configure"]')).toBeVisible();
+
+    // Submit valid creds through the configure form.
+    const saveResp = await request.post(`${s.web_url}/connections/slack/oauth/configure`, {
+      form: {
+        client_id: '1234567890.0987654321',
+        client_secret: '0123456789abcdef0123456789abcdef',
+      },
+    });
+    expect(saveResp.ok()).toBe(true);
+
+    // After save: install button + reset link present, configure form
+    // gone (FR-013 "set" indicator). The plaintext secret is never
+    // rendered back — the configure form's input is gone entirely.
+    await page.goto(`${s.web_url}/connections`);
+    await expect(page.locator('form[action="/connections/slack/oauth/start"]')).toBeVisible();
+    await expect(page.locator('form[action="/connections/slack/oauth/clear"]')).toBeVisible();
+    await expect(page.locator('form[action="/connections/slack/oauth/configure"]')).toHaveCount(0);
+    // Plaintext secret bytes must not appear anywhere on the page.
+    expect(await page.content()).not.toContain('0123456789abcdef0123456789abcdef');
+
+    // Reset round-trip.
+    const clearResp = await request.post(`${s.web_url}/connections/slack/oauth/clear`);
+    expect(clearResp.ok()).toBe(true);
+    await page.goto(`${s.web_url}/connections`);
+    await expect(page.locator('form[action="/connections/slack/oauth/configure"]')).toBeVisible();
+  });
+
+  // Spec 002 FR-013/FR-014: a reserved `_oauth_app:slack` row MUST NOT
+  // appear in the per-tenant connections list, MUST NOT appear in the
+  // role-binding connection picker. Defence-in-depth on top of the
+  // SQL filter in Service.List + the writer-side rejection in roles.
+  test('reserved _oauth_app row is hidden from connections list and role picker', async ({ page, request }) => {
+    // Ensure the encrypted row exists (recreate after any prior clear).
+    await request.post(`${s.web_url}/connections/slack/oauth/configure`, {
+      form: {
+        client_id: '1234567890.0987654321',
+        client_secret: '0123456789abcdef0123456789abcdef',
+      },
+    });
+
+    // Connections list never shows the reserved id.
+    await page.goto(`${s.web_url}/connections`);
+    const reservedRow = page.locator('tr:has-text("oauth_app__slack")');
+    expect(await reservedRow.count()).toBe(0);
+
+    // Role edit page (use the seeded role) — connection-picker dropdown
+    // is built from the same List() that filters reserved rows. The
+    // dropdown's <option> set MUST NOT include oauth_app__slack.
+    await page.goto(`${s.web_url}/roles/${s.seed_role_id}/edit`);
+    // The picker is rendered dynamically via JS — wait for at least one
+    // <select.binding-conn> to be present, then grep its option values.
+    await page.locator('select.binding-conn').first().waitFor();
+    const optionTexts = await page.locator('select.binding-conn option').allInnerTexts();
+    for (const opt of optionTexts) {
+      expect(opt).not.toContain('oauth_app__slack');
+    }
+
+    // Cleanup: clear OAuth creds so subsequent tests see a clean state.
+    await request.post(`${s.web_url}/connections/slack/oauth/clear`);
   });
 });

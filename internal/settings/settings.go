@@ -17,15 +17,11 @@ const (
 	KeyLLMModel      = "llm_model"      // model name (e.g., "claude-sonnet-4-20250514")
 	KeyLLMMaxTokens  = "llm_max_tokens" // max tokens for generation (e.g., "4096")
 
-	// Slack OAuth app credentials. Operator-supplied via the
-	// connections page (or pre-set via SLACK_CLIENT_ID /
-	// SLACK_CLIENT_SECRET env vars as a fallback). Public client_id
-	// and the client_secret live in the same SQLite row class as
-	// LLM API keys — DB file is chmod 0600 and never has
-	// world-readable bits. Same exposure level as the operator's
-	// `*client_secret*.json` file Google's connector reads.
-	KeySlackClientID     = "slack_client_id"
-	KeySlackClientSecret = "slack_client_secret"
+	// NOTE: KeySlackClientID / KeySlackClientSecret were removed by
+	// spec 002 US3 / FR-009. Slack OAuth credentials now live in the
+	// connections table as an envelope-encrypted _oauth_app:slack row.
+	// One-time migration of any legacy plaintext settings rows runs
+	// from cmd/sieve/main.go after the keyring loads (FR-012).
 )
 
 // Delete removes a setting by key. No-op if the key is absent.

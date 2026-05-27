@@ -479,7 +479,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		// button when set, the configure-form when not. Same lookup
 		// chain (settings → env) the install handler uses, so the
 		// flag and runtime behavior never diverge.
-		"SlackOAuthConfigured": s.slackOAuthClientID() != "" && s.slackOAuthClientSecret() != "",
+		"SlackOAuthConfigured": s.slackOAuthIsConfigured(),
 	}
 	s.render(w, "connections", data)
 }
@@ -681,20 +681,37 @@ func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
-// handleConnectionEnable transitions a connection's status to "active".
-// Used to clear an operator-set "disabled" state; for "reauth_required"
-// the operator should complete a fresh OAuth flow or re-enter a token,
-// which the per-connector reauth handler resolves by calling SetStatus
-// after a successful credential refresh. Gated by rejectIfAgentToken
-// (FR-013).
+// handleConnectionEnable transitions a "disabled" connection back into
+// the lifecycle. The post-action status is NOT unconditionally "active":
+// if the row carries a non-empty reauth_reason (the underlying credential
+// was broken before the operator disabled the connection), the enable
+// action transitions to "reauth_required" instead of "active" so the
+// connection never serves agent traffic with known-broken credentials
+// (FR-004). The action itself always succeeds — only the destination
+// state varies. Gated by rejectIfAgentToken (FR-013).
 func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) {
 	if rejectIfAgentToken(w, r) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.connections.SetStatus(id, connections.StatusActive); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+
+	// Inspect reauth_reason: a non-empty value indicates the credential
+	// was broken before disable. Route the post-enable state accordingly.
+	c, err := s.connections.Get(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
+	}
+	if c.ReauthReason != "" {
+		if err := s.connections.SetStatusWithReason(id, connections.StatusReauthRequired, c.ReauthReason); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		if err := s.connections.SetStatus(id, connections.StatusActive); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }

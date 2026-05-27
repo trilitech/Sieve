@@ -40,9 +40,13 @@ Best when you want Sieve to manage the Slack app's bot token end to end. **No en
 7. The card now shows the **Install via OAuth** button. Enter a Connection Alias and Display Name, click the button. Slack opens in a new tab — approve the install.
 8. The redirect lands you back on Sieve with the connection in `status: active`.
 
-**Alternative: pre-set via environment variables.** If you'd rather configure via deployment automation, set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in Sieve's environment before startup. The settings table takes precedence, so a value pasted in the UI overrides any env var. Either path is supported; the UI is just the lower-friction default.
+**Where credentials are stored.** When you paste creds in the UI, Sieve stores them as an envelope-encrypted reserved row in the `connections` table (`connector_type = '_oauth_app:slack'`, id `oauth_app__slack`). Same encryption path as connection configs: per-record DEK, KEK-wrapped, picked up automatically by passphrase rotation. The encrypted row is hidden from the per-tenant connections list and is not addressable by agent traffic. **Reading the credentials requires the keyring** — if Sieve is started with the keyring locked, the OAuth install flow returns HTTP 503 "service locked" until an operator supplies the passphrase. Direct bot-token entry remains available without the keyring (it goes through the standard connection config path, which is also encrypted but operates per-connection).
 
-**Resetting credentials.** Below the install button, a small "Reset Slack OAuth credentials" link wipes the persisted client_id / client_secret from the settings table. Use this when rotating the Slack app or moving to a different OAuth app.
+**Alternative: pre-set via environment variables.** If you'd rather configure via deployment automation, set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in Sieve's environment before startup. Stored credentials in the encrypted row take precedence, so a value pasted in the UI overrides any env var. The env-var path is for 12-factor escape hatches and is not encrypted; if you're using deployment-managed secrets (Vault, Kubernetes Secret, etc.), the env-var path is the right home for those.
+
+**Resetting credentials.** Below the install button, a small "Reset Slack OAuth credentials" link wipes the persisted encrypted row. Use this when rotating the Slack app or moving to a different OAuth app.
+
+**Upgrading from an older Sieve.** Versions prior to spec 002 stored the credentials as plaintext rows in the `settings` table. The first time you start a fixed version with the keyring loaded, a one-time migration moves those rows into the encrypted `_oauth_app:slack` row and deletes the plaintext rows. Migration is idempotent and is logged in stderr. If the keyring is locked at first boot, the migration runs on the next successful keyring load — you don't have to re-enter creds.
 
 ### Option 2 — Direct bot-token entry
 
@@ -91,7 +95,7 @@ If the policy on the role allows posting only to `#bot-test`, posting to `#gener
 
 ## Limitations (v1)
 
-- **`search_messages` is disabled.** Slack's `search.messages` API requires a *user* token (`xoxp-…`), not a bot token. Sieve v1 supports bot tokens only (per the 2026-05-01 clarification: classic non-rotating scopes only). The operation is exposed for policy bindings but always returns `{"error": "operation_not_enabled", ...}`. User-token install support is on the roadmap.
+- **`search_messages` is disabled.** Slack's `search.messages` API requires a *user* token (`xoxp-…`), not a bot token. Sieve v1 supports bot tokens only (per the 2026-05-01 clarification: classic non-rotating scopes only). The operation is exposed for policy bindings but always returns the typed `connector.ErrOperationNotEnabled` sentinel. Agents see this as **HTTP 501 Not Implemented** with body `{"error":"operation_not_enabled","connection_id":...,"operation":"search_messages","message":...}` on REST, or as a tool error with the `operation_not_enabled:` text prefix on MCP. User-token install support is on the roadmap.
 - **No Slack Enterprise Grid org-level installs.** v1 supports per-workspace bot installs. If you operate across multiple workspaces, add a Sieve connection per workspace.
 - **No inbound webhooks.** Slack Events API (real-time message ingestion) is out of scope for v1 — Sieve is outbound-only. Agents that need event-driven workflows poll the `read_channel_history` operation.
 - **No granular-scope token rotation.** v1 uses classic non-rotating bot tokens. Granular scopes with refresh-token rotation are a future feature.
@@ -99,7 +103,7 @@ If the policy on the role allows posting only to `#bot-test`, posting to `#gener
 ## Troubleshooting
 
 **Q: I see the OAuth button is missing in the connector picker.**
-A: `SLACK_CLIENT_ID` and/or `SLACK_CLIENT_SECRET` aren't set in Sieve's environment. Either set them and restart, or use the **Use existing bot token** path instead.
+A: Neither the encrypted `_oauth_app:slack` row nor the env-var fallback resolves to a complete `client_id`/`client_secret` pair. Either paste creds via **Add Connection → Slack → Set up Slack OAuth** (the recommended path), or set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in Sieve's environment and restart. If you stored creds via the UI but the button still won't appear, check that the keyring is loaded — the OAuth handlers can't read encrypted credentials with the keyring locked.
 
 **Q: My connection went to `reauth_required` after I rotated the bot token in Slack.**
 A: Expected — the old token is now revoked. Click **Re-install** on the row (OAuth) or paste the new token via the reauth form.

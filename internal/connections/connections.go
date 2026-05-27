@@ -19,10 +19,12 @@
 package connections
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,15 +67,7 @@ type Connection struct {
 	Status        string         `json:"status"`
 	Config        map[string]any `json:"-"` // only populated for internal use; excluded from JSON serialization
 	CreatedAt     time.Time      `json:"created_at"`
-
-	// NeedsReauth flips to true when a token refresh fails irrecoverably
-	// (e.g., OAuth invalid_grant). The web UI surfaces this as a banner;
-	// the API/MCP layers translate it to a structured 503 so agents and
-	// their humans know which connection is dead and where to fix it.
-	// Cleared on successful re-authentication or on a successful Validate
-	// (the hourly sweeper auto-recovers from transient blips).
-	NeedsReauth   bool   `json:"needs_reauth,omitempty"`
-	ReauthReason  string `json:"reauth_reason,omitempty"`
+	ReauthReason  string         `json:"reauth_reason,omitempty"`
 }
 
 // Service manages the connection registry.
@@ -155,17 +149,15 @@ func (s *Service) Add(id, connectorType, displayName string, config map[string]a
 // require the keyring — `status` is non-secret and readable independently.
 func (s *Service) Get(id string) (*Connection, error) {
 	row := s.db.DB.QueryRow(
-		`SELECT id, connector_type, display_name, status, created_at, needs_reauth, reauth_reason
+		`SELECT id, connector_type, display_name, status, created_at, reauth_reason
 		 FROM connections WHERE id = ?`, id,
 	)
 
 	var c Connection
-	var needsReauth int
 	var reauthReason *string
-	if err := row.Scan(&c.ID, &c.ConnectorType, &c.DisplayName, &c.Status, &c.CreatedAt, &needsReauth, &reauthReason); err != nil {
+	if err := row.Scan(&c.ID, &c.ConnectorType, &c.DisplayName, &c.Status, &c.CreatedAt, &reauthReason); err != nil {
 		return nil, fmt.Errorf("get connection %q: %w", id, err)
 	}
-	c.NeedsReauth = needsReauth != 0
 	if reauthReason != nil {
 		c.ReauthReason = *reauthReason
 	}
@@ -189,23 +181,21 @@ func (s *Service) GetWithConfig(id string) (*Connection, error) {
 		`SELECT id, connector_type, display_name,
 			config_ciphertext, config_nonce,
 			dek_wrapped, dek_nonce, enc_version,
-			status, created_at, needs_reauth, reauth_reason
+			status, created_at, reauth_reason
 		 FROM connections WHERE id = ?`, id,
 	)
 
 	var c Connection
 	var blob secrets.EncryptedBlob
-	var needsReauth int
 	var reauthReason *string
 	if err := row.Scan(
 		&c.ID, &c.ConnectorType, &c.DisplayName,
 		&blob.Ciphertext, &blob.Nonce,
 		&blob.WrappedDEK, &blob.DEKNonce, &blob.Version,
-		&c.Status, &c.CreatedAt, &needsReauth, &reauthReason,
+		&c.Status, &c.CreatedAt, &reauthReason,
 	); err != nil {
 		return nil, fmt.Errorf("get connection %q: %w", id, err)
 	}
-	c.NeedsReauth = needsReauth != 0
 	if reauthReason != nil {
 		c.ReauthReason = *reauthReason
 	}
@@ -226,12 +216,15 @@ func (s *Service) GetWithConfig(id string) (*Connection, error) {
 	return &c, nil
 }
 
-// List returns all connections (without sensitive config). Does not
-// require the keyring — `status` is non-secret.
+// List returns all connections (without sensitive config). Reserved-prefix
+// rows (connector_type starting with "_") are filtered out — they hold
+// system state like OAuth-app credentials and MUST NOT appear in the
+// per-tenant connections list. Use ListReserved to surface them in the
+// admin "OAuth app credentials" view. Does not require the keyring.
 func (s *Service) List() ([]Connection, error) {
 	rows, err := s.db.DB.Query(
-		`SELECT id, connector_type, display_name, status, created_at, needs_reauth, reauth_reason
-		 FROM connections ORDER BY created_at`,
+		`SELECT id, connector_type, display_name, status, created_at, reauth_reason
+		 FROM connections WHERE connector_type NOT LIKE '\_%' ESCAPE '\' ORDER BY created_at`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list connections: %w", err)
@@ -241,12 +234,10 @@ func (s *Service) List() ([]Connection, error) {
 	var connections []Connection
 	for rows.Next() {
 		var c Connection
-		var needsReauth int
 		var reauthReason *string
-		if err := rows.Scan(&c.ID, &c.ConnectorType, &c.DisplayName, &c.Status, &c.CreatedAt, &needsReauth, &reauthReason); err != nil {
+		if err := rows.Scan(&c.ID, &c.ConnectorType, &c.DisplayName, &c.Status, &c.CreatedAt, &reauthReason); err != nil {
 			return nil, fmt.Errorf("scan connection: %w", err)
 		}
-		c.NeedsReauth = needsReauth != 0
 		if reauthReason != nil {
 			c.ReauthReason = *reauthReason
 		}
@@ -255,20 +246,79 @@ func (s *Service) List() ([]Connection, error) {
 	return connections, rows.Err()
 }
 
+// IsReservedConnectorType reports whether a connector_type value denotes
+// a reserved system row (currently any value starting with "_"). Reserved
+// rows hold per-deployment state like OAuth-app credentials and are never
+// addressable as per-tenant connection targets. See FR-014.
+func IsReservedConnectorType(s string) bool {
+	return strings.HasPrefix(s, "_")
+}
+
+// IsReservedConnectionID reports whether a connection id refers to a
+// reserved system row. The id convention is `oauth_app__<provider>` for
+// OAuth-app credential rows; future reserved kinds use other prefixes
+// that this helper recognises by inspecting the id string.
+func IsReservedConnectionID(id string) bool {
+	return strings.HasPrefix(id, "oauth_app__")
+}
+
 // SetStatus updates the connection's status. Validates that status is one
 // of the allowed values; returns an error for unknown values without
 // touching the database. Does not require the keyring — status is non-secret.
+//
+// Clears reauth_reason when transitioning to active (the credentials are
+// presumed working again); leaves it intact for other transitions because
+// callers usually pair SetStatus(reauth_required|disabled) with a reason
+// via SetStatusWithReason and we don't want to wipe a reason just set.
 func (s *Service) SetStatus(id, status string) error {
 	if err := validateStatus(status); err != nil {
 		return err
 	}
-	res, err := s.db.DB.Exec(`UPDATE connections SET status = ? WHERE id = ?`, status, id)
+	var (
+		res sql.Result
+		err error
+	)
+	if status == StatusActive {
+		res, err = s.db.DB.Exec(`UPDATE connections SET status = ?, reauth_reason = NULL WHERE id = ?`, status, id)
+	} else {
+		res, err = s.db.DB.Exec(`UPDATE connections SET status = ? WHERE id = ?`, status, id)
+	}
 	if err != nil {
 		return fmt.Errorf("update status for %q: %w", id, err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("connection %q not found", id)
+	}
+	return nil
+}
+
+// SetStatusWithReason updates both the status column and reauth_reason in
+// one statement. This is the canonical writer used after FR-001 lifecycle
+// unification: every "this connection is broken" signal calls this single
+// method. Returns no error if the connection has already been deleted (a
+// refresh callback may fire after a Remove).
+func (s *Service) SetStatusWithReason(id, status, reason string) error {
+	if err := validateStatus(status); err != nil {
+		return err
+	}
+	if status == StatusActive {
+		// reauth_reason cleared on transition to active.
+		_, err := s.db.DB.Exec(
+			`UPDATE connections SET status = ?, reauth_reason = NULL WHERE id = ?`,
+			status, id,
+		)
+		if err != nil {
+			return fmt.Errorf("set status for %q: %w", id, err)
+		}
+		return nil
+	}
+	_, err := s.db.DB.Exec(
+		`UPDATE connections SET status = ?, reauth_reason = ? WHERE id = ?`,
+		status, reason, id,
+	)
+	if err != nil {
+		return fmt.Errorf("set status for %q: %w", id, err)
 	}
 	return nil
 }
@@ -294,17 +344,17 @@ func (s *Service) UpdateConfig(id string, config map[string]any) error {
 		return err
 	}
 
-	// Clearing needs_reauth in the same statement as the config update is
-	// deliberate: if the operator just completed a re-auth flow, the new
-	// credentials are the cure for whatever flagged the connection in the
-	// first place. Doing it atomically avoids a window where the DB still
-	// claims the connection is broken even though we just installed a
-	// working refresh token.
+	// Transitioning status='active' and clearing reauth_reason in the same
+	// statement as the config update is deliberate (FR-004): if the operator
+	// just completed a re-auth flow, the new credentials are the cure for
+	// whatever flagged the connection in the first place. Doing it
+	// atomically avoids a window where the DB still claims the connection
+	// is broken even though we just installed a working refresh token.
 	res, err := s.db.DB.Exec(
 		`UPDATE connections SET
 			config_ciphertext = ?, config_nonce = ?,
 			dek_wrapped = ?, dek_nonce = ?, enc_version = ?,
-			needs_reauth = 0, reauth_reason = NULL
+			status = 'active', reauth_reason = NULL
 		 WHERE id = ?`,
 		blob.Ciphertext, blob.Nonce,
 		blob.WrappedDEK, blob.DEKNonce, blob.Version,
@@ -350,34 +400,6 @@ func (s *Service) Remove(id string) error {
 	s.mu.Lock()
 	delete(s.live, id)
 	s.mu.Unlock()
-	return nil
-}
-
-// MarkNeedsReauth flips a connection's needs_reauth flag to 1 and records
-// a short human-readable reason. Idempotent — re-marking with a different
-// reason just updates the reason. Returns no error if the connection has
-// already been deleted (a refresh callback may fire after a Remove).
-func (s *Service) MarkNeedsReauth(id, reason string) error {
-	_, err := s.db.DB.Exec(
-		`UPDATE connections SET needs_reauth = 1, reauth_reason = ? WHERE id = ?`,
-		reason, id,
-	)
-	if err != nil {
-		return fmt.Errorf("mark connection %q reauth: %w", id, err)
-	}
-	return nil
-}
-
-// ClearNeedsReauth clears the flag — used by the sweeper when Validate()
-// recovers, and as a safety net (UpdateConfig clears it inline).
-func (s *Service) ClearNeedsReauth(id string) error {
-	_, err := s.db.DB.Exec(
-		`UPDATE connections SET needs_reauth = 0, reauth_reason = NULL WHERE id = ?`,
-		id,
-	)
-	if err != nil {
-		return fmt.Errorf("clear connection %q reauth: %w", id, err)
-	}
 	return nil
 }
 
@@ -453,7 +475,7 @@ func (s *Service) injectRefreshCallback(id string, config map[string]any) {
 		// Best-effort: a deleted connection or a closed DB shouldn't block
 		// the calling goroutine. The error path is logged elsewhere when
 		// the wrapped sentinel surfaces at the API/MCP boundary.
-		_ = s.MarkNeedsReauth(id, reason)
+		_ = s.SetStatusWithReason(id, StatusReauthRequired, reason)
 	}
 }
 
@@ -478,6 +500,12 @@ func (s *Service) injectRefreshCallback(id string, config map[string]any) {
 //     us to invalidate on every SetStatus, re-introducing the
 //     stale-state foot-gun that the gate exists to close.
 func (s *Service) GetConnector(id string) (connector.Connector, error) {
+	// Reserved-prefix system rows (e.g., _oauth_app:slack) hold per-deployment
+	// state and have no registered factory. Refuse them up front so agent
+	// traffic can never address them as a connection (FR-014).
+	if IsReservedConnectionID(id) {
+		return nil, &connector.ErrUnknownConnector{Type: "reserved system row"}
+	}
 	// Status gate: refuse non-active connections immediately. Reading
 	// status does not require the keyring.
 	meta, err := s.Get(id)

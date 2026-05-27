@@ -2,9 +2,11 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/testing/mockslack"
 )
 
@@ -164,22 +166,27 @@ func TestOps_ReadThread(t *testing.T) {
 	}
 }
 
-// TestOps_SearchMessages_NotEnabled — research R1a contract: bot-token
-// installs surface a clear, non-secret operation_not_enabled shape so
-// agents see a stable error and admins know to install with user
-// scopes (when v1.x adds support).
+// TestOps_SearchMessages_NotEnabled — spec 002 FR-006 contract: the
+// gated operation returns the typed connector.ErrOperationNotEnabled
+// sentinel from Execute. The API layer maps the sentinel to HTTP 501
+// and the MCP layer to a tool error with the "operation_not_enabled:"
+// text prefix; agent SDKs branch on the status code / prefix without
+// reading the response body. The legacy phantom-success shape (200 OK
+// with `{"error": "operation_not_enabled"}`) was retired here.
 func TestOps_SearchMessages_NotEnabled(t *testing.T) {
 	mock := mockslack.New()
 	t.Cleanup(mock.Close)
 	c, _ := newConnectorForTest(t, mock)
 
 	got, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "foo"})
-	if err != nil {
-		t.Fatalf("search_messages: %v", err)
+	if err == nil {
+		t.Fatalf("expected typed error, got success with value %+v", got)
 	}
-	m := got.(map[string]any)
-	if m["error"] != "operation_not_enabled" {
-		t.Fatalf("expected error=operation_not_enabled, got %+v", m)
+	if !errors.Is(err, connector.ErrOperationNotEnabled) {
+		t.Fatalf("error does not wrap ErrOperationNotEnabled: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil result on gated op, got %+v", got)
 	}
 }
 
