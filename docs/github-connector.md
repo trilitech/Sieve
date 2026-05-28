@@ -111,6 +111,27 @@ Plus `github_request` — a raw-request escape hatch that takes
 `{method, path, query?, body?}` and runs it through the same auth
 router. Use it to reach anything the curated set doesn't cover.
 
+> **`github_request` bypasses connector-layer guardrails.** The
+> cross-fork PR allow-list (`cross_fork_pr_allowlist`) is enforced
+> inside the curated `github_create_pr` op only. An agent permitted to
+> call `github_request` can `POST /repos/{owner}/{repo}/pulls` with any
+> cross-fork head and reach upstream without the allow-list firing.
+> For the allow-list to be a real control, deny `github_request` in
+> the role's policies — `github-read-only` already does this.
+
+## Cross-fork PR allow-list
+
+Connections expose an optional `cross_fork_pr_allowlist` field — a list
+of GitHub user logins (case-insensitive, no wildcards) whose forks the
+connector accepts as cross-fork PR heads when an agent calls
+`github_create_pr`. Default is empty, which means "deny all cross-fork
+PRs". Same-repo heads (no `user:` prefix) are unaffected.
+
+Blocked attempts are logged as `policy_result:
+github.cross_fork_head_denied`. **The allow-list is only consulted by
+`github_create_pr`; see the warning under "Operations" above about
+`github_request`.**
+
 ## Policy presets
 
 Two presets ship with Sieve, both with `scope: "github"`:

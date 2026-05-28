@@ -314,7 +314,7 @@ func exclusiveCount(bs ...bool) int {
 func runResetKeyring(dbPath string) int {
 	log.SetFlags(0)
 
-	if !stdinIsTerminal() {
+	if !secrets.IsStdinTerminal() {
 		fmt.Fprintln(os.Stderr, "sieve: --reset-keyring requires a TTY for confirmation; aborting")
 		return resetExitAborted
 	}
@@ -335,13 +335,26 @@ func runResetKeyring(dbPath string) int {
 	defer db.Close()
 
 	// Tell the operator exactly what they're about to lose AND what
-	// will survive, so the confirmation is informed.
+	// will survive, so the confirmation is informed. Surface a query
+	// failure rather than swallowing it: a corrupted or unreadable DB
+	// must not present "0 records will be deleted" and let the operator
+	// type RESET thinking nothing's at stake. The DELETE below runs
+	// regardless of what we display here.
 	var connectionCount int
-	_ = db.DB.QueryRow(`SELECT COUNT(*) FROM connections`).Scan(&connectionCount)
+	countKnown := true
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM connections`).Scan(&connectionCount); err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: warning: could not count stored credentials: %v\n", err)
+		countKnown = false
+	}
 
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "WARNING: --reset-keyring is destructive and irreversible.")
-	fmt.Fprintf(os.Stderr, "  • %d stored credential record(s) will be deleted.\n", connectionCount)
+	if countKnown {
+		fmt.Fprintf(os.Stderr, "  • %d stored credential record(s) will be deleted.\n", connectionCount)
+	} else {
+		fmt.Fprintln(os.Stderr, "  • An UNKNOWN number of stored credential record(s) will be deleted")
+		fmt.Fprintln(os.Stderr, "    (the count query failed — see warning above).")
+	}
 	fmt.Fprintln(os.Stderr, "  • You will need to re-add every connection (Gmail, OAuth")
 	fmt.Fprintln(os.Stderr, "    accounts, LLM API keys, etc.) after running --setup again.")
 	fmt.Fprintln(os.Stderr, "  • Policies, roles, tokens, audit history, and settings are")
@@ -409,18 +422,6 @@ func runResetKeyring(dbPath string) int {
 	fmt.Fprintf(os.Stderr, "sieve: keyring reset. %d credential record(s) deleted.\n", connectionCount)
 	fmt.Fprintln(os.Stderr, "sieve: run with --setup to choose a new passphrase, then re-add your connections.")
 	return rotateExitSuccess
-}
-
-// stdinIsTerminal reports whether stdin is connected to a TTY. The
-// rotation/reset prompts use this to refuse running under piped input.
-func stdinIsTerminal() bool {
-	// term.IsTerminal is what internal/secrets uses; replicate the check
-	// here without exposing a new public function from the secrets pkg.
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) error {

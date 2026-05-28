@@ -77,6 +77,7 @@
                   </button>
                 </form>
                 {{end}}
+                {{if or (eq .ConnectorType "http_proxy") (eq .ConnectorType "mcp_proxy") (eq .ConnectorType "github")}}
                 <a href="/connections/{{.ID}}/edit"
                    class="inline-block mr-3 text-sm text-indigo-300 hover:text-indigo-200 font-medium transition-colors">
                   Edit

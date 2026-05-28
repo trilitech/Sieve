@@ -308,11 +308,8 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		// smuggled through the result map's private `_auth_query_overridden`
 		// key. Strip the key before serialising so the agent never sees it.
 		policyResult := "allow"
-		if resultMap, ok := result.(map[string]any); ok {
-			if overridden, _ := resultMap["_auth_query_overridden"].(bool); overridden {
-				policyResult = "http_proxy.auth_query_overridden"
-				delete(resultMap, "_auth_query_overridden")
-			}
+		if er, ok := result.(*httpproxy.ExecuteResult); ok && er.AuthQueryOverridden {
+			policyResult = "http_proxy.auth_query_overridden"
 		}
 		resultJSON, _ := json.Marshal(result)
 		var reason string
@@ -410,11 +407,8 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		}
 		// Same private-key smuggling pattern as the pre-approval path.
 		policyResult := "approved"
-		if resultMap, ok := result.(map[string]any); ok {
-			if overridden, _ := resultMap["_auth_query_overridden"].(bool); overridden {
-				policyResult = "http_proxy.auth_query_overridden"
-				delete(resultMap, "_auth_query_overridden")
-			}
+		if er, ok := result.(*httpproxy.ExecuteResult); ok && er.AuthQueryOverridden {
+			policyResult = "http_proxy.auth_query_overridden"
 		}
 		resultJSON, _ := json.Marshal(result)
 		var approvedReason string
@@ -608,7 +602,7 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 	policyResult := "proxied"
 	if queryOverridden {
 		policyResult = "http_proxy.auth_query_overridden"
-	} else if strings.Contains(filterSummary, "redacted") {
+	} else if strings.Contains(filterSummary, "auth_value_scrubbed") {
 		policyResult = "http_proxy.auth_value_scrubbed"
 	}
 	rt.logAudit(tok, connID, operation, nil, policyResult, filterSummary, time.Since(start).Milliseconds())

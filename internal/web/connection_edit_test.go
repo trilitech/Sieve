@@ -416,8 +416,8 @@ func TestEditSaveValidatesNonPositiveCap(t *testing.T) {
 		t.Errorf("expected 400 on non-positive cap, got %d", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "must be positive") {
-		t.Errorf("error banner missing 'must be positive'; got %q", string(body))
+	if !strings.Contains(string(body), "non-negative") {
+		t.Errorf("error banner missing 'non-negative'; got %q", string(body))
 	}
 	// Verify no DB write happened.
 	conn, _ := env.Connections.GetWithConfig("m1")
@@ -500,4 +500,17 @@ func mustGetConfig(t *testing.T, env *testenv.Env, id string) map[string]any {
 		t.Fatalf("get connection: %v", err)
 	}
 	return conn.Config
+}
+
+// TestAuthQueryParamPatternMatchesConnector asserts that the authQueryParamPattern
+// compiled in this package (from httpproxy.AuthQueryParamPatternStr) stays in
+// sync with the connector's own compiled pattern. Both use the same source
+// constant so drift is impossible, but the test documents the contract and
+// catches accidental constant changes.
+func TestAuthQueryParamPatternMatchesConnector(t *testing.T) {
+	got := authQueryParamPattern.String()
+	want := httpproxy.AuthQueryParamPatternStr
+	if got != want {
+		t.Errorf("web authQueryParamPattern %q differs from httpproxy.AuthQueryParamPatternStr %q", got, want)
+	}
 }

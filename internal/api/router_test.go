@@ -2107,8 +2107,10 @@ func TestExecuteAuditIdentifier_QueryOverridden(t *testing.T) {
 	}
 }
 
-// T023: The private result-map key `_auth_query_overridden` is stripped before
-// the curated response is JSON-encoded back to the agent.
+// T023: The auth_query_overridden flag never appears in the curated response
+// JSON. The connector returns a typed *httpproxy.ExecuteResult whose
+// AuthQueryOverridden field carries `json:"-"`, so the router can read it
+// for audit purposes without leaking it to the agent.
 func TestExecuteAuditIdentifier_PrivateKeyStripped(t *testing.T) {
 	serverURL, tok, _, setHandler := setupProxyWithAuthQueryParam(t, "appid", "REAL_KEY")
 
@@ -2121,14 +2123,16 @@ func TestExecuteAuditIdentifier_PrivateKeyStripped(t *testing.T) {
 	resp := doRequest(t, "POST", serverURL+"/api/v1/connections/aqp-conn/ops/proxy_request", tok, body)
 	defer resp.Body.Close()
 	respBody := readBody(t, resp)
-	if strings.Contains(respBody, "_auth_query_overridden") {
-		t.Fatalf("response leaked private key _auth_query_overridden: %s", respBody)
+	if strings.Contains(respBody, "auth_query_overridden") {
+		t.Fatalf("response leaked the AuthQueryOverridden flag: %s", respBody)
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(respBody), &parsed); err != nil {
 		t.Fatalf("response was not valid JSON: %v\n%s", err, respBody)
 	}
-	if _, present := parsed["_auth_query_overridden"]; present {
-		t.Fatalf("parsed response still contains _auth_query_overridden")
+	for k := range parsed {
+		if strings.Contains(strings.ToLower(k), "auth_query") {
+			t.Fatalf("parsed response leaks auth_query field %q: %v", k, parsed)
+		}
 	}
 }

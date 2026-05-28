@@ -31,6 +31,16 @@ type PromptOptions struct {
 	Prompt string
 }
 
+// IsStdinTerminal reports whether stdin is connected to a TTY. Centralized
+// here so callers outside this package (notably cmd/sieve, which gates the
+// destructive --reset-keyring flag on a TTY confirmation) use the same
+// check `Acquire` uses below — different definitions of "is a TTY" can
+// disagree on edge cases (PTY-wrapped pipes, virtio consoles), and a
+// reset path that disagrees with the prompt path is a UX trap.
+func IsStdinTerminal() bool {
+	return term.IsTerminal(int(syscall.Stdin))
+}
+
 // Acquire reads a passphrase using the documented priority order:
 //
 //  1. If stdin is a TTY → prompt with echo off (golang.org/x/term).
@@ -51,7 +61,7 @@ func Acquire(opts PromptOptions) ([]byte, error) {
 		prompt = "Sieve passphrase: "
 	}
 
-	if term.IsTerminal(int(syscall.Stdin)) {
+	if IsStdinTerminal() {
 		return acquireTTY(prompt, opts.Confirm)
 	}
 
