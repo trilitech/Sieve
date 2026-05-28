@@ -1,6 +1,6 @@
 package connections
 
-// Internal-package tests for refresh-token rotation persistence (FR-016).
+// Internal-package tests for refresh-token rotation persistence.
 //
 // These tests live in package connections (not connections_test) so they
 // can invoke the unexported injectRefreshCallback / persistRefreshedToken
@@ -119,7 +119,7 @@ func TestInjectRefreshCallback_PersistSuccess_LeavesStatusActive(t *testing.T) {
 }
 
 // TestInjectRefreshCallback_PersistFailure_TransitionsToReauthRequired
-// verifies FR-016: when the persist step fails, the connection's status
+// verifies that when the persist step fails, the connection's status
 // MUST transition to reauth_required so subsequent agent calls
 // short-circuit with ErrReauthRequired instead of burning further refresh
 // attempts against a stale refresh token that the upstream has already

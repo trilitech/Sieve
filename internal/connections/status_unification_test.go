@@ -1,6 +1,6 @@
 package connections_test
 
-// Regression tests for FR-001..FR-005 lifecycle unification.
+// Regression tests for the unified connection lifecycle.
 //
 // In Sieve pre-launch, the unification dropped the legacy needs_reauth
 // column entirely (no deprecation window). These tests pin:

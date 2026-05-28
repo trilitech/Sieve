@@ -17,7 +17,7 @@ package web
 //     callback path is shared.
 //
 // All three are gated by rejectIfAgentToken — agents must never reach
-// admin-side connection mutation paths (FR-013).
+// admin-side connection mutation paths.
 
 import (
 	"context"
@@ -45,9 +45,9 @@ const (
 	slackTokenURL     = "https://slack.com/api/oauth.v2.access"
 	slackAuthTestURL  = "https://slack.com/api/auth.test"
 
-	// Default bot scopes for v1 (classic non-rotating per Q2
-	// 2026-05-01). Expanded scopes — search:read, user-token install
-	// — are deferred along with Enterprise Grid.
+	// Default bot scopes for v1 (classic non-rotating). Expanded scopes
+	// — search:read, user-token install — are deferred along with
+	// Enterprise Grid.
 	slackDefaultBotScopes = "channels:read,groups:read,users:read,users.profile:read,channels:history,groups:history,chat:write"
 )
 

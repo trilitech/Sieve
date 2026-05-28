@@ -198,10 +198,11 @@ func TestRotateRejectsWrongOldPassphrase(t *testing.T) {
 	}
 }
 
-// TestRotateConcurrentRead is the load-bearing FR-011 test: while Rotate is
-// running, concurrent WithKEK callers MUST fail-fast with ErrKeyringRotating
-// rather than block, hang, or observe a torn key. After rotation completes,
-// fresh WithKEK calls MUST succeed against the new key material.
+// TestRotateConcurrentRead asserts the load-bearing concurrency
+// invariant: while Rotate is running, concurrent WithKEK callers MUST
+// fail-fast with ErrKeyringRotating rather than block, hang, or observe
+// a torn key. After rotation completes, fresh WithKEK calls MUST
+// succeed against the new key material.
 func TestRotateConcurrentRead(t *testing.T) {
 	db := newDB(t)
 	k := &Keyring{}
@@ -365,10 +366,10 @@ func TestRotateConcurrentRotate(t *testing.T) {
 	}
 }
 
-// TestRotateRollbackPreservesState verifies FR-006 / FR-010: when the
-// rotation transaction fails mid-flight, the on-disk state and the
-// in-memory KEK MUST remain on the pre-rotation values. We induce a
-// mid-rotation failure by inserting a connection row whose dek_wrapped
+// TestRotateRollbackPreservesState verifies that when the rotation
+// transaction fails mid-flight, the on-disk state and the in-memory KEK
+// MUST remain on the pre-rotation values. We induce a mid-rotation
+// failure by inserting a connection row whose dek_wrapped
 // is corrupted — the unwrap step inside Rotate's loop will fail, the
 // transaction rolls back, and the next Load with the OLD passphrase
 // MUST succeed.

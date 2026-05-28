@@ -1,8 +1,7 @@
 package web_test
 
 // Tests for the /connections/{id}/disable and /connections/{id}/enable
-// endpoints introduced for FR-009 (status surfacing) and the
-// rejectIfAgentToken protection (FR-013).
+// endpoints (status surfacing) and the rejectIfAgentToken protection.
 //
 // External package so we don't touch the private Server type beyond the
 // public NewServer + Handler() surfaces an admin would actually use.
@@ -34,8 +33,8 @@ func newTestWebServer(t *testing.T) (http.Handler, *testenv.Env) {
 	return srv.Handler(), env
 }
 
-// TestServer_DisableConnection_RejectsAgentToken verifies FR-013: an
-// agent bearer token cannot disable a connection through the admin UI.
+// TestServer_DisableConnection_RejectsAgentToken verifies that an agent
+// bearer token cannot disable a connection through the admin UI.
 // rejectIfAgentToken inspects the Authorization header and returns 403
 // before any state mutation.
 func TestServer_DisableConnection_RejectsAgentToken(t *testing.T) {

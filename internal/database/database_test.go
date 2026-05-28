@@ -158,7 +158,7 @@ func TestForeignKeys(t *testing.T) {
 
 // TestMigrate_StatusColumn_FreshDB asserts the connections table is created
 // with the `status` column on a fresh database and that the column has the
-// expected DEFAULT 'active'. Verifies FR-009 schema shape.
+// expected DEFAULT 'active'.
 func TestMigrate_StatusColumn_FreshDB(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.New(filepath.Join(dir, "test.db"))
@@ -201,7 +201,7 @@ func TestMigrate_StatusColumn_FreshDB(t *testing.T) {
 // install whose connections table predates the status column: opens a DB and
 // manually drops the column to mimic the pre-migration shape, inserts a row,
 // reopens (which triggers the idempotent ALTER TABLE), and asserts the row
-// has status='active'. Verifies SC-008 (existing connections migrate cleanly).
+// has status='active' (existing connections migrate cleanly).
 func TestMigrate_StatusColumn_PreExistingRowsDefaultActive(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "preexisting.db")

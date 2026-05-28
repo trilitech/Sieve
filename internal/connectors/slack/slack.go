@@ -54,10 +54,9 @@ func (c *Connector) Validate(ctx context.Context) error {
 //     wires this to SetStatus(id, "reauth_required") via the same
 //     indirection Gmail uses for `_on_token_refresh`. Nil-safe.
 //
-// Slack uses classic non-rotating bot scopes per Q2 (2026-05-01) so
-// there is no `_on_token_refresh` wiring here — Linear/Jira/Asana
-// will use it via the existing Gmail callback in
-// internal/connections.injectRefreshCallback.
+// Slack uses classic non-rotating bot scopes, so there is no
+// `_on_token_refresh` wiring here — Linear/Jira/Asana will use it via
+// the existing Gmail callback in internal/connections.injectRefreshCallback.
 func Factory() connector.Factory {
 	return func(raw map[string]any) (connector.Connector, error) {
 		cfg, err := parseConfig(raw)

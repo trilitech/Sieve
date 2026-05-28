@@ -1,9 +1,9 @@
 package roles_test
 
-// Regression test for spec 002 FR-014: role bindings MUST NOT reference
-// reserved-prefix connection ids (e.g., oauth_app__slack). The roles
-// service rejects with ErrReservedConnectionID at Create and Update so
-// agent tokens can never be wired to address a reserved system row.
+// Regression test: role bindings MUST NOT reference reserved-prefix
+// connection ids (e.g., oauth_app__slack). The roles service rejects
+// with ErrReservedConnectionID at Create and Update so agent tokens
+// can never be wired to address a reserved system row.
 
 import (
 	"errors"

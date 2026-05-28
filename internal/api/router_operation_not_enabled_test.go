@@ -1,9 +1,9 @@
 package api_test
 
-// Spec 002 FR-006: when a connector returns connector.ErrOperationNotEnabled
-// from Execute, the API layer MUST emit HTTP 501 with the canonical
-// operation_not_enabled envelope. Distinct from the re-auth 403 (FR-017)
-// and from the keyring-locked 503.
+// When a connector returns connector.ErrOperationNotEnabled from Execute,
+// the API layer MUST emit HTTP 501 with the canonical
+// operation_not_enabled envelope. Distinct from the re-auth 403 and from
+// the keyring-locked 503.
 
 import (
 	"encoding/json"

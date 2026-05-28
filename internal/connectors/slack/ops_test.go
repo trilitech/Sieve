@@ -38,8 +38,8 @@ func TestOps_ListChannels_NormalizedShape(t *testing.T) {
 
 // TestOps_ListChannels_PaginationCursor walks past the first page
 // using next_cursor and asserts both pages are well-formed and the
-// cursor is empty when the result set is exhausted. Verifies FR-014
-// pass-through end to end.
+// cursor is empty when the result set is exhausted. Verifies the
+// normalized pagination pass-through end to end.
 func TestOps_ListChannels_PaginationCursor(t *testing.T) {
 	mock := mockslack.New()
 	t.Cleanup(mock.Close)
@@ -166,12 +166,12 @@ func TestOps_ReadThread(t *testing.T) {
 	}
 }
 
-// TestOps_SearchMessages_NotEnabled — spec 002 FR-006 contract: the
-// gated operation returns the typed connector.ErrOperationNotEnabled
-// sentinel from Execute. The API layer maps the sentinel to HTTP 501
-// and the MCP layer to a tool error with the "operation_not_enabled:"
-// text prefix; agent SDKs branch on the status code / prefix without
-// reading the response body. The legacy phantom-success shape (200 OK
+// TestOps_SearchMessages_NotEnabled — the gated operation returns the
+// typed connector.ErrOperationNotEnabled sentinel from Execute. The API
+// layer maps the sentinel to HTTP 501 and the MCP layer to a tool error
+// with the "operation_not_enabled:" text prefix; agent SDKs branch on
+// the status code / prefix without reading the response body. The
+// legacy phantom-success shape (200 OK
 // with `{"error": "operation_not_enabled"}`) was retired here.
 func TestOps_SearchMessages_NotEnabled(t *testing.T) {
 	mock := mockslack.New()

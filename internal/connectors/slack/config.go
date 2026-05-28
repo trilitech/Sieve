@@ -1,15 +1,15 @@
 // Package slack implements the Slack connector for Sieve.
 //
-// Authentication: two peer methods per spec FR-002 / research R1 + R1b.
+// Authentication: two peer methods.
 //   - "oauth": classic non-rotating Slack bot tokens obtained via the
-//     OAuth v2 install flow (Q2 clarification 2026-05-01: classic scopes
-//     only for v1; granular-scope token rotation deferred).
+//     OAuth v2 install flow (classic scopes only for v1; granular-scope
+//     token rotation deferred).
 //   - "token": admin pastes a pre-existing bot token (xoxb-...) from a
 //     Slack app they own.
 //
 // Curated operations cover the most common AI-agent workflows
 // (channels, users, history, threads, search, post). See ops.go for
-// the dispatch table and contracts/slack.md for the response shapes.
+// the dispatch table.
 package slack
 
 import (
@@ -28,7 +28,7 @@ const (
 // Config is the persisted, decrypted connection config for a Slack
 // connection. All credential fields are encrypted at rest as part of
 // the connections row's `config_ciphertext` blob — never plaintext
-// columns (FR-003).
+// columns.
 type Config struct {
 	AuthKind  string   `json:"auth_kind"`           // KindOAuth | KindToken
 	TeamID    string   `json:"team_id"`             // Slack workspace ID, e.g. "T012ABCDEF"
@@ -38,7 +38,7 @@ type Config struct {
 
 	// AuthKind == KindOAuth: populated by the OAuth callback after
 	// oauth.v2.access. Slack classic bot tokens don't expire and don't
-	// have refresh_token — see Q2 clarification.
+	// have refresh_token.
 	OAuthToken map[string]any `json:"oauth_token,omitempty"`
 
 	// AuthKind == KindToken: pasted directly by the admin.

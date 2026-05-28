@@ -1,10 +1,9 @@
 package slack
 
-// US4 / FR-015: the Slack client's GET path MUST propagate io.ReadAll
-// errors instead of swallowing them and surfacing a downstream JSON
-// decode failure. Regression test injects a body reader that errors
-// mid-read and asserts the wrapped I/O cause shows up in the returned
-// error.
+// The Slack client's GET path MUST propagate io.ReadAll errors instead
+// of swallowing them and surfacing a downstream JSON decode failure.
+// Regression test injects a body reader that errors mid-read and asserts
+// the wrapped I/O cause shows up in the returned error.
 
 import (
 	"context"

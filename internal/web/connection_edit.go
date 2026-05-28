@@ -19,9 +19,9 @@ import (
 var authQueryParamPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 // connectionEditData backs the templates/connection_edit.html template.
-// It carries the per-connector knobs introduced by spec 006 plus a few
-// fields that are constant across connector types (the read-only http_proxy
-// baseline deny-list, the success/error banner state).
+// It carries the per-connector knobs plus a few fields that are constant
+// across connector types (the read-only http_proxy baseline deny-list,
+// the success/error banner state).
 type connectionEditData struct {
 	// Active drives the side-nav highlight; templates/nav.html reads
 	// .Active to decide which menu item is current.
@@ -83,10 +83,10 @@ var staticHTTPProxyBaselineKeys = []string{
 
 // handleConnectionEditPage renders the connection-edit page. GET only.
 //
-// Per spec 006 FR-025, this page is admin-listener-only and rejects any
-// agent bearer token. It is the only surface that exposes the new
-// optional config fields (auth_value_scrub, additional_denied_headers,
-// response_body_cap_bytes, cross_fork_pr_allowlist) for editing.
+// This page is admin-listener-only and rejects any agent bearer token.
+// It is the only surface that exposes the optional config fields
+// (auth_value_scrub, additional_denied_headers, response_body_cap_bytes,
+// cross_fork_pr_allowlist) for editing.
 func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request) {
 	if rejectIfAgentToken(w, r) {
 		return
@@ -108,10 +108,10 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 
 // handleConnectionEditSave validates and persists the edit form. POST only.
 //
-// Per spec 006 FR-029, the save handler:
+// The save handler:
 //  1. Rejects agent bearer tokens.
 //  2. Applies the same Origin/Referer CSRF check that handleRotatePassphrase
-//     uses (per spec 003).
+//     uses.
 //  3. Validates per-connector inputs (positive cap, non-empty trimmed
 //     allow-list / additional-denies entries).
 //  4. Calls connections.Service.UpdateConfig with the merged config map.

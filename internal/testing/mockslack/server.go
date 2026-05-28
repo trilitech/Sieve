@@ -264,7 +264,7 @@ func (s *Server) handleOAuthAccess(w http.ResponseWriter, r *http.Request) {
 }
 
 // parsePaging extracts limit + cursor from the request, applying the
-// FR-014 default page size when absent. nElems is the underlying
+// normalized default page size when absent. nElems is the underlying
 // fixture length, used to clamp `limit` to a reasonable value.
 func parsePaging(r *http.Request, nElems int) (limit int, cursor string) {
 	limit = 100
@@ -317,7 +317,7 @@ func defaultUsers() []map[string]any {
 }
 
 // LargeChannelSet returns a fixture with n channels — useful for
-// pagination tests that need to walk past the FR-014 page-size cap.
+// pagination tests that need to walk past the normalized page-size cap.
 func LargeChannelSet(n int) []map[string]any {
 	out := make([]map[string]any, 0, n)
 	for i := 0; i < n; i++ {

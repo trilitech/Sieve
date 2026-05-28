@@ -161,8 +161,8 @@ func main() {
 // rotation transaction, and exits with one of the documented exit codes.
 //
 // The function does NOT bind any network ports and does NOT start the
-// background goroutines that the normal start path uses (per FR-016 of
-// spec 002: rotation is an offline maintenance operation).
+// background goroutines that the normal start path uses — rotation is
+// an offline maintenance operation.
 func runRotate(dbPath string) int {
 	log.SetFlags(0)
 
@@ -218,7 +218,7 @@ func runRotate(dbPath string) int {
 	}
 
 	// Wire the audit logger so the rotation row commits inside the
-	// rotation transaction (FR-018, shared with spec 003).
+	// rotation transaction.
 	auditLog := audit.NewLogger(db)
 	auditor := auditLog.AsRotationAuditor("cli")
 

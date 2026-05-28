@@ -33,8 +33,8 @@ func newReauthEnv(t *testing.T) *reauthEnv {
 }
 
 // TestReauth_StructuredResponse: a flagged connection returns HTTP 403
-// (FR-017) with the canonical reauth_required envelope. The legacy 503/
-// connection_reauth_required shape was retired by spec 002.
+// with the canonical reauth_required envelope. The legacy 503/
+// connection_reauth_required shape was retired.
 func TestReauth_StructuredResponse(t *testing.T) {
 	r := newReauthEnv(t)
 

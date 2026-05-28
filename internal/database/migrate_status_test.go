@@ -1,6 +1,6 @@
 package database
 
-// Regression test for the spec 002 FR-001..FR-003 migration: converges
+// Regression test for the needs_reauth → status migration: converges
 // legacy (needs_reauth=1, status='active') rows to status='reauth_required'
 // and then drops the needs_reauth column entirely (pre-launch, no
 // deprecation window).
@@ -119,8 +119,8 @@ func TestMigrateNeedsReauthToStatus_LeavesActiveRowsAlone(t *testing.T) {
 }
 
 // TestMigrateNeedsReauthToStatus_LeavesAlreadyReauthRowsAlone: a row
-// already at status='reauth_required' (e.g., from the FR-016 force-
-// transition path before the unification) is left as-is.
+// already at status='reauth_required' (e.g., from the refresh-token
+// force-transition path before the unification) is left as-is.
 func TestMigrateNeedsReauthToStatus_LeavesAlreadyReauthRowsAlone(t *testing.T) {
 	db := newLegacyDB(t)
 	seedLegacy(t, db, "already", "reauth_required", 0, "persist failed")

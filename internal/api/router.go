@@ -304,7 +304,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", err))
 			return
 		}
-		// Spec 007: detect the http_proxy auth_query_param override signal
+		// Detect the http_proxy auth_query_param override signal
 		// smuggled through the result map's private `_auth_query_overridden`
 		// key. Strip the key before serialising so the agent never sees it.
 		policyResult := "allow"
@@ -408,7 +408,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", err))
 			return
 		}
-		// Spec 007: same private-key smuggling pattern as the pre-approval path.
+		// Same private-key smuggling pattern as the pre-approval path.
 		policyResult := "approved"
 		if resultMap, ok := result.(map[string]any); ok {
 			if overridden, _ := resultMap["_auth_query_overridden"].(bool); overridden {
@@ -490,10 +490,9 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// The connector must be an http_proxy type with ProxyHTTP method.
 	// Signature: (filterSummary, queryOverridden, error). filterSummary
-	// is used to detect auth_value scrub matches (spec 006 W1.2);
-	// queryOverridden is true when the auth_query_param injection
-	// dropped an agent-supplied value (spec 007). Both feed the
-	// audit-log policy_result selection.
+	// is used to detect auth_value scrub matches; queryOverridden is
+	// true when the auth_query_param injection dropped an agent-supplied
+	// value. Both feed the audit-log policy_result selection.
 	type httpProxier interface {
 		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) (string, bool, error)
 	}
@@ -602,9 +601,9 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		rt.logAudit(tok, connID, operation, nil, policyResult, err.Error(), time.Since(start).Milliseconds())
 		return
 	}
-	// Audit identifier precedence (per spec 007 contracts/audit-identifier.md):
+	// Audit identifier precedence:
 	//   1. http_proxy.auth_query_overridden (override is an attempted exploit)
-	//   2. http_proxy.auth_value_scrubbed   (W1.2 routine defensive event)
+	//   2. http_proxy.auth_value_scrubbed   (routine defensive event)
 	//   3. proxied                          (vanilla success)
 	policyResult := "proxied"
 	if queryOverridden {
@@ -662,8 +661,8 @@ func writeError(w http.ResponseWriter, status int, message string) {
 // writeStructuredError writes a JSON error response with separate `error`
 // (machine-readable code) and `message` (human-readable detail) fields.
 // Used by sentinel-mapping for ErrReauthRequired / ErrConnectionDisabled
-// per FR-009 / FR-009a so callers can branch on a stable error code
-// without parsing the message text.
+// so callers can branch on a stable error code without parsing the
+// message text.
 func writeStructuredError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -677,7 +676,7 @@ func writeStructuredError(w http.ResponseWriter, status int, code, message strin
 //     agent SDKs back off cleanly during the brief rotation window
 //   - connections.ErrReauthRequired       → 403 reauth_required envelope
 //     (delegates to writeReauthError so the byte shape is identical to
-//     the post-flight path — FR-017/FR-018)
+//     the post-flight path)
 //   - connections.ErrConnectionDisabled   → 403 {"error":"disabled",...}
 //
 // Otherwise falls through to the caller-supplied default. Routed through
@@ -712,7 +711,7 @@ func (rt *Router) writeConnectionError(w http.ResponseWriter, defaultStatus int,
 }
 
 // writeOperationNotEnabledError emits HTTP 501 with the canonical
-// operation_not_enabled envelope (FR-006 / contracts/rest-error-envelope.md):
+// operation_not_enabled envelope:
 //
 //	{
 //	  "error":         "operation_not_enabled",
@@ -754,10 +753,10 @@ func stripSentinelPrefix(err error, sentinel error) string {
 // and post-flight (Execute returned ErrNeedsReauth, which means the status
 // was just transitioned).
 //
-// FR-017/FR-018: HTTP 403 + the canonical reauth_required envelope. The
-// legacy 503/connection_reauth_required response was retired so 503 stays
-// reserved for genuinely transient conditions (notably keyring-not-loaded
-// "service locked"). See specs/002-pr10-review-fixes/contracts/rest-error-envelope.md.
+// HTTP 403 + the canonical reauth_required envelope. The legacy 503/
+// connection_reauth_required response was retired so 503 stays reserved
+// for genuinely transient conditions (notably keyring-not-loaded
+// "service locked"). See docs/agent-error-contract.md.
 func writeReauthError(w http.ResponseWriter, connID, reason string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)

@@ -83,9 +83,9 @@ type Server struct {
 
 	githubApp *gitHubAppState // pending GitHub App manifest installs
 
-	// Passphrase-rotation lockout state (per-process; per FR-021).
-	// Wired into handleRotatePassphrase in Phase 4. The zero values mean
-	// "no failures recorded, not locked".
+	// Passphrase-rotation lockout state (per-process). Wired into
+	// handleRotatePassphrase. The zero values mean "no failures
+	// recorded, not locked".
 	rotateMu        sync.Mutex
 	rotateFailures  int       // consecutive wrong-current-passphrase count
 	rotateLockedTil time.Time // zero = not locked; otherwise = cooldown end
@@ -668,7 +668,7 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 // until handleConnectionEnable returns the row to "active". Differs from
 // reauth_required in two ways: (1) the operator chose this state
 // explicitly; (2) re-auth flows do NOT clear it — only the explicit
-// Enable button does. Gated by rejectIfAgentToken (FR-013).
+// Enable button does. Gated by rejectIfAgentToken.
 func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request) {
 	if rejectIfAgentToken(w, r) {
 		return
@@ -686,9 +686,9 @@ func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request)
 // if the row carries a non-empty reauth_reason (the underlying credential
 // was broken before the operator disabled the connection), the enable
 // action transitions to "reauth_required" instead of "active" so the
-// connection never serves agent traffic with known-broken credentials
-// (FR-004). The action itself always succeeds — only the destination
-// state varies. Gated by rejectIfAgentToken (FR-013).
+// connection never serves agent traffic with known-broken credentials.
+// The action itself always succeeds — only the destination state
+// varies. Gated by rejectIfAgentToken.
 func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) {
 	if rejectIfAgentToken(w, r) {
 		return

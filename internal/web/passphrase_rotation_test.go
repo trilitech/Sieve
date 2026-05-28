@@ -287,8 +287,8 @@ func TestRotateHandlerSameAsCurrent(t *testing.T) {
 	}
 }
 
-// TestRotateHandlerLockoutAtFifthFailure is the load-bearing FR-021 +
-// FR-022 test: 5 consecutive wrong-current submissions trigger a 15-min
+// TestRotateHandlerLockoutAtFifthFailure verifies the brute-force
+// lockout: 5 consecutive wrong-current submissions trigger a 15-min
 // cooldown; subsequent submissions return 423; exactly ONE audit row
 // with operation="keyring.rotate_lockout" is written.
 func TestRotateHandlerLockoutAtFifthFailure(t *testing.T) {
@@ -327,14 +327,14 @@ func TestRotateHandlerLockoutAtFifthFailure(t *testing.T) {
 
 	// Exactly ONE keyring.rotate_lockout row, zero keyring.rotate rows.
 	if got := countAuditOps(t, env.Audit, "keyring.rotate_lockout"); got != 1 {
-		t.Fatalf("keyring.rotate_lockout rows: got %d, want 1 (FR-022)", got)
+		t.Fatalf("keyring.rotate_lockout rows: got %d, want 1", got)
 	}
 	if got := countAuditOps(t, env.Audit, "keyring.rotate"); got != 0 {
 		t.Fatalf("keyring.rotate rows: got %d, want 0", got)
 	}
 
 	// Submit a 7th request while still locked — no additional audit row
-	// must be written (FR-022: only the lockout-trigger event is recorded).
+	// must be written (only the lockout-trigger event is recorded).
 	req2 := rotateRequest(t, ts, "test-passphrase", "new", "new")
 	resp2, err := rotateClient().Do(req2)
 	if err != nil {
@@ -429,7 +429,7 @@ func TestRotateHandlerRejectsCrossOrigin(t *testing.T) {
 	}
 }
 
-// TestRotateHandlerNoEchoOnFailure verifies FR-015: failed submissions
+// TestRotateHandlerNoEchoOnFailure verifies that failed submissions
 // MUST NOT echo the typed values back into the rendered HTML.
 func TestRotateHandlerNoEchoOnFailure(t *testing.T) {
 	ts, _ := newRotationTestServer(t)
@@ -447,7 +447,7 @@ func TestRotateHandlerNoEchoOnFailure(t *testing.T) {
 	defer resp.Body.Close()
 	body := readBody(t, resp)
 	if strings.Contains(body, sentinel) {
-		t.Fatal("response body contains a submitted passphrase value (FR-015 violation)")
+		t.Fatal("response body contains a submitted passphrase value (no-echo violation)")
 	}
 
 	// Wrong-current-passphrase path — same expectation.
@@ -459,7 +459,7 @@ func TestRotateHandlerNoEchoOnFailure(t *testing.T) {
 	defer resp2.Body.Close()
 	body2 := readBody(t, resp2)
 	if strings.Contains(body2, sentinel) {
-		t.Fatal("wrong-current response contains submitted passphrase (FR-015 violation)")
+		t.Fatal("wrong-current response contains submitted passphrase (no-echo violation)")
 	}
 }
 

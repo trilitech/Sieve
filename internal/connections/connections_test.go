@@ -381,7 +381,7 @@ func TestInitAll(t *testing.T) {
 }
 
 // TestService_NewConnectionDefaultsToActive asserts a freshly added
-// connection lands with status='active'. Verifies FR-009.
+// connection lands with status='active'.
 func TestService_NewConnectionDefaultsToActive(t *testing.T) {
 	svc, _ := setup(t)
 

@@ -53,7 +53,7 @@ func (db *DB) Close() error {
 	return db.DB.Close()
 }
 
-// migrateNeedsReauthToStatus performs the spec 002 FR-001..FR-003
+// migrateNeedsReauthToStatus performs the needs_reauth → status
 // unification in one pass:
 //   - converges (needs_reauth=1, status='active') rows to
 //     status='reauth_required' (preserving reauth_reason).
@@ -107,7 +107,7 @@ func migrateNeedsReauthToStatus(db *DB) error {
 	); err != nil {
 		return fmt.Errorf("transition rows: %w", err)
 	}
-	// Drop the column — no consumer reads it after FR-002.
+	// Drop the column — no consumer reads it after this migration.
 	if _, err := db.Exec(`ALTER TABLE connections DROP COLUMN needs_reauth`); err != nil {
 		return fmt.Errorf("drop needs_reauth column: %w", err)
 	}
@@ -265,8 +265,8 @@ func (db *DB) migrate() error {
 	}
 
 	// Migration: add reauth_reason column for tracking why a connection
-	// is in status='reauth_required'. (The legacy needs_reauth column was
-	// removed in spec 002 — see migrateNeedsReauthToStatus below.)
+	// is in status='reauth_required'. (The legacy needs_reauth column is
+	// dropped by migrateNeedsReauthToStatus below.)
 	hasReason, err := columnExists(db, "connections", "reauth_reason")
 	if err != nil {
 		return fmt.Errorf("check connections.reauth_reason: %w", err)
@@ -301,13 +301,12 @@ func (db *DB) migrate() error {
 	// Migrate existing Gmail connections to the new "google" connector type.
 	db.Exec(`UPDATE connections SET connector_type = 'google' WHERE connector_type = 'gmail'`)
 
-	// FR-001/FR-003 one-time migration: converge rows where the legacy
-	// needs_reauth=1 signal was set without the status column being
-	// updated (PR #5 → PR #10 overlap window). After this migration, the
-	// status column is the canonical lifecycle signal and needs_reauth is
-	// no longer read by any production code path. Idempotent — a second
-	// run finds zero matching rows. Safe with keyring unloaded — this is
-	// a plaintext-column update only.
+	// One-time migration: converge rows where the legacy needs_reauth=1
+	// signal was set without the status column being updated. After this
+	// migration, the status column is the canonical lifecycle signal and
+	// needs_reauth is no longer read by any production code path.
+	// Idempotent — a second run finds zero matching rows. Safe with
+	// keyring unloaded — this is a plaintext-column update only.
 	if err := migrateNeedsReauthToStatus(db); err != nil {
 		return fmt.Errorf("migrate needs_reauth → status: %w", err)
 	}

@@ -1,9 +1,9 @@
 package connections_test
 
 // Tests for the lifecycle signal (status=reauth_required + reauth_reason).
-// Spec 002 US1 unified what was previously a separate `needs_reauth`
-// boolean into the status enum; this file exercises the canonical
-// writer (SetStatusWithReason) end-to-end via the same scenarios.
+// The status enum subsumed what was previously a separate `needs_reauth`
+// boolean; this file exercises the canonical writer (SetStatusWithReason)
+// end-to-end via the same scenarios.
 
 import (
 	"testing"
@@ -92,7 +92,7 @@ func TestSetReauthAndRecover(t *testing.T) {
 // updates the config (with fresh OAuth tokens). UpdateConfig must
 // transition status to 'active' and clear reauth_reason in the same
 // statement so the UI doesn't keep showing the banner after the user
-// completed the OAuth round-trip. Spec 002 FR-004.
+// completed the OAuth round-trip.
 func TestUpdateConfig_TransitionsToActive(t *testing.T) {
 	svc, _ := setup(t)
 

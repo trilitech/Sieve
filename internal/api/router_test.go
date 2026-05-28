@@ -1938,7 +1938,7 @@ func TestListModelsEndpoint(t *testing.T) {
 	}
 }
 
-// --- Spec 007: http_proxy auth_query_param audit identifier ---
+// --- http_proxy auth_query_param audit identifier ---
 
 // setupProxyWithAuthQueryParam wires an http_proxy connection that injects
 // auth_value into the configured query-string parameter, returns the Sieve

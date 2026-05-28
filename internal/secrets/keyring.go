@@ -81,8 +81,7 @@ const saltSize = 16
 //     observe a torn key. WithKEK acquires mu for the duration of one call.
 //   - rotating is set true at the entry of Rotate and cleared on its return.
 //     New WithKEK callers see the flag and fail-fast with ErrKeyringRotating
-//     instead of waiting on mu (the explicit Option C semantics chosen in
-//     spec 003 clarification Q1: hard-fail in-flight credential ops, agents
+//     instead of waiting on mu (hard-fail in-flight credential ops; agents
 //     retry).
 type Keyring struct {
 	mu       sync.Mutex

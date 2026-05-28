@@ -1,6 +1,6 @@
 package mcp_test
 
-// MCP-side coverage for FR-009 / FR-009a sentinel surfacing.
+// MCP-side coverage for sentinel surfacing.
 //
 // When connections.GetConnector returns ErrReauthRequired or
 // ErrConnectionDisabled, the MCP server returns a tool-call result

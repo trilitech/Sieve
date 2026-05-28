@@ -1,6 +1,6 @@
 package slack
 
-// Slack-side translation for the FR-014 normalized pagination shape.
+// Slack-side translation for Sieve's normalized pagination shape.
 //
 // Normalized agent-facing input: { cursor: string?, page_size: int? }
 // Normalized agent-facing output: { items: [...], next_cursor: string }
@@ -8,21 +8,21 @@ package slack
 // Slack's native shape is already cursor-based for paginated Web API
 // methods (conversations.list, conversations.history, users.list, etc.):
 //   - request param `cursor` (opaque, omitted on first call)
-//   - request param `limit` (1-1000; we cap at the FR-014 hard cap of 100)
+//   - request param `limit` (1-1000; we cap at the Sieve hard cap of 100)
 //   - response.response_metadata.next_cursor (empty string when exhausted)
 //
 // So Slack is a near-passthrough: cursor maps verbatim, page_size maps
 // to `limit`, and next_cursor lifts directly from response_metadata.
 
 const (
-	// defaultPageSize matches the FR-014 default. Operators who want more
-	// must paginate explicitly — server-side auto-pagination is forbidden
-	// per the same FR.
+	// defaultPageSize matches Sieve's normalized default. Operators who
+	// want more must paginate explicitly — server-side auto-pagination
+	// is forbidden.
 	defaultPageSize = 100
 
-	// maxPageSize is the FR-014 hard cap. Slack itself permits up to 1000
-	// on most paginated methods, but Sieve enforces 100 across the board
-	// so policy authors don't have to reason per-connector.
+	// maxPageSize is Sieve's hard cap. Slack itself permits up to 1000 on
+	// most paginated methods, but Sieve enforces 100 across the board so
+	// policy authors don't have to reason per-connector.
 	maxPageSize = 100
 )
 

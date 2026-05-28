@@ -1,8 +1,8 @@
 package web_test
 
-// Regression test for FR-004 / US1 AS3: handleConnectionEnable inspects
-// reauth_reason and routes a previously-disabled-but-broken connection
-// into reauth_required instead of unconditionally back to active.
+// Regression test: handleConnectionEnable inspects reauth_reason and
+// routes a previously-disabled-but-broken connection into
+// reauth_required instead of unconditionally back to active.
 
 import (
 	"net/http"
@@ -57,7 +57,7 @@ func TestEnable_DisabledWithEmptyReason_GoesActive(t *testing.T) {
 }
 
 // TestEnable_DisabledWithReauthReason_GoesReauthRequired verifies the
-// FR-004 invariant: a connection disabled while credentials were broken
+// invariant: a connection disabled while credentials were broken
 // (non-empty reauth_reason) is brought into reauth_required, not active,
 // so it cannot serve agent traffic with known-bad credentials.
 func TestEnable_DisabledWithReauthReason_GoesReauthRequired(t *testing.T) {
@@ -87,7 +87,7 @@ func TestEnable_DisabledWithReauthReason_GoesReauthRequired(t *testing.T) {
 
 	got, _ := env.Connections.Get("c")
 	if got.Status != connections.StatusReauthRequired {
-		t.Fatalf("status after enable: got %q, want reauth_required (FR-004 broken-cred route)", got.Status)
+		t.Fatalf("status after enable: got %q, want reauth_required (broken-cred route)", got.Status)
 	}
 	if got.ReauthReason == "" {
 		t.Fatalf("reason after enable: got empty, want preserved")

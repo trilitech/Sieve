@@ -56,8 +56,7 @@ func NewService(db *database.DB) *Service {
 
 // ErrReservedConnectionID is returned by Create / Update when a binding
 // references a reserved system row (e.g., `oauth_app__slack`). Reserved
-// rows hold per-deployment state and MUST NOT be agent-addressable —
-// see spec 002 FR-014.
+// rows hold per-deployment state and MUST NOT be agent-addressable.
 var ErrReservedConnectionID = errors.New("role binding references a reserved system connection id")
 
 // isReservedConnectionID mirrors connections.IsReservedConnectionID

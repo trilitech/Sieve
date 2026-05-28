@@ -54,9 +54,9 @@ var ErrHeaderDenied = errors.New("http_proxy: header denied")
 //
 // The set covers credential-bearing keys (Authorization, Cookie),
 // routing keys (Host, X-Forwarded-*), and the RFC 7230 hop-by-hop set.
-// It is intentionally not operator-configurable per spec 006 Phase 0
-// R-1; per-connection extensions are handled separately via the
-// connection's optional additional_denied_headers config field (US4).
+// It is intentionally not operator-configurable; per-connection
+// extensions are handled separately via the connection's optional
+// additional_denied_headers config field.
 var deniedHeaderKeys = map[string]struct{}{
 	"authorization":       {},
 	"host":                {},
@@ -525,9 +525,9 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 	// Reject deny-listed inbound headers BEFORE constructing the upstream
 	// request — except Authorization, which is the agent's Sieve bearer
 	// token, present on every legitimate agent request and stripped a few
-	// lines below before forwarding. Per spec 006 FR-010, Authorization is
-	// the only deny-list entry exempted from the inbound check on the
-	// transparent surface; everything else is rejected.
+	// lines below before forwarding. Authorization is the only deny-list
+	// entry exempted from the inbound check on the transparent surface;
+	// everything else is rejected.
 	for key := range r.Header {
 		if strings.EqualFold(key, "Authorization") {
 			continue

@@ -1535,7 +1535,7 @@ test.describe('Documentation IA', () => {
 });
 
 // ─── Passphrase rotation ─────────────────────────────────────────────────────
-// Spec 003 — UI passphrase rotation. The e2e testserver boots with passphrase
+// UI passphrase rotation. The e2e testserver boots with passphrase
 // "e2e-test-passphrase" (see e2e/testserver/main.go). The first test rotates
 // to "rotated-via-ui" and asserts that an agent credential call against the
 // running instance still succeeds without restart. Subsequent tests in this
@@ -1593,21 +1593,21 @@ test.describe('Passphrase rotation', () => {
   });
 });
 
-// ─── Slack connector (US1) — UI surfaces & status lifecycle ─────────────────
+// ─── Slack connector — UI surfaces & status lifecycle ─────────────────
 //
 // The full Slack OAuth + token-entry flows are unit-tested in
 // internal/web/slack_test.go against a mocked Slack OAuth surface. The
 // testserver doesn't run a mock Slack API, so this group validates the
 // pieces that ARE reachable end-to-end: status-column rendering across
-// connector types (FR-009 cross-cutting), disable/enable button flow
-// on seeded connections (T013/T014 surface), and presence of the Slack
-// tile + token-entry form in the connector picker.
+// connector types, the disable/enable button flow on seeded connections,
+// and presence of the Slack tile + token-entry form in the connector
+// picker.
 
 test.describe('Slack connector — UI surfaces', () => {
   test('connections page renders status badge for all rows', async ({ page }) => {
     await page.goto(`${s.web_url}/connections`);
-    // SC-008 / FR-009: every existing connection has status=active
-    // after the migration. The status column shows an Active badge.
+    // Every existing connection has status=active after the migration.
+    // The status column shows an Active badge.
     const activeBadges = page.locator('span:has-text("Active")');
     expect(await activeBadges.count()).toBeGreaterThanOrEqual(1);
   });
@@ -1687,9 +1687,9 @@ test.describe('Slack connector — UI surfaces', () => {
     // assertion that catches a regression in the other branch.
     //
     // testserver/main.go seeds a `reauth-conn` row already in
-    // status='reauth_required' for exactly this case (spec 002 US5).
-    // Bind it to the seed role first so the auth/role gate doesn't
-    // mask the status-gate failure.
+    // status='reauth_required' for exactly this case. Bind it to the
+    // seed role first so the auth/role gate doesn't mask the status-
+    // gate failure.
     const role = await request.get(`${s.web_url}/api/roles/${s.seed_role_id}`);
     void role;
     // The seed_token's role binds test-conn only; we want the seeded
@@ -1720,11 +1720,11 @@ test.describe('Slack connector — UI surfaces', () => {
     expect(body.message).toBeTruthy();
   });
 
-  // Spec 002 SC-001: the admin UI MUST never show two contradictory
-  // status badges for the same connection. Seeded `reauth-conn` is in
+  // The admin UI MUST never show two contradictory status badges for
+  // the same connection. Seeded `reauth-conn` is in
   // status='reauth_required' — its row must show exactly one badge
   // ("Reauth required") and never an "Active" badge in the same row.
-  test('SC-001: reauth_required row shows exactly one status badge', async ({ page }) => {
+  test('reauth_required row shows exactly one status badge', async ({ page }) => {
     await page.goto(`${s.web_url}/connections`);
 
     const row = page.locator('tr:has-text("reauth-conn")');
@@ -1740,13 +1740,12 @@ test.describe('Slack connector — UI surfaces', () => {
     expect(await activeBadges.count()).toBe(0);
   });
 
-  // Spec 002 FR-013: a stored OAuth client secret MUST never be
-  // re-rendered to the operator. The configure form (visible when no
-  // creds are stored) accepts the values; after save, the install
-  // button + a "Reset" link replace it. Driving the round-trip via the
-  // configure handler is sufficient — the server normalises storage
-  // (encrypted _oauth_app:slack row) regardless of how the form was
-  // submitted.
+  // A stored OAuth client secret MUST never be re-rendered to the
+  // operator. The configure form (visible when no creds are stored)
+  // accepts the values; after save, the install button + a "Reset"
+  // link replace it. Driving the round-trip via the configure handler
+  // is sufficient — the server normalises storage (encrypted
+  // _oauth_app:slack row) regardless of how the form was submitted.
   test('OAuth flow: configure → install button → reset cycle', async ({ page, request }) => {
     // Initial state: no creds → configure form is visible.
     await page.goto(`${s.web_url}/connections`);
@@ -1762,8 +1761,8 @@ test.describe('Slack connector — UI surfaces', () => {
     expect(saveResp.ok()).toBe(true);
 
     // After save: install button + reset link present, configure form
-    // gone (FR-013 "set" indicator). The plaintext secret is never
-    // rendered back — the configure form's input is gone entirely.
+    // gone (a "set" indicator). The plaintext secret is never rendered
+    // back — the configure form's input is gone entirely.
     await page.goto(`${s.web_url}/connections`);
     await expect(page.locator('form[action="/connections/slack/oauth/start"]')).toBeVisible();
     await expect(page.locator('form[action="/connections/slack/oauth/clear"]')).toBeVisible();
@@ -1778,10 +1777,10 @@ test.describe('Slack connector — UI surfaces', () => {
     await expect(page.locator('form[action="/connections/slack/oauth/configure"]')).toBeVisible();
   });
 
-  // Spec 002 FR-013/FR-014: a reserved `_oauth_app:slack` row MUST NOT
-  // appear in the per-tenant connections list, MUST NOT appear in the
-  // role-binding connection picker. Defence-in-depth on top of the
-  // SQL filter in Service.List + the writer-side rejection in roles.
+  // A reserved `_oauth_app:slack` row MUST NOT appear in the per-tenant
+  // connections list, MUST NOT appear in the role-binding connection
+  // picker. Defence-in-depth on top of the SQL filter in Service.List
+  // + the writer-side rejection in roles.
   test('reserved _oauth_app row is hidden from connections list and role picker', async ({ page, request }) => {
     // Ensure the encrypted row exists (recreate after any prior clear).
     await request.post(`${s.web_url}/connections/slack/oauth/configure`, {

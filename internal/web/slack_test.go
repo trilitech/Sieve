@@ -176,8 +176,8 @@ func TestHandleSlackToken_RejectsBadAuthTest(t *testing.T) {
 	}
 }
 
-// TestHandleSlackToken_RejectsAgentToken — FR-013: the admin-side
-// path must reject any request carrying an agent bearer.
+// TestHandleSlackToken_RejectsAgentToken — the admin-side path must
+// reject any request carrying an agent bearer.
 func TestHandleSlackToken_RejectsAgentToken(t *testing.T) {
 	handler, _, _ := slackTestServer(t)
 	form := url.Values{
@@ -405,7 +405,7 @@ func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
 		t.Fatalf("expected 303 redirect, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 
-	// Persisted as an envelope-encrypted _oauth_app:slack row (spec 002 US3).
+	// Persisted as an envelope-encrypted _oauth_app:slack row.
 	creds, err := env.Connections.GetOAuthApp("slack")
 	if err != nil {
 		t.Fatalf("GetOAuthApp: %v", err)
@@ -465,9 +465,9 @@ func TestHandleSlackOAuthConfigure_ValidatesShape(t *testing.T) {
 }
 
 // TestHandleSlackOAuthConfigure_RejectsAgentToken — the configure
-// endpoint stores OAuth secrets, so it MUST reject agent tokens
-// (FR-013). A stolen agent token must not be able to swap the
-// operator's Slack app credentials.
+// endpoint stores OAuth secrets, so it MUST reject agent tokens.
+// A stolen agent token must not be able to swap the operator's
+// Slack app credentials.
 func TestHandleSlackOAuthConfigure_RejectsAgentToken(t *testing.T) {
 	handler, _ := slackUITestServer(t)
 	form := url.Values{
@@ -486,7 +486,7 @@ func TestHandleSlackOAuthConfigure_RejectsAgentToken(t *testing.T) {
 
 // TestHandleSlackOAuthClearConfig wipes persisted creds. After clear
 // the configure form returns and the install button disappears.
-// Spec 002 US3: creds now live in the _oauth_app:slack row, not settings.
+// Creds live in the _oauth_app:slack row, not settings.
 func TestHandleSlackOAuthClearConfig(t *testing.T) {
 	t.Setenv("SLACK_CLIENT_ID", "")
 	t.Setenv("SLACK_CLIENT_SECRET", "")

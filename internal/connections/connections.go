@@ -249,7 +249,7 @@ func (s *Service) List() ([]Connection, error) {
 // IsReservedConnectorType reports whether a connector_type value denotes
 // a reserved system row (currently any value starting with "_"). Reserved
 // rows hold per-deployment state like OAuth-app credentials and are never
-// addressable as per-tenant connection targets. See FR-014.
+// addressable as per-tenant connection targets.
 func IsReservedConnectorType(s string) bool {
 	return strings.HasPrefix(s, "_")
 }
@@ -294,10 +294,10 @@ func (s *Service) SetStatus(id, status string) error {
 }
 
 // SetStatusWithReason updates both the status column and reauth_reason in
-// one statement. This is the canonical writer used after FR-001 lifecycle
-// unification: every "this connection is broken" signal calls this single
-// method. Returns no error if the connection has already been deleted (a
-// refresh callback may fire after a Remove).
+// one statement. This is the canonical writer for the unified lifecycle:
+// every "this connection is broken" signal calls this single method.
+// Returns no error if the connection has already been deleted (a refresh
+// callback may fire after a Remove).
 func (s *Service) SetStatusWithReason(id, status, reason string) error {
 	if err := validateStatus(status); err != nil {
 		return err
@@ -345,8 +345,8 @@ func (s *Service) UpdateConfig(id string, config map[string]any) error {
 	}
 
 	// Transitioning status='active' and clearing reauth_reason in the same
-	// statement as the config update is deliberate (FR-004): if the operator
-	// just completed a re-auth flow, the new credentials are the cure for
+	// statement as the config update is deliberate: if the operator just
+	// completed a re-auth flow, the new credentials are the cure for
 	// whatever flagged the connection in the first place. Doing it
 	// atomically avoids a window where the DB still claims the connection
 	// is broken even though we just installed a working refresh token.
@@ -415,7 +415,7 @@ func (s *Service) Exists(id string) (bool, error) {
 // error from the read or write step.
 //
 // Exposed as a method (not just a closure body) so the failure path can be
-// exercised in tests per FR-016 — see refresh_test.go.
+// exercised in tests — see refresh_test.go.
 func (s *Service) persistRefreshedToken(id string, tok *oauth2.Token) error {
 	c, err := s.GetWithConfig(id)
 	if err != nil {
@@ -448,14 +448,14 @@ func (s *Service) persistRefreshedToken(id string, tok *oauth2.Token) error {
 //     UI will surface a banner; the API/MCP layers will return 503
 //     connection_reauth_required to anyone trying to use it.
 //
-// FR-016: Linear, Jira, and Asana rotate refresh tokens — the upstream
-// invalidates the old refresh token the moment the new pair is issued.
-// If the persist of the new pair fails (DB error, decrypt error, keyring
-// unloaded mid-call), the connection is unrecoverable until an admin
-// re-authenticates. Surface that immediately by transitioning the
-// connection's status to reauth_required so the next agent call short-
-// circuits with ErrReauthRequired (mapped to HTTP 403) instead of
-// burning further refresh attempts against a stale refresh token.
+// Linear, Jira, and Asana rotate refresh tokens — the upstream invalidates
+// the old refresh token the moment the new pair is issued. If the persist
+// of the new pair fails (DB error, decrypt error, keyring unloaded mid-
+// call), the connection is unrecoverable until an admin re-authenticates.
+// Surface that immediately by transitioning the connection's status to
+// reauth_required so the next agent call short-circuits with
+// ErrReauthRequired (mapped to HTTP 403) instead of burning further
+// refresh attempts against a stale refresh token.
 //
 // The status transition is best-effort: if SetStatus itself fails (e.g.,
 // the same DB error that broke UpdateConfig), the original persist error
@@ -502,7 +502,7 @@ func (s *Service) injectRefreshCallback(id string, config map[string]any) {
 func (s *Service) GetConnector(id string) (connector.Connector, error) {
 	// Reserved-prefix system rows (e.g., _oauth_app:slack) hold per-deployment
 	// state and have no registered factory. Refuse them up front so agent
-	// traffic can never address them as a connection (FR-014).
+	// traffic can never address them as a connection.
 	if IsReservedConnectionID(id) {
 		return nil, &connector.ErrUnknownConnector{Type: "reserved system row"}
 	}

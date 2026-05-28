@@ -390,8 +390,8 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 
 	// Pre-flight reauth check — skip policy and Execute if the connection's
 	// credentials are already known to be dead. The text content uses the
-	// canonical "reauth_required:" prefix (FR-020 / MCP error envelope)
-	// so agent SDKs branch on the prefix without parsing the prose.
+	// canonical "reauth_required:" prefix so agent SDKs branch on the
+	// prefix without parsing the prose.
 	if conn.Status == connections.StatusReauthRequired {
 		durationMs := time.Since(start).Milliseconds()
 		s.logAudit(tok, connID, opName, call.Arguments, "reauth_required", conn.ReauthReason, durationMs)
@@ -492,7 +492,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 
 	// Execute via connector. Map connection-state sentinels to structured
 	// IsError tool-call results so agents see a stable, non-secret error
-	// code (per FR-009 / FR-009a) rather than the raw error text.
+	// code rather than the raw error text.
 	c, err := s.connections.GetConnector(connID)
 	if err != nil {
 		// Surface keyring-state errors as transient JSON-RPC errors so
@@ -514,7 +514,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 			}
 		}
 		// Look up reauth_reason so the structured tool error matches the
-		// post-execution path byte-for-byte (FR-020).
+		// post-execution path byte-for-byte.
 		reauthReason := ""
 		if errors.Is(err, connections.ErrReauthRequired) {
 			if c, e := s.connections.Get(connID); e == nil {
@@ -536,10 +536,10 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
-		// Spec 002 FR-006: gated operation surfaces as a tool error with
-		// the canonical "operation_not_enabled:" prefix so agent SDKs
-		// branch on it without parsing prose. Audit category distinct
-		// from "error" and "allow" so analytics can count gated calls.
+		// Gated operation surfaces as a tool error with the canonical
+		// "operation_not_enabled:" prefix so agent SDKs branch on it
+		// without parsing prose. Audit category distinct from "error"
+		// and "allow" so analytics can count gated calls.
 		if errors.Is(err, connector.ErrOperationNotEnabled) {
 			reason := strings.TrimPrefix(err.Error(), connector.ErrOperationNotEnabled.Error()+": ")
 			s.logAudit(tok, connID, opName, call.Arguments, "operation_not_enabled", reason, durationMs)
@@ -557,7 +557,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		// connector's onRefreshFailure callback by the time this error
 		// surfaces, so future calls will hit the pre-flight path above
 		// without re-running policy and Execute. Same content shape as
-		// the pre-flight branch — byte-equal by construction (FR-020).
+		// the pre-flight branch — byte-equal by construction.
 		if errors.Is(err, connector.ErrNeedsReauth) {
 			reason := err.Error()
 			if c2, e := s.connections.Get(connID); e == nil && c2.ReauthReason != "" {
@@ -1101,10 +1101,9 @@ func (s *Server) writeError(w http.ResponseWriter, id any, code int, message str
 // mcpReauthRequiredText builds the canonical MCP tool-error text for a
 // "connection needs re-auth" condition. The stable "reauth_required: "
 // prefix lets agent SDKs branch on a fixed token without parsing the
-// prose tail (see specs/002-pr10-review-fixes/contracts/mcp-error-envelope.md).
-// Both detection paths (pre-flight gate and post-flight ErrNeedsReauth)
-// route through this helper so their content blocks are byte-equal
-// (FR-018 / FR-020).
+// prose tail (see docs/agent-error-contract.md). Both detection paths
+// (pre-flight gate and post-flight ErrNeedsReauth) route through this
+// helper so their content blocks are byte-equal.
 func mcpReauthRequiredText(connID, reason string) string {
 	if reason == "" {
 		reason = "credentials no longer valid"
@@ -1121,11 +1120,11 @@ func mcpReauthRequiredText(connID, reason string) string {
 // transport errors). Returns nil for unrecognised errors so callers can
 // fall through to their existing handling.
 //
-// FR-009 / FR-009a: agents must receive a stable error code without
-// leaking credentials or upstream response details.
+// Agents must receive a stable error code without leaking credentials
+// or upstream response details.
 //
-// connID is needed so the reauth text matches the post-execution path
-// (FR-020). When unknown (caller doesn't have an id in scope), pass "".
+// connID is needed so the reauth text matches the post-execution path.
+// When unknown (caller doesn't have an id in scope), pass "".
 func connectionStateError(id any, connID string, reason string, err error) *JSONRPCResponse {
 	switch {
 	case errors.Is(err, connections.ErrReauthRequired):

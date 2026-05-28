@@ -1,6 +1,6 @@
 package api_test
 
-// Tests for FR-009 / FR-009a sentinel mapping in the REST API.
+// Tests for sentinel mapping in the REST API.
 //
 // When connections.GetConnector returns ErrReauthRequired or
 // ErrConnectionDisabled, the router translates the sentinel into a

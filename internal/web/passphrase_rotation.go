@@ -13,11 +13,11 @@ import (
 )
 
 // rotateLockoutThreshold is the number of consecutive wrong-current-passphrase
-// submissions that trigger the cooldown (FR-021).
+// submissions that trigger the cooldown.
 const rotateLockoutThreshold = 5
 
-// rotateLockoutCooldown is the duration of the lockout. Per Q2 / FR-021,
-// 15 minutes; tests override via setRotateLockoutCooldownForTest.
+// rotateLockoutCooldown is the duration of the lockout (15 minutes);
+// tests override via setRotateLockoutCooldownForTest.
 var rotateLockoutCooldown = 15 * time.Minute
 
 // SetRotateLockoutCooldownForTest is a test-only knob. Production callers
@@ -33,20 +33,16 @@ func SetRotateLockoutCooldownForTest(d time.Duration) (restore func()) {
 // online rotation against the running keyring and re-renders the Settings
 // page with a success card (303 PRG redirect) or a typed error chip.
 //
-// Order of validation gates (per data-model.md):
+// Order of validation gates:
 //
 //  1. rejectIfAgentToken — block any agent bearer token (existing middleware)
-//  2. checkRotationOrigin — Origin/Referer allow-list (CSRF, US2)
-//  3. checkRotationLockout — per-process brute-force lockout (FR-021, US2)
+//  2. checkRotationOrigin — Origin/Referer allow-list (CSRF)
+//  3. checkRotationLockout — per-process brute-force lockout
 //  4. Field presence
 //  5. Confirmation match
 //  6. New != current
 //  7. keyring.Rotate (verifies current passphrase, runs the SQL tx and the
 //     in-memory KEK swap, writes the audit row inside the same tx)
-//
-// Steps 2 and 3 are no-ops in Phase 3 (US1 MVP) and become enforcing in
-// Phase 4 (US2). The handler is structured so flipping them on is a
-// localized change to those helper methods, not a rewrite of the handler.
 func (s *Server) handleRotatePassphrase(w http.ResponseWriter, r *http.Request) {
 	if rejectIfAgentToken(w, r) {
 		return
@@ -66,7 +62,7 @@ func (s *Server) handleRotatePassphrase(w http.ResponseWriter, r *http.Request) 
 
 	// Read the three fields, then immediately remove them from the
 	// PostForm map so a downstream handler accident (or a future error
-	// path) cannot echo them back into the rendered HTML (FR-014, FR-015).
+	// path) cannot echo them back into the rendered HTML.
 	current := []byte(r.PostForm.Get("current_passphrase"))
 	newPP := []byte(r.PostForm.Get("new_passphrase"))
 	confirm := []byte(r.PostForm.Get("new_passphrase_confirm"))
@@ -77,9 +73,9 @@ func (s *Server) handleRotatePassphrase(w http.ResponseWriter, r *http.Request) 
 	defer zeroBytes(newPP)
 	defer zeroBytes(confirm)
 
-	// Lockout check (US2; no-op in US1). Returning here MUST happen
-	// before any argon2 work so a locked-out attacker cannot keep the
-	// CPU pinned by submitting forms.
+	// Lockout check. Returning here MUST happen before any argon2 work
+	// so a locked-out attacker cannot keep the CPU pinned by submitting
+	// forms.
 	if locked, retryAfter := s.checkRotationLockout(); locked {
 		w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retryAfter.Seconds())))
 		s.renderRotationError(w, r, http.StatusLocked,
@@ -103,7 +99,7 @@ func (s *Server) handleRotatePassphrase(w http.ResponseWriter, r *http.Request) 
 
 	// Drive the rotation. The audit row is written inside the rotation
 	// transaction by the auditor adapter, so a rolled-back rotation
-	// leaves no stray row (FR-018).
+	// leaves no stray row.
 	auditor := s.audit.AsRotationAuditor("ui")
 	count, err := s.keyring.Rotate(s.db.DB, current, newPP, auditor)
 	if err != nil {
@@ -140,8 +136,8 @@ func (s *Server) handleRotatePassphrase(w http.ResponseWriter, r *http.Request) 
 
 // renderRotationError re-renders the Settings page with the rotation form
 // chip set to msg. The three submitted form fields are NEVER echoed back
-// (FR-015) — the caller is responsible for not having stuffed them into
-// the template data, and this helper does not read them.
+// — the caller is responsible for not having stuffed them into the
+// template data, and this helper does not read them.
 func (s *Server) renderRotationError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	// Build the same template data shape that handleSettings produces so
 	// the existing settings.html partials render correctly. The rotation
@@ -214,7 +210,7 @@ func zeroBytes(b []byte) {
 // --- Lockout state machine (Phase 4) ---
 
 // checkRotationLockout returns (true, retryAfter) if the rotation form is
-// currently in cooldown per FR-021 (5 consecutive wrong-current-passphrase
+// currently in cooldown (5 consecutive wrong-current-passphrase
 // submissions trigger a 15-minute cooldown).
 //
 // Side effect: if the cooldown has elapsed since the last check, the
@@ -239,10 +235,10 @@ func (s *Server) checkRotationLockout() (locked bool, retryAfter time.Duration) 
 
 // recordRotationFailure increments the consecutive-failure counter and,
 // when the count reaches rotateLockoutThreshold, sets the cooldown
-// expiry and writes the single audit row that FR-022 requires for the
-// lockout-trigger event. Returns true when this call triggered the
-// lockout (caller does not need this signal today, but it makes the
-// state transition explicit for future callers).
+// expiry and writes a single audit row for the lockout-trigger event.
+// Returns true when this call triggered the lockout (caller does not
+// need this signal today, but it makes the state transition explicit
+// for future callers).
 func (s *Server) recordRotationFailure() (triggeredLockout bool) {
 	s.rotateMu.Lock()
 	s.rotateFailures++
@@ -255,16 +251,16 @@ func (s *Server) recordRotationFailure() (triggeredLockout bool) {
 	if triggeredLockout {
 		// Write the lockout-trigger audit row outside the rotation
 		// transaction (there is no rotation transaction — verification
-		// failed). FR-022 requires exactly one row per cooldown.
-		// LogRotationLockout is best-effort: an error here is logged
-		// but does not change the lockout's enforcement.
+		// failed). Exactly one row per cooldown. LogRotationLockout is
+		// best-effort: an error here is logged but does not change the
+		// lockout's enforcement.
 		_ = s.audit.LogRotationLockout("ui", rotateLockoutThreshold)
 	}
 	return
 }
 
 // resetRotationFailures clears the counter and any active lockout.
-// Called on a successful rotation per FR-021.
+// Called on a successful rotation.
 func (s *Server) resetRotationFailures() {
 	s.rotateMu.Lock()
 	s.rotateFailures = 0
