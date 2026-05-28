@@ -1,9 +1,7 @@
 package connections_test
 
-// Tests for the OAuth-app credential helpers introduced by spec 002 US3.
-// Covers: round-trip, keyring-locked path, validation rules, list, delete,
-// and the legacy-settings migration (including idempotency + locked-keyring
-// deferral).
+// Tests for the OAuth-app credential helpers: round-trip, keyring-locked
+// path, validation rules, list, and delete.
 
 import (
 	"testing"
@@ -36,7 +34,7 @@ func TestOAuthApp_RoundTrip(t *testing.T) {
 		t.Fatalf("round-trip: got %+v, want %+v", *got, want)
 	}
 
-	// FR-013: secret must not survive in the plaintext settings table.
+	// Secret must not survive in the plaintext settings table.
 	if v, _ := env.Settings.Get("slack_client_secret"); v != "" {
 		t.Errorf("secret leaked into settings: %q", v)
 	}
@@ -147,98 +145,5 @@ func TestOAuthApp_ListShowsMetaWithoutSecret(t *testing.T) {
 	}
 	if !m.HasSecret {
 		t.Errorf("HasSecret: got false, want true")
-	}
-}
-
-// TestMigrateLegacySlackOAuth_FromSettings simulates a pre-fix
-// deployment with plaintext settings rows and asserts the migration
-// converts them to an encrypted _oauth_app:slack row + deletes the
-// plaintext source rows.
-func TestMigrateLegacySlackOAuth_FromSettings(t *testing.T) {
-	env := testenv.New(t)
-	if err := env.Settings.Set("slack_client_id", "1234567890.0987654321"); err != nil {
-		t.Fatalf("seed cid: %v", err)
-	}
-	if err := env.Settings.Set("slack_client_secret", "0123456789abcdef0123456789abcdef"); err != nil {
-		t.Fatalf("seed sec: %v", err)
-	}
-
-	if err := env.Connections.MigrateLegacySlackOAuth(); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	got, err := env.Connections.GetOAuthApp("slack")
-	if err != nil {
-		t.Fatalf("get after migrate: %v", err)
-	}
-	if got == nil {
-		t.Fatal("expected oauth_app:slack row after migration")
-	}
-	if got.ClientID != "1234567890.0987654321" {
-		t.Errorf("client_id: got %q, want 1234567890.0987654321", got.ClientID)
-	}
-	if got.ClientSecret != "0123456789abcdef0123456789abcdef" {
-		t.Errorf("client_secret: got %q (truncated for safety)", got.ClientSecret[:4]+"...")
-	}
-
-	// Settings rows wiped.
-	if v, _ := env.Settings.Get("slack_client_id"); v != "" {
-		t.Errorf("settings client_id not deleted: %q", v)
-	}
-	if v, _ := env.Settings.Get("slack_client_secret"); v != "" {
-		t.Errorf("settings client_secret not deleted: %q", v)
-	}
-}
-
-// TestMigrateLegacySlackOAuth_NoLegacyIsNoOp verifies a fresh install
-// (no settings rows) sees an immediate no-op return.
-func TestMigrateLegacySlackOAuth_NoLegacyIsNoOp(t *testing.T) {
-	env := testenv.New(t)
-	if err := env.Connections.MigrateLegacySlackOAuth(); err != nil {
-		t.Fatalf("migrate on fresh: %v", err)
-	}
-	got, _ := env.Connections.GetOAuthApp("slack")
-	if got != nil {
-		t.Fatalf("no-op migration created a row: %+v", got)
-	}
-}
-
-// TestMigrateLegacySlackOAuth_IdempotentAcrossRuns verifies a second
-// call after a successful conversion is a clean no-op.
-func TestMigrateLegacySlackOAuth_IdempotentAcrossRuns(t *testing.T) {
-	env := testenv.New(t)
-	_ = env.Settings.Set("slack_client_id", "1.2")
-	_ = env.Settings.Set("slack_client_secret", "0123456789abcdef")
-
-	if err := env.Connections.MigrateLegacySlackOAuth(); err != nil {
-		t.Fatalf("migrate 1: %v", err)
-	}
-	if err := env.Connections.MigrateLegacySlackOAuth(); err != nil {
-		t.Fatalf("migrate 2: %v", err)
-	}
-	got, _ := env.Connections.GetOAuthApp("slack")
-	if got == nil || got.ClientID != "1.2" {
-		t.Fatalf("expected stable row across runs, got %+v", got)
-	}
-}
-
-// TestMigrateLegacySlackOAuth_KeyringLockedDefers verifies that a locked
-// keyring returns ErrKeyringNotLoaded without destroying the legacy rows.
-func TestMigrateLegacySlackOAuth_KeyringLockedDefers(t *testing.T) {
-	env := testenv.New(t)
-	_ = env.Settings.Set("slack_client_id", "1.2")
-	_ = env.Settings.Set("slack_client_secret", "0123456789abcdef")
-	env.Keyring.Lock()
-
-	err := env.Connections.MigrateLegacySlackOAuth()
-	if err != secrets.ErrKeyringNotLoaded {
-		t.Fatalf("expected ErrKeyringNotLoaded, got %v", err)
-	}
-	// Legacy rows must NOT be deleted.
-	if v, _ := env.Settings.Get("slack_client_id"); v != "1.2" {
-		t.Errorf("client_id destroyed on locked-keyring defer: %q", v)
-	}
-	if v, _ := env.Settings.Get("slack_client_secret"); v == "" {
-		t.Errorf("client_secret destroyed on locked-keyring defer")
 	}
 }

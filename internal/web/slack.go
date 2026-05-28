@@ -66,11 +66,10 @@ func slackEndpoint(production string) string {
 }
 
 // slackOAuthCreds resolves the operator's Slack OAuth app credentials
-// from the encrypted _oauth_app:slack row (spec 002 US3). Falls back
-// to the SLACK_CLIENT_ID / SLACK_CLIENT_SECRET environment variables
-// when no row is stored — that fallback path is for 12-factor /
-// automated deployments only and is unaffected by the FR-009 "no
-// plaintext credentials" rule (env vars are not the keyring KEK).
+// from the encrypted _oauth_app:slack row. Falls back to the
+// SLACK_CLIENT_ID / SLACK_CLIENT_SECRET environment variables when no
+// row is stored — that fallback path is for 12-factor / automated
+// deployments only.
 //
 // Returns (clientID, clientSecret). Either may be empty if no source
 // has the value; the OAuth UI hides the install button when the
@@ -327,8 +326,7 @@ func slackAuthTest(ctx context.Context, token string) (teamID, teamName, botUser
 //
 // This endpoint is admin-only (rejectIfAgentToken). Credentials are
 // envelope-encrypted under the keyring KEK and stored as a reserved
-// `_oauth_app:slack` row in the connections table (spec 002 US3 /
-// FR-009). The plaintext settings storage path was retired.
+// `_oauth_app:slack` row in the connections table.
 func (s *Server) handleSlackOAuthConfigure(w http.ResponseWriter, r *http.Request) {
 	if rejectIfAgentToken(w, r) {
 		return

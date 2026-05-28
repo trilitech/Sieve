@@ -2,7 +2,7 @@
 
 Sieve's Slack connector lets agents read channels, search history, post messages, and manage threads through your Slack workspace — all gated by Sieve policies. The real Slack credential never leaves Sieve; agents only ever see scoped sub-tokens issued from a role bound to the connection.
 
-This page covers the operator setup. For the contract that agents see (operation names, params, responses), see [`specs/001-slack-linear-jira-connectors/contracts/slack.md`](../specs/001-slack-linear-jira-connectors/contracts/slack.md).
+This page covers the operator setup.
 
 ## What you get
 
@@ -16,7 +16,7 @@ This page covers the operator setup. For the contract that agents see (operation
 | `search_messages` | Search workspace messages. **Not enabled in v1** — requires user-token install (see Limitations). | `search:read` |
 | `post_message` | Post a message to a channel. | `chat:write` |
 
-All `list_*` operations follow Sieve's normalized `{items, next_cursor}` pagination shape (FR-014). Agents pass `cursor` and `page_size` (default 100, max 100) into the next call to walk past the first page.
+All `list_*` operations follow Sieve's normalized `{items, next_cursor}` pagination shape. Agents pass `cursor` and `page_size` (default 100, max 100) into the next call to walk past the first page.
 
 ## Two ways to install
 
@@ -46,8 +46,6 @@ Best when you want Sieve to manage the Slack app's bot token end to end. **No en
 
 **Resetting credentials.** Below the install button, a small "Reset Slack OAuth credentials" link wipes the persisted encrypted row. Use this when rotating the Slack app or moving to a different OAuth app.
 
-**Upgrading from an older Sieve.** Versions prior to spec 002 stored the credentials as plaintext rows in the `settings` table. The first time you start a fixed version with the keyring loaded, a one-time migration moves those rows into the encrypted `_oauth_app:slack` row and deletes the plaintext rows. Migration is idempotent and is logged in stderr. If the keyring is locked at first boot, the migration runs on the next successful keyring load — you don't have to re-enter creds.
-
 ### Option 2 — Direct bot-token entry
 
 Best when your Slack app is already installed in your workspace and you have the bot token already (e.g., from another tool).
@@ -56,7 +54,7 @@ Best when your Slack app is already installed in your workspace and you have the
 2. In Sieve, **Add Connection** → **Slack** → **Use existing bot token**. Paste and submit.
 3. Sieve calls `auth.test` against Slack; on success the connection lands `status: active`.
 
-The pasted token is encrypted at rest (FR-003) — it is never written to a plaintext column or logged.
+The pasted token is encrypted at rest — it is never written to a plaintext column or logged.
 
 ## Multi-workspace setups
 
@@ -95,7 +93,7 @@ If the policy on the role allows posting only to `#bot-test`, posting to `#gener
 
 ## Limitations (v1)
 
-- **`search_messages` is disabled.** Slack's `search.messages` API requires a *user* token (`xoxp-…`), not a bot token. Sieve v1 supports bot tokens only (per the 2026-05-01 clarification: classic non-rotating scopes only). The operation is exposed for policy bindings but always returns the typed `connector.ErrOperationNotEnabled` sentinel. Agents see this as **HTTP 501 Not Implemented** with body `{"error":"operation_not_enabled","connection_id":...,"operation":"search_messages","message":...}` on REST, or as a tool error with the `operation_not_enabled:` text prefix on MCP. User-token install support is on the roadmap.
+- **`search_messages` is disabled.** Slack's `search.messages` API requires a *user* token (`xoxp-…`), not a bot token. Sieve v1 supports bot tokens only (classic non-rotating scopes). The operation is exposed for policy bindings but always returns the typed `connector.ErrOperationNotEnabled` sentinel. Agents see this as **HTTP 501 Not Implemented** with body `{"error":"operation_not_enabled","connection_id":...,"operation":"search_messages","message":...}` on REST, or as a tool error with the `operation_not_enabled:` text prefix on MCP. User-token install support is on the roadmap.
 - **No Slack Enterprise Grid org-level installs.** v1 supports per-workspace bot installs. If you operate across multiple workspaces, add a Sieve connection per workspace.
 - **No inbound webhooks.** Slack Events API (real-time message ingestion) is out of scope for v1 — Sieve is outbound-only. Agents that need event-driven workflows poll the `read_channel_history` operation.
 - **No granular-scope token rotation.** v1 uses classic non-rotating bot tokens. Granular scopes with refresh-token rotation are a future feature.
@@ -118,4 +116,4 @@ A: The bot must be a member of private channels before it can post. Invite the b
 
 Per Sieve's [credential encryption design](./credential-encryption.md), the bot token (or OAuth-issued bearer) lives only inside the encrypted `config_ciphertext` blob on the `connections` row. The keyring KEK is derived from the operator's passphrase at startup; if the keyring is unloaded, every connector path returns HTTP 503 "service locked" rather than touching plaintext credentials.
 
-The Slack connector does **not** participate in the refresh-token rotation hardening (FR-016) because classic bot tokens don't expire or rotate. Linear, Jira, and Asana — when they ship — will use that path.
+The Slack connector does **not** participate in refresh-token rotation because classic bot tokens don't expire or rotate. Linear, Jira, and Asana — when they ship — will use that path.

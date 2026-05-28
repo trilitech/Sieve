@@ -419,7 +419,7 @@ func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
 	if creds.ClientSecret != "abcdef0123456789abcdef0123456789" {
 		t.Errorf("client_secret not persisted: %q", creds.ClientSecret)
 	}
-	// FR-013: secret must not survive in the plaintext settings table.
+	// Secret must not survive in the plaintext settings table.
 	if v, _ := env.Settings.Get("slack_client_secret"); v != "" {
 		t.Errorf("client_secret leaked into settings: %q", v)
 	}

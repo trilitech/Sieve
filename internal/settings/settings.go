@@ -16,12 +16,6 @@ const (
 	KeyLLMConnection = "llm_connection" // connection ID to use for LLM calls (e.g., "anthropic")
 	KeyLLMModel      = "llm_model"      // model name (e.g., "claude-sonnet-4-20250514")
 	KeyLLMMaxTokens  = "llm_max_tokens" // max tokens for generation (e.g., "4096")
-
-	// NOTE: KeySlackClientID / KeySlackClientSecret were removed by
-	// spec 002 US3 / FR-009. Slack OAuth credentials now live in the
-	// connections table as an envelope-encrypted _oauth_app:slack row.
-	// One-time migration of any legacy plaintext settings rows runs
-	// from cmd/sieve/main.go after the keyring loads (FR-012).
 )
 
 // Delete removes a setting by key. No-op if the key is absent.

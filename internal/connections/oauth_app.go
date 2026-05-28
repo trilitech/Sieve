@@ -6,15 +6,12 @@ package connections
 // per-tenant connections list, rejected by GetConnector, and refused
 // by role bindings. Reuses the existing envelope encryption (per-record
 // DEK + KEK wrap) verbatim so passphrase rotation picks it up for free.
-//
-// Spec 002 US3 / FR-009..FR-014 / contracts/oauth-app-config.md.
 
 import (
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -200,71 +197,4 @@ func (s *Service) ListOAuthApps() ([]OAuthAppMeta, error) {
 		out = append(out, meta)
 	}
 	return out, rows.Err()
-}
-
-// HasLegacySlackOAuthSettings reports whether the legacy plaintext
-// settings rows are present. Used by the migration to decide whether
-// to run.
-func (s *Service) HasLegacySlackOAuthSettings() (bool, error) {
-	var count int
-	err := s.db.DB.QueryRow(
-		`SELECT COUNT(*) FROM settings WHERE key IN ('slack_client_id', 'slack_client_secret')`,
-	).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// MigrateLegacySlackOAuth runs the one-time conversion of any plaintext
-// Slack OAuth credentials in the settings table into an encrypted
-// _oauth_app:slack row. Idempotent — returns nil immediately if no
-// legacy rows exist. Returns secrets.ErrKeyringNotLoaded if the keyring
-// is locked at call time (caller defers; cmd/sieve/main.go invokes
-// after Setup/Load succeeds).
-//
-// Per spec 002 FR-012: this is registered as a keyring-load hook in
-// cmd/sieve/main.go so it fires exactly when the encryption material
-// becomes available. Safe to call repeatedly across reloads.
-func (s *Service) MigrateLegacySlackOAuth() error {
-	if !s.keyring.IsLoaded() {
-		return secrets.ErrKeyringNotLoaded
-	}
-	has, err := s.HasLegacySlackOAuthSettings()
-	if err != nil {
-		return fmt.Errorf("oauth_app migration: check legacy: %w", err)
-	}
-	if !has {
-		return nil
-	}
-
-	var clientID, clientSecret string
-	if err := s.db.DB.QueryRow(`SELECT value FROM settings WHERE key = 'slack_client_id'`).Scan(&clientID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("oauth_app migration: read client_id: %w", err)
-	}
-	if err := s.db.DB.QueryRow(`SELECT value FROM settings WHERE key = 'slack_client_secret'`).Scan(&clientSecret); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("oauth_app migration: read client_secret: %w", err)
-	}
-
-	if clientID == "" && clientSecret == "" {
-		// Both empty — clean up any stray empty rows and exit.
-		_, _ = s.db.DB.Exec(`DELETE FROM settings WHERE key IN ('slack_client_id', 'slack_client_secret')`)
-		return nil
-	}
-	// Partial state (only one of the pair set) is treated as
-	// unrecoverable — log and bail without destroying the rows so an
-	// operator can inspect.
-	if clientID == "" || clientSecret == "" {
-		log.Printf("oauth_app migration: skipping — partial legacy state (id set: %t, secret set: %t)", clientID != "", clientSecret != "")
-		return nil
-	}
-
-	if err := s.PutOAuthApp("slack", OAuthAppCredentials{ClientID: clientID, ClientSecret: clientSecret}); err != nil {
-		return fmt.Errorf("oauth_app migration: put: %w", err)
-	}
-	if _, err := s.db.DB.Exec(`DELETE FROM settings WHERE key IN ('slack_client_id', 'slack_client_secret')`); err != nil {
-		return fmt.Errorf("oauth_app migration: cleanup legacy rows: %w", err)
-	}
-	log.Printf("oauth_app migration: slack credentials moved from settings table to encrypted _oauth_app:slack row")
-	return nil
 }

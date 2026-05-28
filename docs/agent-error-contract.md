@@ -2,7 +2,7 @@
 
 This page documents every structured error envelope an agent client (REST or MCP) sees when calling the Sieve agent API on port 19817. Use it to write a single error handler for any agent SDK.
 
-The contract was stabilized by spec 002 (PR 10 review fixes). Prior versions used different status codes and envelopes; if you have an agent wrapper authored against a Sieve build older than May 2026, audit it against this page.
+This contract was last revised in May 2026 (PR #10). Prior versions used different status codes and envelopes; if you have an agent wrapper authored against an older Sieve build, audit it against this page.
 
 ---
 
@@ -157,7 +157,7 @@ function handleSieveMCPToolResult(result):
 
 ---
 
-## What changed in spec 002
+## What changed in the May 2026 revision
 
 - The `reauth_required` envelope's HTTP status went from **503** to **403**. The error code went from `connection_reauth_required` to `reauth_required`. The envelope shape is otherwise unchanged.
 - The `operation_not_enabled` shape is new — previously, gated operations returned HTTP 200 with `{"error": "operation_not_enabled"}` in the body (the "phantom success" bug the reviewer flagged).

@@ -470,16 +470,6 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	auditLog := audit.NewLogger(db)
 	settingsSvc := settings.NewService(db)
 
-	// Spec 002 US3 / FR-012: one-time migration of any legacy plaintext
-	// Slack OAuth credentials from the settings table into an envelope-
-	// encrypted _oauth_app:slack row. Runs synchronously after the
-	// keyring loads (whether Setup or Load path) so the encryption
-	// material is available. Idempotent — no-op after first conversion.
-	// Failure is logged but not fatal: the OAuth UI surfaces 503 until
-	// the operator addresses whatever broke the migration.
-	if err := connSvc.MigrateLegacySlackOAuth(); err != nil {
-		log.Printf("warning: Slack OAuth credential migration deferred: %v", err)
-	}
 	scriptgenSvc := scriptgen.NewService(connSvc, settingsSvc)
 
 	if err := policiesSvc.SeedPresets(); err != nil {
