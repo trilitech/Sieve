@@ -162,6 +162,13 @@ func TestInjectRefreshCallback_PersistFailure_TransitionsToReauthRequired(t *tes
 	if c2.Status != StatusReauthRequired {
 		t.Fatalf("expected status=reauth_required after persist failure, got %q", c2.Status)
 	}
+	// The persist-failure branch must record a non-empty reason so the
+	// admin UI surfaces something meaningful — matches the contract of
+	// the sibling _on_token_refresh_failure callback, which always
+	// supplies a reason.
+	if c2.ReauthReason == "" {
+		t.Fatalf("expected non-empty ReauthReason after persist failure, got empty")
+	}
 }
 
 // TestPersistRefreshedToken_DirectFailure exercises the persist helper
