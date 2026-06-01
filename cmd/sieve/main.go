@@ -612,11 +612,26 @@ func runReauthSweep(ctx context.Context, connSvc *connections.Service) {
 		return
 	}
 	for _, c := range conns {
-		conn, err := connSvc.GetConnector(c.ID)
+		// Disabled connections were turned off on purpose — leave them alone.
+		if c.Status == connections.StatusDisabled {
+			continue
+		}
+		// For reauth_required rows the GetConnector status gate would
+		// short-circuit before Validate could probe for recovery, so build
+		// the connector bypassing the gate. Active rows go through the
+		// normal path (the gate is a no-op for them, and GetConnector is
+		// what serves agent traffic — exercising the same path here keeps
+		// caching/refresh-callback behavior consistent).
+		var conn connector.Connector
+		if c.Status == connections.StatusReauthRequired {
+			conn, err = connSvc.LoadConnectorForRevalidation(c.ID)
+		} else {
+			conn, err = connSvc.GetConnector(c.ID)
+		}
 		if err != nil {
-			// Stale credentials, missing client_id, etc. Already-flagged
-			// connections will surface this on every call — the sweeper
-			// shouldn't double-mark.
+			// Stale credentials, missing client_id, keyring locked, etc.
+			// Already-flagged connections surface this on every call — the
+			// sweeper shouldn't double-mark.
 			continue
 		}
 		// Validate is meant to be a cheap "are we authorized?" check.

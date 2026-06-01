@@ -523,3 +523,61 @@ func TestService_GetConnector_RecoversAfterReactivate(t *testing.T) {
 		t.Fatalf("expected unblocked after reactivate, got %v", err)
 	}
 }
+
+// TestService_LoadConnectorForRevalidation_BypassesReauthGate verifies the
+// helper the reauth sweeper uses to probe recovery: a connection with
+// status=reauth_required must yield a live connector (so Validate() can be
+// called) rather than short-circuiting like GetConnector does. Without
+// this path the sweeper can never auto-recover from a transient upstream
+// blip.
+func TestService_LoadConnectorForRevalidation_BypassesReauthGate(t *testing.T) {
+	svc, _ := setup(t)
+
+	if err := svc.Add("revprobe", "mock", "Revalidate Probe", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := svc.SetStatusWithReason("revprobe", connections.StatusReauthRequired, "induced for test"); err != nil {
+		t.Fatalf("set reauth_required: %v", err)
+	}
+
+	// Sanity: the gate is in place — agent traffic stays blocked.
+	if _, err := svc.GetConnector("revprobe"); !errors.Is(err, connections.ErrReauthRequired) {
+		t.Fatalf("GetConnector should still block, got %v", err)
+	}
+
+	// The sweeper's path must succeed in spite of the gate.
+	conn, err := svc.LoadConnectorForRevalidation("revprobe")
+	if err != nil {
+		t.Fatalf("LoadConnectorForRevalidation: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connector")
+	}
+}
+
+// TestService_LoadConnectorForRevalidation_RejectsReserved verifies the
+// reserved-id check is preserved on the bypass path so a system row can
+// never be addressed as a connection (e.g., _oauth_app:slack).
+func TestService_LoadConnectorForRevalidation_RejectsReserved(t *testing.T) {
+	svc, _ := setup(t)
+	if _, err := svc.LoadConnectorForRevalidation("oauth_app__slack"); err == nil {
+		t.Fatal("expected reserved-id rejection, got nil")
+	}
+}
+
+// TestService_LoadConnectorForRevalidation_OnDisabled_LoadsAnyway asserts
+// that the bypass returns a live connector even for disabled rows. The
+// sweeper's caller is responsible for skipping disabled rows; this method
+// is unconditionally permissive (matches the documented contract).
+func TestService_LoadConnectorForRevalidation_OnDisabled_LoadsAnyway(t *testing.T) {
+	svc, _ := setup(t)
+	if err := svc.Add("dis", "mock", "Disabled", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := svc.SetStatus("dis", connections.StatusDisabled); err != nil {
+		t.Fatalf("set disabled: %v", err)
+	}
+	if _, err := svc.LoadConnectorForRevalidation("dis"); err != nil {
+		t.Fatalf("LoadConnectorForRevalidation should bypass status, got %v", err)
+	}
+}

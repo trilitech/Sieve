@@ -464,8 +464,12 @@ func (s *Service) persistRefreshedToken(id string, tok *oauth2.Token) error {
 func (s *Service) injectRefreshCallback(id string, config map[string]any) {
 	config["_on_token_refresh"] = func(tok *oauth2.Token) {
 		if err := s.persistRefreshedToken(id, tok); err != nil {
-			if setErr := s.SetStatus(id, StatusReauthRequired); setErr != nil {
-				log.Printf("connections: refresh-token persist failed for %q: %v (SetStatus also failed: %v)", id, err, setErr)
+			// Record the persist failure as the reauth reason so the UI/API
+			// surface a meaningful explanation instead of a blank reason
+			// (matching the _on_token_refresh_failure branch below).
+			reason := fmt.Sprintf("refresh-token persist failed: %v", err)
+			if setErr := s.SetStatusWithReason(id, StatusReauthRequired, reason); setErr != nil {
+				log.Printf("connections: refresh-token persist failed for %q: %v (SetStatusWithReason also failed: %v)", id, err, setErr)
 			} else {
 				log.Printf("connections: refresh-token persist failed for %q, transitioned to reauth_required: %v", id, err)
 			}
@@ -518,7 +522,26 @@ func (s *Service) GetConnector(id string) (connector.Connector, error) {
 	case StatusDisabled:
 		return nil, ErrConnectionDisabled
 	}
+	return s.loadConnectorBypassingStatusGate(id)
+}
 
+// LoadConnectorForRevalidation builds a connector instance bypassing the
+// status gate. It exists for the background reauth sweeper, which needs to
+// probe a reauth_required connection to see whether the upstream has
+// recovered — GetConnector would short-circuit before Validate could run.
+//
+// Reserved system rows are still rejected. Like GetConnector, it caches
+// the live instance on success. Callers that intend to serve agent traffic
+// must go through GetConnector instead so non-active connections are
+// short-circuited at the gate.
+func (s *Service) LoadConnectorForRevalidation(id string) (connector.Connector, error) {
+	if IsReservedConnectionID(id) {
+		return nil, &connector.ErrUnknownConnector{Type: "reserved system row"}
+	}
+	return s.loadConnectorBypassingStatusGate(id)
+}
+
+func (s *Service) loadConnectorBypassingStatusGate(id string) (connector.Connector, error) {
 	s.mu.RLock()
 	if conn, ok := s.live[id]; ok {
 		s.mu.RUnlock()
