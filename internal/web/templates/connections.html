@@ -30,20 +30,16 @@
               <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Alias</th>
               <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Service</th>
               <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Display Name</th>
+              <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Status</th>
               <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Added</th>
               <th class="text-right text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3"></th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-700">
             {{range .Connections}}
-            <tr class="{{if .NeedsReauth}}bg-amber-500/5 hover:bg-amber-500/10{{else}}hover:bg-slate-700/30{{end}} transition-colors">
+            <tr class="{{if eq .Status "reauth_required"}}bg-amber-500/5 hover:bg-amber-500/10{{else}}hover:bg-slate-700/30{{end}} transition-colors">
               <td class="px-6 py-4 text-sm font-mono text-white">
                 {{.ID}}
-                {{if .NeedsReauth}}
-                <span title="{{.ReauthReason}}" class="ml-2 inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-300 ring-1 ring-amber-500/30">
-                  ⚠ needs re-auth
-                </span>
-                {{end}}
               </td>
               <td class="px-6 py-4">
                 {{$label := mapGet $.ConnLabels .ID}}
@@ -60,9 +56,20 @@
                 </span>
               </td>
               <td class="px-6 py-4 text-sm text-slate-300">{{.DisplayName}}</td>
+              <td class="px-6 py-4">
+                {{if eq .Status "active"}}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20">Active</span>
+                {{else if eq .Status "reauth_required"}}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20" title="The upstream credential was revoked or rotated. Re-install OAuth or update the token to recover.">Reauth required</span>
+                {{else if eq .Status "disabled"}}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-slate-500/10 text-slate-300 ring-1 ring-slate-500/30" title="An admin disabled this connection. Agent operations will be denied until it is re-enabled.">Disabled</span>
+                {{else}}
+                <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/20">{{.Status}}</span>
+                {{end}}
+              </td>
               <td class="px-6 py-4 text-sm text-slate-400">{{timeAgo .CreatedAt}}</td>
               <td class="px-6 py-4 text-right whitespace-nowrap">
-                {{if and .NeedsReauth (eq .ConnectorType "google")}}
+                {{if and (eq .Status "reauth_required") (eq .ConnectorType "google")}}
                 <form method="POST" action="/connections/{{.ID}}/reauth" class="inline mr-3">
                   <button type="submit"
                           class="text-sm text-amber-300 hover:text-amber-200 font-medium transition-colors">
@@ -75,6 +82,24 @@
                    class="inline-block mr-3 text-sm text-indigo-300 hover:text-indigo-200 font-medium transition-colors">
                   Edit
                 </a>
+                {{end}}
+                {{if eq .Status "disabled"}}
+                <form method="POST" action="/connections/{{.ID}}/enable" class="inline mr-3">
+                  <button type="submit"
+                          class="text-sm text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
+                    Enable
+                  </button>
+                </form>
+                {{else}}
+                <form method="POST" action="/connections/{{.ID}}/disable"
+                      hx-post="/connections/{{.ID}}/disable"
+                      hx-confirm="Disable connection '{{.ID}}'? Agent operations will fail until you re-enable it."
+                      class="inline mr-3">
+                  <button type="submit"
+                          class="text-sm text-amber-400 hover:text-amber-300 font-medium transition-colors">
+                    Disable
+                  </button>
+                </form>
                 {{end}}
                 <form method="POST" action="/connections/{{.ID}}/delete"
                       hx-post="/connections/{{.ID}}/delete"
@@ -130,6 +155,11 @@
               {{if eq .Type "github"}}
               <div class="w-8 h-8 rounded-lg bg-slate-500/10 flex items-center justify-center flex-shrink-0">
                 <svg class="w-5 h-5 text-slate-200" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.11.82-.26.82-.577v-2.17c-3.338.726-4.042-1.61-4.042-1.61-.546-1.387-1.333-1.757-1.333-1.757-1.09-.745.082-.73.082-.73 1.204.085 1.838 1.236 1.838 1.236 1.07 1.834 2.807 1.304 3.492.997.108-.776.42-1.305.763-1.605-2.665-.303-5.467-1.332-5.467-5.93 0-1.31.468-2.381 1.235-3.22-.124-.303-.535-1.524.117-3.176 0 0 1.008-.323 3.3 1.23.957-.266 1.983-.4 3.003-.404 1.02.004 2.046.138 3.006.404 2.29-1.553 3.297-1.23 3.297-1.23.653 1.652.242 2.873.118 3.176.77.839 1.233 1.91 1.233 3.22 0 4.61-2.807 5.624-5.48 5.92.43.37.814 1.102.814 2.222v3.293c0 .32.217.694.825.577C20.565 21.795 24 17.298 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              </div>
+              {{end}}
+              {{if eq .Type "slack"}}
+              <div class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+                <svg class="w-5 h-5 text-emerald-400" viewBox="0 0 24 24" fill="currentColor"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></svg>
               </div>
               {{end}}
             </div>
@@ -228,6 +258,101 @@
                 <button type="submit"
                         class="w-full rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600 transition-colors">
                   Install as GitHub App
+                </button>
+              </form>
+            </div>
+            {{else if eq .Type "slack"}}
+            {{/* Slack: three sections.
+                 (1) When OAuth is configured: an "Install via OAuth"
+                     form that POSTs to /connections/slack/oauth/start.
+                 (2) When OAuth is NOT configured: a "Set up Slack
+                     OAuth" form that lets the operator paste their
+                     Slack app's client_id + client_secret directly
+                     into the UI (no env-var setup, no restart).
+                 (3) Always: a direct bot-token paste form. Independent
+                     of OAuth, useful when the operator already has a
+                     bot token from another tool.
+                 All three persist only after Sieve validates the
+                 credential against Slack — no empty-config rows. */}}
+            {{if $.SlackOAuthConfigured}}
+            <form method="POST" action="/connections/slack/oauth/start" class="space-y-3">
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Connection Alias</label>
+                <input type="text" name="id" required placeholder="e.g. acme-slack"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Display Name</label>
+                <input type="text" name="display_name" required placeholder="e.g. Acme Workspace"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+              </div>
+              <button type="submit"
+                      class="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 transition-colors">
+                Install via OAuth
+              </button>
+            </form>
+            <div class="mt-2">
+              <form method="POST" action="/connections/slack/oauth/clear" class="inline">
+                <button type="submit" class="text-xs text-slate-500 hover:text-slate-300 underline">
+                  Reset Slack OAuth credentials
+                </button>
+              </form>
+            </div>
+            <div class="mt-3 pt-3 border-t border-slate-700">
+            {{else}}
+            <div class="rounded-lg bg-slate-900/40 border border-emerald-500/30 p-3 mb-3 space-y-2">
+              <p class="text-xs font-semibold text-emerald-300">One-time setup: Slack OAuth app</p>
+              <p class="text-xs text-slate-400">To use the "Install via OAuth" button, paste your Slack app's <strong>Client ID</strong> and <strong>Client Secret</strong> below. Sieve stores them and never asks again.</p>
+              <ol class="text-xs text-slate-400 list-decimal list-inside space-y-1">
+                <li>Create a Slack app at <a href="https://api.slack.com/apps" target="_blank" class="text-emerald-400 hover:text-emerald-300 underline">api.slack.com/apps</a> → <em>From scratch</em>.</li>
+                <li>Under <em>OAuth &amp; Permissions</em>, add bot scopes: <code class="text-emerald-400">channels:read groups:read users:read users.profile:read channels:history groups:history chat:write</code>.</li>
+                <li>Add this Redirect URL: <code class="text-emerald-400 break-all">http://localhost:19816/oauth/callback</code> (replace <code>localhost</code> with your Sieve host).</li>
+                <li>Copy <em>Client ID</em> and <em>Client Secret</em> from <em>Basic Information</em> and paste below.</li>
+              </ol>
+            </div>
+            <form method="POST" action="/connections/slack/oauth/configure" class="space-y-3 mb-3 pb-3 border-b border-slate-700">
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Slack Client ID</label>
+                <input type="text" name="client_id" required placeholder="1234567890.1234567890"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Slack Client Secret</label>
+                <input type="password" name="client_secret" required placeholder="32-char hex"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+              </div>
+              <button type="submit"
+                      class="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 transition-colors">
+                Save Slack OAuth credentials
+              </button>
+              <p class="text-xs text-slate-500">After saving, the page reloads and the <em>Install via OAuth</em> button appears.</p>
+            </form>
+            <div>
+            {{end}}
+              <form method="POST" action="/connections/slack/token" class="space-y-3">
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">{{if $.SlackOAuthConfigured}}Or use existing bot token{{else}}Paste bot token{{end}}</label>
+                  <p class="text-xs text-slate-500 mb-2">Find <code>xoxb-…</code> on your Slack app's <strong>OAuth &amp; Permissions</strong> page after install.</p>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Connection Alias</label>
+                  <input type="text" name="id" required placeholder="e.g. acme-slack"
+                         class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Display Name</label>
+                  <input type="text" name="display_name" required placeholder="e.g. Acme Workspace"
+                         class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Bot token</label>
+                  <input type="password" name="bot_token" required placeholder="xoxb-…"
+                         class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                  <p class="text-xs text-slate-500 mt-1">Sieve calls Slack auth.test before saving. The token is encrypted at rest.</p>
+                </div>
+                <button type="submit"
+                        class="w-full rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600 transition-colors">
+                  Add via bot token
                 </button>
               </form>
             </div>
@@ -628,15 +753,6 @@
           </div>
 
           <!-- Communication -->
-          <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
-            <div class="flex items-start justify-between">
-              <div>
-                <h4 class="text-slate-400 font-medium">Slack</h4>
-                <p class="text-xs text-slate-500 mt-0.5">Messages, channels, reactions</p>
-              </div>
-              <span class="text-xs text-slate-600 bg-slate-700/50 px-2 py-0.5 rounded">Planned</span>
-            </div>
-          </div>
           <div class="bg-slate-800/40 rounded-xl border border-dashed border-slate-700 p-5 opacity-50">
             <div class="flex items-start justify-between">
               <div>

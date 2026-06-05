@@ -64,6 +64,7 @@ import (
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
+	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 	"github.com/trilitech/Sieve/internal/connectors/gmail"
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
@@ -160,8 +161,8 @@ func main() {
 // rotation transaction, and exits with one of the documented exit codes.
 //
 // The function does NOT bind any network ports and does NOT start the
-// background goroutines that the normal start path uses (per FR-016 of
-// spec 002: rotation is an offline maintenance operation).
+// background goroutines that the normal start path uses — rotation is
+// an offline maintenance operation.
 func runRotate(dbPath string) int {
 	log.SetFlags(0)
 
@@ -217,7 +218,7 @@ func runRotate(dbPath string) int {
 	}
 
 	// Wire the audit logger so the rotation row commits inside the
-	// rotation transaction (FR-018, shared with spec 003).
+	// rotation transaction.
 	auditLog := audit.NewLogger(db)
 	auditor := auditLog.AsRotationAuditor("cli")
 
@@ -459,6 +460,7 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	registry.Register(httpproxy.Meta, httpproxy.Factory)
 	registry.Register(mcpproxy.Meta, mcpproxy.Factory)
 	registry.Register(githubconn.Meta(), githubconn.Factory())
+	registry.Register(slackconn.Meta(), slackconn.Factory())
 
 	// --- Services ---
 	connSvc := connections.NewService(db, registry, keyring)
@@ -468,6 +470,7 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	approvalQ := approval.NewQueue(db)
 	auditLog := audit.NewLogger(db)
 	settingsSvc := settings.NewService(db)
+
 	scriptgenSvc := scriptgen.NewService(connSvc, settingsSvc)
 
 	if err := policiesSvc.SeedPresets(); err != nil {
@@ -578,11 +581,13 @@ const reauthSweepInterval = time.Hour
 // reauthSweeper runs Validate() against every connection on a periodic
 // loop. The loop honors ctx so a SIGTERM during shutdown stops it.
 //
-//	connector returns ErrNeedsReauth → MarkNeedsReauth (idempotent if already set).
-//	connector returns nil but the flag is set    → ClearNeedsReauth (auto-recover).
-//	connector returns some other error           → leave the flag alone (could be
-//	                                               a transient network blip; not
-//	                                               our place to declare it dead).
+//	connector returns ErrNeedsReauth → SetStatusWithReason(reauth_required)
+//	                                   (idempotent if status already reauth_required).
+//	connector returns nil but status==reauth_required → SetStatus(active)
+//	                                                   (auto-recover from blips).
+//	connector returns some other error → leave the status alone (could be a
+//	                                     transient network blip; not our
+//	                                     place to declare it dead).
 //
 // First sweep runs after one interval, not at startup, so the server isn't
 // hammering external APIs in its first second of life.
@@ -607,11 +612,26 @@ func runReauthSweep(ctx context.Context, connSvc *connections.Service) {
 		return
 	}
 	for _, c := range conns {
-		conn, err := connSvc.GetConnector(c.ID)
+		// Disabled connections were turned off on purpose — leave them alone.
+		if c.Status == connections.StatusDisabled {
+			continue
+		}
+		// For reauth_required rows the GetConnector status gate would
+		// short-circuit before Validate could probe for recovery, so build
+		// the connector bypassing the gate. Active rows go through the
+		// normal path (the gate is a no-op for them, and GetConnector is
+		// what serves agent traffic — exercising the same path here keeps
+		// caching/refresh-callback behavior consistent).
+		var conn connector.Connector
+		if c.Status == connections.StatusReauthRequired {
+			conn, err = connSvc.LoadConnectorForRevalidation(c.ID)
+		} else {
+			conn, err = connSvc.GetConnector(c.ID)
+		}
 		if err != nil {
-			// Stale credentials, missing client_id, etc. Already-flagged
-			// connections will surface this on every call — the sweeper
-			// shouldn't double-mark.
+			// Stale credentials, missing client_id, keyring locked, etc.
+			// Already-flagged connections surface this on every call — the
+			// sweeper shouldn't double-mark.
 			continue
 		}
 		// Validate is meant to be a cheap "are we authorized?" check.
@@ -622,16 +642,16 @@ func runReauthSweep(ctx context.Context, connSvc *connections.Service) {
 
 		switch {
 		case errors.Is(err, connector.ErrNeedsReauth):
-			// onRefreshFailure inside the connector has already flipped the
-			// flag in the DB; this is just the safety net for connectors
-			// that don't wire the callback.
-			if !c.NeedsReauth {
-				_ = connSvc.MarkNeedsReauth(c.ID, "validate detected refresh failure")
-				log.Printf("reauth sweep: connection %q flagged: needs re-authentication", c.ID)
+			// onRefreshFailure inside the connector has already transitioned
+			// status in the DB for connectors wired to the callback; this is
+			// the safety net for connectors that don't.
+			if c.Status != connections.StatusReauthRequired {
+				_ = connSvc.SetStatusWithReason(c.ID, connections.StatusReauthRequired, "validate detected refresh failure")
+				log.Printf("reauth sweep: connection %q transitioned to reauth_required", c.ID)
 			}
-		case err == nil && c.NeedsReauth:
-			_ = connSvc.ClearNeedsReauth(c.ID)
-			log.Printf("reauth sweep: connection %q recovered, clearing needs_reauth flag", c.ID)
+		case err == nil && c.Status == connections.StatusReauthRequired:
+			_ = connSvc.SetStatus(c.ID, connections.StatusActive)
+			log.Printf("reauth sweep: connection %q recovered, transitioning to active", c.ID)
 		}
 	}
 }

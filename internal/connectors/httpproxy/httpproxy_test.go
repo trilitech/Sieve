@@ -364,7 +364,7 @@ func TestAuthValueScrubFilterReturnsNilWhenDisabled(t *testing.T) {
 	}
 }
 
-// --- US4: additional_denied_headers (operator-extendable deny-list) ---
+// --- additional_denied_headers (operator-extendable deny-list) ---
 
 func TestExecuteRespectsAdditionalDeniedHeaders(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -465,7 +465,7 @@ func TestAuthValueScrubFilterReturnsFilterWhenEnabled(t *testing.T) {
 	}
 }
 
-// --- spec 007: auth_query_param injection ---
+// --- auth_query_param injection ---
 
 // makeQueryAuthProxy builds a ProxyConnector configured for query-string auth
 // against the supplied test server. authValue defaults to "SECRET" if empty.

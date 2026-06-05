@@ -24,7 +24,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/trilitech/Sieve/internal/database"
@@ -52,8 +54,35 @@ func NewService(db *database.DB) *Service {
 	return &Service{db: db}
 }
 
+// ErrReservedConnectionID is returned by Create / Update when a binding
+// references a reserved system row (e.g., `oauth_app__slack`). Reserved
+// rows hold per-deployment state and MUST NOT be agent-addressable.
+var ErrReservedConnectionID = errors.New("role binding references a reserved system connection id")
+
+// isReservedConnectionID mirrors connections.IsReservedConnectionID
+// without importing the package (avoids a cycle: roles ← connections
+// would close on roles → connections). The set is exactly one prefix
+// today; if more reserved kinds appear, mirror the change here.
+func isReservedConnectionID(id string) bool {
+	return strings.HasPrefix(id, "oauth_app__")
+}
+
+// validateBindings rejects bindings that reference reserved system rows.
+// Called from Create and Update to keep the write paths consistent.
+func validateBindings(bindings []Binding) error {
+	for _, b := range bindings {
+		if isReservedConnectionID(b.ConnectionID) {
+			return fmt.Errorf("%w: %q", ErrReservedConnectionID, b.ConnectionID)
+		}
+	}
+	return nil
+}
+
 // Create stores a new role.
 func (s *Service) Create(name string, bindings []Binding) (*Role, error) {
+	if err := validateBindings(bindings); err != nil {
+		return nil, err
+	}
 	id := generateID()
 
 	bindingsJSON, err := json.Marshal(bindings)
@@ -121,6 +150,9 @@ func (s *Service) List() ([]Role, error) {
 
 // Update modifies a role's name and bindings.
 func (s *Service) Update(id, name string, bindings []Binding) error {
+	if err := validateBindings(bindings); err != nil {
+		return err
+	}
 	bindingsJSON, err := json.Marshal(bindings)
 	if err != nil {
 		return fmt.Errorf("marshal bindings: %w", err)

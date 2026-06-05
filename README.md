@@ -149,6 +149,24 @@ The Docker image comes with a batteries-included Python environment (requests, h
 3. Complete the OAuth flow
 4. One connection, six services — policies control which ones the agent can use
 
+### Slack (channels, users, history, threads, messages)
+
+Two install paths — see [`docs/connectors-slack.md`](docs/connectors-slack.md) for the full walkthrough including required bot scopes and troubleshooting.
+
+**OAuth path:**
+1. Set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in Sieve's environment (from your Slack app's Basic Information page).
+2. Open http://localhost:19816/connections → pick **Slack** → **Install via OAuth** → approve in Slack.
+3. Connection lands `status: active`. Agents can list channels, read history, search threads, and post messages — subject to policies.
+
+**Direct bot-token path** (for Slack apps you've already installed):
+1. From your Slack app's **OAuth & Permissions** page, copy the bot token (`xoxb-…`).
+2. **Add Connection** → **Slack** → **Use existing bot token** → paste and submit.
+3. Sieve calls `auth.test` against Slack; on success the connection lands `active`. The token is encrypted at rest — never written to a plaintext column or logged.
+
+Curated operations: `list_channels`, `list_users`, `read_user_profile`, `read_channel_history`, `read_thread`, `post_message`. (`search_messages` is exposed for policy bindings but disabled in v1 — it requires a user-token install which is on the roadmap.)
+
+Multi-workspace setups work — add a second Slack connection with a different alias and address each by name through the agent-facing API.
+
 ### LLM APIs (Anthropic, OpenAI, Gemini, Bedrock)
 
 1. Go to Connections → LLM API

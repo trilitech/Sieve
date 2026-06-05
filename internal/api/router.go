@@ -151,6 +151,7 @@ func (rt *Router) listConnections(w http.ResponseWriter, r *http.Request) {
 		ID          string `json:"id"`
 		Connector   string `json:"connector"`
 		DisplayName string `json:"display_name"`
+		Status      string `json:"status"`
 	}
 
 	connIDs := role.ConnectionIDs()
@@ -165,6 +166,7 @@ func (rt *Router) listConnections(w http.ResponseWriter, r *http.Request) {
 			ID:          conn.ID,
 			Connector:   conn.ConnectorType,
 			DisplayName: conn.DisplayName,
+			Status:      conn.Status,
 		})
 	}
 
@@ -200,7 +202,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	// fast with a structured response so the agent's wrapper can surface the
 	// re-auth URL to its human. Saves us building the connector and running
 	// policy only to fail at Token() inside Execute.
-	if c, err := rt.connections.Get(connID); err == nil && c.NeedsReauth {
+	if c, err := rt.connections.Get(connID); err == nil && c.Status == connections.StatusReauthRequired {
 		writeReauthError(w, connID, c.ReauthReason)
 		return
 	}
@@ -232,7 +234,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	// Get the connector instance.
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
-		writeConnectionError(w, http.StatusNotFound, fmt.Sprintf("connector not found: %v", err), err)
+		rt.writeConnectionError(w, http.StatusNotFound, fmt.Sprintf("connector not found: %v", err), connID, err)
 		return
 	}
 
@@ -284,6 +286,12 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusForbidden, err.Error())
 				return
 			}
+			if errors.Is(err, connector.ErrOperationNotEnabled) {
+				reason := stripSentinelPrefix(err, connector.ErrOperationNotEnabled)
+				rt.logAudit(tok, connID, operation, params, "operation_not_enabled", reason, time.Since(start).Milliseconds())
+				writeOperationNotEnabledError(w, connID, operation, reason)
+				return
+			}
 			rt.logAudit(tok, connID, operation, params, "allow(error)", "", time.Since(start).Milliseconds())
 			if errors.Is(err, connector.ErrNeedsReauth) {
 				reason := err.Error()
@@ -296,9 +304,9 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", err))
 			return
 		}
-		// Spec 007: detect the http_proxy auth_query_param override signal
-		// via the typed *httpproxy.ExecuteResult returned by the connector.
-		// The flag is json:"-" so it never serialises to the agent.
+		// Detect the http_proxy auth_query_param override signal
+		// smuggled through the result map's private `_auth_query_overridden`
+		// key. Strip the key before serialising so the agent never sees it.
 		policyResult := "allow"
 		if er, ok := result.(*httpproxy.ExecuteResult); ok && er.AuthQueryOverridden {
 			policyResult = "http_proxy.auth_query_overridden"
@@ -379,6 +387,12 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusForbidden, err.Error())
 				return
 			}
+			if errors.Is(err, connector.ErrOperationNotEnabled) {
+				reason := stripSentinelPrefix(err, connector.ErrOperationNotEnabled)
+				rt.logAudit(tok, connID, operation, params, "operation_not_enabled", reason, time.Since(start).Milliseconds())
+				writeOperationNotEnabledError(w, connID, operation, reason)
+				return
+			}
 			rt.logAudit(tok, connID, operation, params, "approved(error)", "", time.Since(start).Milliseconds())
 			if errors.Is(err, connector.ErrNeedsReauth) {
 				reason := err.Error()
@@ -391,7 +405,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("execute operation: %v", err))
 			return
 		}
-		// Spec 007: same typed-result check as the pre-approval path.
+		// Same private-key smuggling pattern as the pre-approval path.
 		policyResult := "approved"
 		if er, ok := result.(*httpproxy.ExecuteResult); ok && er.AuthQueryOverridden {
 			policyResult = "http_proxy.auth_query_overridden"
@@ -464,16 +478,15 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
-		writeConnectionError(w, http.StatusNotFound, "connection not available", err)
+		rt.writeConnectionError(w, http.StatusNotFound, "connection not available", connID, err)
 		return
 	}
 
 	// The connector must be an http_proxy type with ProxyHTTP method.
 	// Signature: (filterSummary, queryOverridden, error). filterSummary
-	// is used to detect auth_value scrub matches (spec 006 W1.2);
-	// queryOverridden is true when the auth_query_param injection
-	// dropped an agent-supplied value (spec 007). Both feed the
-	// audit-log policy_result selection.
+	// is used to detect auth_value scrub matches; queryOverridden is
+	// true when the auth_query_param injection dropped an agent-supplied
+	// value. Both feed the audit-log policy_result selection.
 	type httpProxier interface {
 		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) (string, bool, error)
 	}
@@ -582,9 +595,9 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		rt.logAudit(tok, connID, operation, nil, policyResult, err.Error(), time.Since(start).Milliseconds())
 		return
 	}
-	// Audit identifier precedence (per spec 007 contracts/audit-identifier.md):
+	// Audit identifier precedence:
 	//   1. http_proxy.auth_query_overridden (override is an attempted exploit)
-	//   2. http_proxy.auth_value_scrubbed   (W1.2 routine defensive event)
+	//   2. http_proxy.auth_value_scrubbed   (routine defensive event)
 	//   3. proxied                          (vanilla success)
 	policyResult := "proxied"
 	if queryOverridden {
@@ -639,34 +652,110 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
-// writeConnectionError centralizes the locked-state response. If err is the
-// keyring-not-loaded sentinel, return 503; if err is the rotation-in-progress
-// sentinel, return 503 with a Retry-After header so retry-aware agent SDKs
-// back off cleanly during the brief rotation window. Otherwise fall through
-// to the caller-supplied default status. Routed through one helper so every
-// credential-touching endpoint produces an identical body.
-func writeConnectionError(w http.ResponseWriter, defaultStatus int, defaultMessage string, err error) {
-	if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+// writeStructuredError writes a JSON error response with separate `error`
+// (machine-readable code) and `message` (human-readable detail) fields.
+// Used by sentinel-mapping for ErrReauthRequired / ErrConnectionDisabled
+// so callers can branch on a stable error code without parsing the
+// message text.
+func writeStructuredError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]string{"error": code, "message": message})
+}
+
+// writeConnectionError centralizes connection-state response mapping.
+// Sentinel priority:
+//   - secrets.ErrKeyringNotLoaded         → 503 "service locked"
+//   - secrets.ErrKeyringRotating          → 503 + Retry-After so retry-aware
+//     agent SDKs back off cleanly during the brief rotation window
+//   - connections.ErrReauthRequired       → 403 reauth_required envelope
+//     (delegates to writeReauthError so the byte shape is identical to
+//     the post-flight path)
+//   - connections.ErrConnectionDisabled   → 403 {"error":"disabled",...}
+//
+// Otherwise falls through to the caller-supplied default. Routed through
+// one helper so every credential-touching endpoint produces identical
+// bodies.
+//
+// rt is needed so the helper can look up the connection's reauth_reason
+// when emitting the reauth_required envelope. connID is the connection
+// the caller was attempting to address; both threads through to the
+// envelope's connection_id / reauth_url fields.
+func (rt *Router) writeConnectionError(w http.ResponseWriter, defaultStatus int, defaultMessage, connID string, err error) {
+	switch {
+	case errors.Is(err, secrets.ErrKeyringNotLoaded):
 		writeError(w, http.StatusServiceUnavailable, "service locked: passphrase required")
-		return
-	}
-	if errors.Is(err, secrets.ErrKeyringRotating) {
+	case errors.Is(err, secrets.ErrKeyringRotating):
 		w.Header().Set("Retry-After", "5")
 		writeError(w, http.StatusServiceUnavailable, "rotation in progress, retry shortly")
-		return
+	case errors.Is(err, connections.ErrReauthRequired):
+		reason := ""
+		if connID != "" {
+			if c, e := rt.connections.Get(connID); e == nil {
+				reason = c.ReauthReason
+			}
+		}
+		writeReauthError(w, connID, reason)
+	case errors.Is(err, connections.ErrConnectionDisabled):
+		writeStructuredError(w, http.StatusForbidden, "disabled",
+			"connection is disabled; an admin must re-enable it before agents can use it")
+	default:
+		writeError(w, defaultStatus, defaultMessage)
 	}
-	writeError(w, defaultStatus, defaultMessage)
+}
+
+// writeOperationNotEnabledError emits HTTP 501 with the canonical
+// operation_not_enabled envelope:
+//
+//	{
+//	  "error":         "operation_not_enabled",
+//	  "connection_id": "<connection-id>",
+//	  "operation":     "<operation-name>",
+//	  "message":       "<reason text from the connector>"
+//	}
+//
+// reason is the connector-supplied detail (the err string with the
+// sentinel prefix stripped). Distinct from 403 (reauth) and 503
+// (service locked) — agent SDKs should NOT retry.
+func writeOperationNotEnabledError(w http.ResponseWriter, connID, operation, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotImplemented)
+	json.NewEncoder(w).Encode(map[string]any{
+		"error":         "operation_not_enabled",
+		"connection_id": connID,
+		"operation":     operation,
+		"message":       reason,
+	})
+}
+
+// stripSentinelPrefix removes the wrapped sentinel error's leading
+// "<sentinel-text>: " prefix from err.Error() so the response body
+// carries only the connector-supplied reason. If the format isn't a
+// wrap, returns the full error string.
+func stripSentinelPrefix(err error, sentinel error) string {
+	msg := err.Error()
+	prefix := sentinel.Error() + ": "
+	if strings.HasPrefix(msg, prefix) {
+		return msg[len(prefix):]
+	}
+	return msg
 }
 
 // writeReauthError emits the structured response that points an agent (and
 // the human reading the agent's tool output) at the re-authentication URL.
-// Used both pre-flight (the needs_reauth flag is already set) and post-flight
-// (Execute returned ErrNeedsReauth, which means the flag was just set).
+// Used both pre-flight (status='reauth_required' detected before Execute)
+// and post-flight (Execute returned ErrNeedsReauth, which means the status
+// was just transitioned).
+//
+// HTTP 403 + the canonical reauth_required envelope. The legacy 503/
+// connection_reauth_required response was retired so 503 stays reserved
+// for genuinely transient conditions (notably keyring-not-loaded
+// "service locked"). See docs/agent-error-contract.md.
 func writeReauthError(w http.ResponseWriter, connID, reason string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
+	w.WriteHeader(http.StatusForbidden)
 	json.NewEncoder(w).Encode(map[string]any{
-		"error":         "connection_reauth_required",
+		"error":         "reauth_required",
 		"connection_id": connID,
 		"reason":        reason,
 		"reauth_url":    "/connections/" + connID + "/reauth",
@@ -767,14 +856,14 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 	}
 
 	// Pre-flight reauth check — short-circuit if the connection is dead.
-	if c, err := rt.connections.Get(connID); err == nil && c.NeedsReauth {
+	if c, err := rt.connections.Get(connID); err == nil && c.Status == connections.StatusReauthRequired {
 		writeReauthError(w, connID, c.ReauthReason)
 		return
 	}
 
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
-		writeConnectionError(w, http.StatusNotFound, "connector not available", err)
+		rt.writeConnectionError(w, http.StatusNotFound, "connector not available", connID, err)
 		return
 	}
 
@@ -848,6 +937,12 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 
 	result, err := conn.Execute(r.Context(), operation, params)
 	if err != nil {
+		if errors.Is(err, connector.ErrOperationNotEnabled) {
+			reason := stripSentinelPrefix(err, connector.ErrOperationNotEnabled)
+			rt.logAudit(tok, connID, operation, params, "operation_not_enabled", reason, time.Since(start).Milliseconds())
+			writeOperationNotEnabledError(w, connID, operation, reason)
+			return
+		}
 		rt.logAudit(tok, connID, operation, params, "error", err.Error(), time.Since(start).Milliseconds())
 		if errors.Is(err, connector.ErrNeedsReauth) {
 			reason := err.Error()

@@ -150,10 +150,9 @@ func (a *RotationAuditor) LogRotation(tx *sql.Tx, recordsRewrapped int, duration
 
 // LogRotationLockout writes one keyring.rotate_lockout audit row using a
 // fresh transaction. Called outside any rotation transaction at the moment
-// the consecutive-failure counter triggers a lockout, per FR-022. surface
-// is "ui" for the admin-form lockout (the only surface with a lockout
-// today). threshold is the consecutive-failure count that triggered the
-// lockout.
+// the consecutive-failure counter triggers a lockout. surface is "ui"
+// for the admin-form lockout (the only surface with a lockout today).
+// threshold is the consecutive-failure count that triggered the lockout.
 func (l *Logger) LogRotationLockout(surface string, threshold int) error {
 	return l.Log(&LogRequest{
 		TokenID:      "system",

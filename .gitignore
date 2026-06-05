@@ -13,6 +13,7 @@ data/
 node_modules/
 test-results/
 .specify/
+AGENTS.md
 specs/
 .DS_Store
 *.DS_Store

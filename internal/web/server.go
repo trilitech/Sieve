@@ -83,9 +83,9 @@ type Server struct {
 
 	githubApp *gitHubAppState // pending GitHub App manifest installs
 
-	// Passphrase-rotation lockout state (per-process; per FR-021).
-	// Wired into handleRotatePassphrase in Phase 4. The zero values mean
-	// "no failures recorded, not locked".
+	// Passphrase-rotation lockout state (per-process). Wired into
+	// handleRotatePassphrase. The zero values mean "no failures
+	// recorded, not locked".
 	rotateMu        sync.Mutex
 	rotateFailures  int       // consecutive wrong-current-passphrase count
 	rotateLockedTil time.Time // zero = not locked; otherwise = cooldown end
@@ -277,10 +277,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /connections/{id}/reauth", s.handleConnectionReauth)
 	mux.HandleFunc("GET /connections/{id}/edit", s.handleConnectionEditPage)
 	mux.HandleFunc("POST /connections/{id}/edit", s.handleConnectionEditSave)
+	mux.HandleFunc("POST /connections/{id}/disable", s.handleConnectionDisable)
+	mux.HandleFunc("POST /connections/{id}/enable", s.handleConnectionEnable)
 	mux.HandleFunc("GET /oauth/callback", s.handleOAuthCallback)
 
 	// GitHub-specific setup flows
 	mux.HandleFunc("POST /connections/github/pat", s.handleGitHubPAT)
+	// Slack connector flows.
+	mux.HandleFunc("POST /connections/slack/oauth/configure", s.handleSlackOAuthConfigure)
+	mux.HandleFunc("POST /connections/slack/oauth/clear", s.handleSlackOAuthClearConfig)
+	mux.HandleFunc("POST /connections/slack/oauth/start", s.handleSlackOAuthStart)
+	mux.HandleFunc("POST /connections/slack/token", s.handleSlackToken)
+	mux.HandleFunc("POST /connections/slack/{id}/reauth", s.handleSlackReauth)
 	mux.HandleFunc("POST /connections/github/app/start", s.handleGitHubAppStart)
 	mux.HandleFunc("GET /connections/github/app/created", s.handleGitHubAppCreated)
 	mux.HandleFunc("GET /connections/github/app/installed", s.handleGitHubAppInstalled)
@@ -465,6 +473,13 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		"ConnLabels":  connLabels,
 		"Catalog":     catalog,
 		"ConnType":    connType,
+		// Per-connector UI capability flags. Slack OAuth requires
+		// operator-supplied client credentials. The UI shows different
+		// content depending on whether they're configured: the install
+		// button when set, the configure-form when not. Same lookup
+		// chain (settings → env) the install handler uses, so the
+		// flag and runtime behavior never diverge.
+		"SlackOAuthConfigured": s.slackOAuthIsConfigured(),
 	}
 	s.render(w, "connections", data)
 }
@@ -537,6 +552,21 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Redirect(w, r, "/connections", http.StatusSeeOther)
+		return
+	}
+
+	// Slack must use the dedicated /connections/slack/{oauth/start,token,...}
+	// routes which validate against Slack before persisting. Falling
+	// through to the generic "save directly" branch below would store a
+	// connection with empty config — the row would appear in the UI but
+	// every operation would fail because the live connector can't be
+	// instantiated without auth_kind set.
+	if connectorType == "slack" {
+		http.Error(w,
+			"Slack connections must be added via the Slack-specific install flow "+
+				"(POST /connections/slack/oauth/start or /connections/slack/token). "+
+				"The generic add endpoint cannot validate Slack credentials.",
+			http.StatusBadRequest)
 		return
 	}
 
@@ -633,6 +663,59 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
+// handleConnectionDisable transitions a connection's status to "disabled".
+// Operator-driven hard stop: agent operations will be denied with HTTP 403
+// until handleConnectionEnable returns the row to "active". Differs from
+// reauth_required in two ways: (1) the operator chose this state
+// explicitly; (2) re-auth flows do NOT clear it — only the explicit
+// Enable button does. Gated by rejectIfAgentToken.
+func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.connections.SetStatus(id, connections.StatusDisabled); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
+// handleConnectionEnable transitions a "disabled" connection back into
+// the lifecycle. The post-action status is NOT unconditionally "active":
+// if the row carries a non-empty reauth_reason (the underlying credential
+// was broken before the operator disabled the connection), the enable
+// action transitions to "reauth_required" instead of "active" so the
+// connection never serves agent traffic with known-broken credentials.
+// The action itself always succeeds — only the destination state
+// varies. Gated by rejectIfAgentToken.
+func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+
+	// Inspect reauth_reason: a non-empty value indicates the credential
+	// was broken before disable. Route the post-enable state accordingly.
+	c, err := s.connections.Get(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if c.ReauthReason != "" {
+		if err := s.connections.SetStatusWithReason(id, connections.StatusReauthRequired, c.ReauthReason); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		if err := s.connections.SetStatus(id, connections.StatusActive); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
 // --- OAuth handlers ---
 
 func (s *Server) googleOAuthConfig(host string) (*oauth2.Config, error) {
@@ -687,6 +770,13 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	if !ok {
 		http.Error(w, "invalid or expired state — try adding the connection again", http.StatusBadRequest)
+		return
+	}
+
+	// Per-connector dispatch. Slack lands in slackOAuthExchange (web/slack.go);
+	// google falls through to the existing path below.
+	if pending.ConnectorType == "slack" {
+		s.completeSlackOAuth(w, r, pending, code)
 		return
 	}
 
@@ -1228,10 +1318,26 @@ func inferPolicyScope(cfg map[string]any) string {
 		}
 		if ops, ok := match["operations"].([]any); ok {
 			for _, op := range ops {
-				if s, _ := op.(string); s == "proxy_request" {
+				s, _ := op.(string)
+				if s == "proxy_request" {
 					return "http_proxy"
 				}
+				switch s {
+				case "list_channels", "list_users", "read_user_profile",
+					"read_channel_history", "read_thread", "post_message",
+					"search_messages":
+					return "slack"
+				}
 			}
+		}
+		if _, ok := match["channel"]; ok {
+			return "slack"
+		}
+		if _, ok := match["text_contains"]; ok {
+			return "slack"
+		}
+		if _, ok := match["user"]; ok {
+			return "slack"
 		}
 		if _, ok := match["providers"]; ok {
 			return "llm"

@@ -1,6 +1,7 @@
 package connections_test
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -376,5 +377,207 @@ func TestInitAll(t *testing.T) {
 		if conn == nil {
 			t.Fatalf("expected non-nil connector for %s", id)
 		}
+	}
+}
+
+// TestService_NewConnectionDefaultsToActive asserts a freshly added
+// connection lands with status='active'.
+func TestService_NewConnectionDefaultsToActive(t *testing.T) {
+	svc, _ := setup(t)
+
+	if err := svc.Add("fresh", "mock", "Fresh", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	c, err := svc.Get("fresh")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if c.Status != connections.StatusActive {
+		t.Fatalf("expected status=%q, got %q", connections.StatusActive, c.Status)
+	}
+}
+
+// TestService_SetStatus_HappyPath asserts SetStatus updates the row and
+// the change is observable via Get. Covers all three valid values.
+func TestService_SetStatus_HappyPath(t *testing.T) {
+	svc, _ := setup(t)
+
+	if err := svc.Add("hs", "mock", "HS", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	for _, want := range []string{
+		connections.StatusReauthRequired,
+		connections.StatusDisabled,
+		connections.StatusActive,
+	} {
+		if err := svc.SetStatus("hs", want); err != nil {
+			t.Fatalf("set %q: %v", want, err)
+		}
+		c, err := svc.Get("hs")
+		if err != nil {
+			t.Fatalf("get after set %q: %v", want, err)
+		}
+		if c.Status != want {
+			t.Fatalf("expected status=%q, got %q", want, c.Status)
+		}
+	}
+}
+
+// TestService_SetStatus_RejectsUnknownValue asserts SetStatus rejects
+// values outside the {active, reauth_required, disabled} set without
+// touching the database.
+func TestService_SetStatus_RejectsUnknownValue(t *testing.T) {
+	svc, _ := setup(t)
+
+	if err := svc.Add("rs", "mock", "RS", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := svc.SetStatus("rs", "bogus"); err == nil {
+		t.Fatal("expected error for unknown status value")
+	}
+	// Original status must be unchanged.
+	c, _ := svc.Get("rs")
+	if c.Status != connections.StatusActive {
+		t.Fatalf("status should be unchanged after rejected SetStatus, got %q", c.Status)
+	}
+}
+
+// TestService_SetStatus_NonexistentConnection asserts SetStatus returns
+// an error when the connection does not exist.
+func TestService_SetStatus_NonexistentConnection(t *testing.T) {
+	svc, _ := setup(t)
+	if err := svc.SetStatus("ghost", connections.StatusDisabled); err == nil {
+		t.Fatal("expected error for nonexistent connection")
+	}
+}
+
+// TestService_GetConnector_BlocksOnReauthRequired asserts GetConnector
+// short-circuits with ErrReauthRequired when status is reauth_required,
+// without instantiating the live connector.
+func TestService_GetConnector_BlocksOnReauthRequired(t *testing.T) {
+	svc, _ := setup(t)
+
+	if err := svc.Add("blk-r", "mock", "Blocked Reauth", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := svc.SetStatus("blk-r", connections.StatusReauthRequired); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	_, err := svc.GetConnector("blk-r")
+	if !errors.Is(err, connections.ErrReauthRequired) {
+		t.Fatalf("expected ErrReauthRequired, got %v", err)
+	}
+}
+
+// TestService_GetConnector_BlocksOnDisabled asserts GetConnector
+// short-circuits with ErrConnectionDisabled when status is disabled.
+func TestService_GetConnector_BlocksOnDisabled(t *testing.T) {
+	svc, _ := setup(t)
+
+	if err := svc.Add("blk-d", "mock", "Blocked Disabled", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := svc.SetStatus("blk-d", connections.StatusDisabled); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	_, err := svc.GetConnector("blk-d")
+	if !errors.Is(err, connections.ErrConnectionDisabled) {
+		t.Fatalf("expected ErrConnectionDisabled, got %v", err)
+	}
+}
+
+// TestService_GetConnector_AllowsActive asserts GetConnector returns a
+// live connector when status is active (regression — the gate must not
+// block the happy path).
+func TestService_GetConnector_AllowsActive(t *testing.T) {
+	svc, _ := setup(t)
+
+	if err := svc.Add("ok", "mock", "OK", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	conn, err := svc.GetConnector("ok")
+	if err != nil {
+		t.Fatalf("get connector: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connector")
+	}
+}
+
+// TestService_GetConnector_RecoversAfterReactivate asserts that after
+// SetStatus(active), GetConnector works again on a previously blocked row.
+func TestService_GetConnector_RecoversAfterReactivate(t *testing.T) {
+	svc, _ := setup(t)
+
+	if err := svc.Add("rec", "mock", "Rec", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	_ = svc.SetStatus("rec", connections.StatusReauthRequired)
+	if _, err := svc.GetConnector("rec"); !errors.Is(err, connections.ErrReauthRequired) {
+		t.Fatalf("expected blocked, got %v", err)
+	}
+	if err := svc.SetStatus("rec", connections.StatusActive); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	if _, err := svc.GetConnector("rec"); err != nil {
+		t.Fatalf("expected unblocked after reactivate, got %v", err)
+	}
+}
+
+// TestService_LoadConnectorForRevalidation_BypassesReauthGate verifies the
+// helper the reauth sweeper uses to probe recovery: a connection with
+// status=reauth_required must yield a live connector (so Validate() can be
+// called) rather than short-circuiting like GetConnector does. Without
+// this path the sweeper can never auto-recover from a transient upstream
+// blip.
+func TestService_LoadConnectorForRevalidation_BypassesReauthGate(t *testing.T) {
+	svc, _ := setup(t)
+
+	if err := svc.Add("revprobe", "mock", "Revalidate Probe", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := svc.SetStatusWithReason("revprobe", connections.StatusReauthRequired, "induced for test"); err != nil {
+		t.Fatalf("set reauth_required: %v", err)
+	}
+
+	// Sanity: the gate is in place — agent traffic stays blocked.
+	if _, err := svc.GetConnector("revprobe"); !errors.Is(err, connections.ErrReauthRequired) {
+		t.Fatalf("GetConnector should still block, got %v", err)
+	}
+
+	// The sweeper's path must succeed in spite of the gate.
+	conn, err := svc.LoadConnectorForRevalidation("revprobe")
+	if err != nil {
+		t.Fatalf("LoadConnectorForRevalidation: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connector")
+	}
+}
+
+// TestService_LoadConnectorForRevalidation_RejectsReserved verifies the
+// reserved-id check is preserved on the bypass path so a system row can
+// never be addressed as a connection (e.g., _oauth_app:slack).
+func TestService_LoadConnectorForRevalidation_RejectsReserved(t *testing.T) {
+	svc, _ := setup(t)
+	if _, err := svc.LoadConnectorForRevalidation("oauth_app__slack"); err == nil {
+		t.Fatal("expected reserved-id rejection, got nil")
+	}
+}
+
+// TestService_LoadConnectorForRevalidation_OnDisabled_LoadsAnyway asserts
+// that the bypass returns a live connector even for disabled rows. The
+// sweeper's caller is responsible for skipping disabled rows; this method
+// is unconditionally permissive (matches the documented contract).
+func TestService_LoadConnectorForRevalidation_OnDisabled_LoadsAnyway(t *testing.T) {
+	svc, _ := setup(t)
+	if err := svc.Add("dis", "mock", "Disabled", map[string]any{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := svc.SetStatus("dis", connections.StatusDisabled); err != nil {
+		t.Fatalf("set disabled: %v", err)
+	}
+	if _, err := svc.LoadConnectorForRevalidation("dis"); err != nil {
+		t.Fatalf("LoadConnectorForRevalidation should bypass status, got %v", err)
 	}
 }

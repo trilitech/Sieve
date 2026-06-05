@@ -18,6 +18,15 @@ const (
 	KeyLLMMaxTokens  = "llm_max_tokens" // max tokens for generation (e.g., "4096")
 )
 
+// Delete removes a setting by key. No-op if the key is absent.
+func (s *Service) Delete(key string) error {
+	_, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, key)
+	if err != nil {
+		return fmt.Errorf("delete setting %q: %w", key, err)
+	}
+	return nil
+}
+
 // Service provides access to the settings store.
 type Service struct {
 	db *database.DB

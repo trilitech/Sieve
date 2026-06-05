@@ -248,6 +248,91 @@ With multiple MCP proxy connections, tool names are prefixed with the connection
 |----------|-----------|----------------|----------|
 | db-tools | mcp_proxy | Database Tools | just now |
 
+## Slack Workspace
+
+A Slack connection lets agents read and write to one Slack workspace under policy control. The full walkthrough including required bot scopes, troubleshooting, and the rationale behind the v1 limitations lives in [`connectors-slack.md`](connectors-slack.md); this section is the quick reference for the connections page.
+
+### Prerequisites
+
+- A Slack workspace where you can install apps.
+- A Slack app at <https://api.slack.com/apps> (yours, not a third party's). Note the Client ID and Client Secret from **Basic Information**.
+
+### Setup steps — OAuth install (recommended)
+
+1. Set Slack OAuth credentials in Sieve's environment before starting:
+
+   ```bash
+   export SLACK_CLIENT_ID="…"
+   export SLACK_CLIENT_SECRET="…"
+   ```
+
+2. In your Slack app's **OAuth & Permissions** page, add the bot scopes:
+
+   ```
+   channels:read groups:read users:read users.profile:read
+   channels:history groups:history chat:write
+   ```
+
+3. Add the redirect URL `http://<your-sieve-host>:19816/oauth/callback`.
+4. In Sieve's Connections page, pick **Slack** → **Install via OAuth** → approve in Slack.
+5. The connection lands with `status: active` and the bot token is encrypted at rest.
+
+### Setup steps — direct bot-token entry
+
+1. From your Slack app's **OAuth & Permissions** page, copy the bot token (`xoxb-…`).
+2. In Sieve, **Add Connection** → **Slack** → **Use existing bot token**. Paste the token and submit.
+3. Sieve calls `auth.test`; on success the connection lands `active`.
+
+### What you get
+
+Curated operations exposed to agents (subject to policies):
+
+- **list_channels** — list workspace channels (public, private, MPIM, IM)
+- **list_users** — list workspace members
+- **read_user_profile** — get profile info for a user
+- **read_channel_history** — recent messages in a channel
+- **read_thread** — replies under a parent message
+- **post_message** — post a message to a channel
+- **search_messages** — *disabled in v1* (requires user-token install, on the roadmap)
+
+All `list_*` operations use Sieve's normalized `{items, next_cursor}` pagination shape. Pass `cursor` and optional `page_size` (default 100, max 100) to walk past the first page.
+
+### How the agent accesses it
+
+```bash
+curl -X POST http://localhost:19817/api/v1/connections/<alias>/ops/list_channels \
+  -H "Authorization: Bearer sieve_tok_…" \
+  -H "Content-Type: application/json" \
+  -d '{"page_size": 5}'
+```
+
+If the token has only one connection, MCP tools are exposed unprefixed (`list_channels`); with multiple connections, the connection alias is prefixed (`acme-slack_list_channels`).
+
+### Connection table entry
+
+| Alias       | Service | Display Name | Status | Added    |
+|-------------|---------|--------------|--------|----------|
+| acme-slack  | slack   | Acme Workspace | Active | just now |
+
+### Status lifecycle
+
+- **active** — healthy, agents can call operations.
+- **reauth_required** — Slack returned a terminal-auth error (token revoked, app uninstalled, account deactivated). Click **Re-install** on the row to clear by completing OAuth, or paste a fresh bot token via the reauth form.
+- **disabled** — admin clicked **Disable**. Cleared only by clicking **Enable**; OAuth re-install does NOT clear it.
+
+When status is non-active, agent calls fail fast with HTTP 403 `{"error": "reauth_required" | "disabled", ...}` (REST) or `IsError` with text prefixed `reauth_required:` / `disabled:` (MCP). The upstream call is never made.
+
+### Multi-workspace
+
+Add a second Slack connection with a different alias (e.g., `acme-slack` and `engineering-slack`). Agents address each by alias on the agent-facing surface, and the MCP tool prefix disambiguates per-connection automatically.
+
+### Limitations (v1)
+
+- `search_messages` is disabled — Slack's `search.*` API requires a user token, not a bot token. The operation is exposed for policy binding stability and always returns `{"error": "operation_not_enabled", ...}` until a future release adds user-token install support.
+- No Slack Enterprise Grid org-level installs.
+- No inbound webhooks (Slack Events API). Sieve is outbound-only in v1; agents poll `read_channel_history` for event-driven workflows.
+- No granular-scope token rotation. v1 uses classic non-rotating bot tokens.
+
 ## After creating a connection
 
 Creating a connection makes it available in Sieve, but agents cannot use it until you:

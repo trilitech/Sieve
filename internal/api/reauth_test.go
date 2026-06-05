@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/trilitech/Sieve/internal/api"
+	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
@@ -31,13 +32,14 @@ func newReauthEnv(t *testing.T) *reauthEnv {
 	return &reauthEnv{Env: env, Token: tok, Server: srv}
 }
 
-// TestReauth_StructuredResponse: a flagged connection returns 503 with the
-// fields the agent's tool wrapper needs to surface the re-auth URL.
+// TestReauth_StructuredResponse: a flagged connection returns HTTP 403
+// with the canonical reauth_required envelope. The legacy 503/
+// connection_reauth_required shape was retired.
 func TestReauth_StructuredResponse(t *testing.T) {
 	r := newReauthEnv(t)
 
-	if err := r.Connections.MarkNeedsReauth("test-conn", "invalid_grant: refresh token revoked"); err != nil {
-		t.Fatalf("mark: %v", err)
+	if err := r.Connections.SetStatusWithReason("test-conn", connections.StatusReauthRequired, "invalid_grant: refresh token revoked"); err != nil {
+		t.Fatalf("set reauth_required: %v", err)
 	}
 
 	req, _ := http.NewRequest("POST",
@@ -51,8 +53,8 @@ func TestReauth_StructuredResponse(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
 	}
 
 	var body map[string]any
@@ -60,8 +62,8 @@ func TestReauth_StructuredResponse(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	if body["error"] != "connection_reauth_required" {
-		t.Errorf("error = %v, want connection_reauth_required", body["error"])
+	if body["error"] != "reauth_required" {
+		t.Errorf("error = %v, want reauth_required", body["error"])
 	}
 	if body["connection_id"] != "test-conn" {
 		t.Errorf("connection_id = %v, want test-conn", body["connection_id"])
@@ -81,8 +83,8 @@ func TestReauth_StructuredResponse(t *testing.T) {
 func TestReauth_ClearedAfterUpdateConfig(t *testing.T) {
 	r := newReauthEnv(t)
 
-	if err := r.Connections.MarkNeedsReauth("test-conn", "invalid_grant"); err != nil {
-		t.Fatalf("mark: %v", err)
+	if err := r.Connections.SetStatusWithReason("test-conn", connections.StatusReauthRequired, "invalid_grant"); err != nil {
+		t.Fatalf("set reauth_required: %v", err)
 	}
 	if err := r.Connections.UpdateConfig("test-conn", map[string]any{"refreshed": true}); err != nil {
 		t.Fatalf("update: %v", err)
@@ -99,7 +101,7 @@ func TestReauth_ClearedAfterUpdateConfig(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusServiceUnavailable {
-		t.Errorf("after re-auth (UpdateConfig), expected non-503, got 503")
+	if resp.StatusCode == http.StatusForbidden {
+		t.Errorf("after re-auth (UpdateConfig), expected non-403, got 403 — reauth-required state should have cleared")
 	}
 }

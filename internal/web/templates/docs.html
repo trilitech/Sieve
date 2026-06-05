@@ -180,7 +180,7 @@
         }
       });
 
-      // Hide TOC if there are fewer than two H2s (FR-010).
+      // Hide TOC if there are fewer than two H2s.
       const h2Count = article.querySelectorAll('h2').length;
       if (tocAside && h2Count < 2) tocAside.hidden = true;
 
