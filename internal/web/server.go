@@ -287,6 +287,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /connections/slack/oauth/configure", s.handleSlackOAuthConfigure)
 	mux.HandleFunc("POST /connections/slack/oauth/clear", s.handleSlackOAuthClearConfig)
 	mux.HandleFunc("POST /connections/slack/oauth/start", s.handleSlackOAuthStart)
+	mux.HandleFunc("POST /connections/slack/user/oauth/start", s.handleSlackUserOAuthStart)
 	mux.HandleFunc("POST /connections/slack/token", s.handleSlackToken)
 	mux.HandleFunc("POST /connections/slack/{id}/reauth", s.handleSlackReauth)
 	mux.HandleFunc("POST /connections/github/app/start", s.handleGitHubAppStart)
@@ -423,8 +424,26 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 
 	// Build display labels for connection types. LLM connections show
 	// their provider name instead of generic "http_proxy".
+	//
+	// For Slack, also surface the install mode (bot vs user token) and the
+	// acting identity so operators can see at a glance which connections
+	// carry the broader, act-as-the-operator reach of a user-token install.
 	connLabels := make(map[string]string)
+	connInstallMode := make(map[string]string) // id -> "user" | "bot" (slack only)
+	connActingUser := make(map[string]string)  // id -> acting Slack user ID (user installs)
 	for _, c := range conns {
+		if c.ConnectorType == "slack" {
+			if full, err := s.connections.GetWithConfig(c.ID); err == nil {
+				if kind, _ := full.Config["auth_kind"].(string); kind == "user_oauth" {
+					connInstallMode[c.ID] = "user"
+					if uid, _ := full.Config["acting_user_id"].(string); uid != "" {
+						connActingUser[c.ID] = uid
+					}
+				} else {
+					connInstallMode[c.ID] = "bot"
+				}
+			}
+		}
 		label := c.ConnectorType
 		if label == "http_proxy" || label == "mcp_proxy" {
 			if full, err := s.connections.GetWithConfig(c.ID); err == nil {
@@ -468,11 +487,13 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Active":      active,
-		"Connections": conns,
-		"ConnLabels":  connLabels,
-		"Catalog":     catalog,
-		"ConnType":    connType,
+		"Active":          active,
+		"Connections":     conns,
+		"ConnLabels":      connLabels,
+		"ConnInstallMode": connInstallMode,
+		"ConnActingUser":  connActingUser,
+		"Catalog":         catalog,
+		"ConnType":        connType,
 		// Per-connector UI capability flags. Slack OAuth requires
 		// operator-supplied client credentials. The UI shows different
 		// content depending on whether they're configured: the install
@@ -498,6 +519,9 @@ type pendingOAuth struct {
 	DisplayName   string
 	CreatedAt     time.Time
 	IsReauth      bool
+	// UserMode marks a Slack user-token ("Connect as me") install so the
+	// OAuth callback parses authed_user and stores a KindUserOAuth config.
+	UserMode bool
 }
 
 func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
@@ -1568,17 +1592,41 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve acting identities for the connections referenced by these
+	// entries. Audit rows store only connection_id (no per-row identity
+	// column); for a Slack user-token connection we look up acting_user_id
+	// from the connection config at display time. Best-effort: a locked
+	// keyring or a deleted connection simply yields no label.
+	actingIdentities := make(map[string]string)
+	seen := make(map[string]bool)
+	for _, e := range entries {
+		if e.ConnectionID == "" || e.ConnectionID == "-" || seen[e.ConnectionID] {
+			continue
+		}
+		seen[e.ConnectionID] = true
+		full, ferr := s.connections.GetWithConfig(e.ConnectionID)
+		if ferr != nil {
+			continue
+		}
+		if kind, _ := full.Config["auth_kind"].(string); kind == "user_oauth" {
+			if uid, _ := full.Config["acting_user_id"].(string); uid != "" {
+				actingIdentities[e.ConnectionID] = uid
+			}
+		}
+	}
+
 	data := map[string]any{
-		"Active":       "audit",
-		"Entries":      entries,
-		"Page":         page,
-		"TotalPages":   (total + filter.Limit - 1) / filter.Limit,
-		"Total":        total,
-		"TokenID":      filter.TokenID,
-		"ConnectionID": filter.ConnectionID,
-		"Operation":    filter.Operation,
-		"After":        r.URL.Query().Get("after"),
-		"Before":       r.URL.Query().Get("before"),
+		"Active":           "audit",
+		"Entries":          entries,
+		"ActingIdentities": actingIdentities,
+		"Page":             page,
+		"TotalPages":       (total + filter.Limit - 1) / filter.Limit,
+		"Total":            total,
+		"TokenID":          filter.TokenID,
+		"ConnectionID":     filter.ConnectionID,
+		"Operation":        filter.Operation,
+		"After":            r.URL.Query().Get("after"),
+		"Before":           r.URL.Query().Get("before"),
 	}
 	s.render(w, "audit", data)
 }

@@ -190,6 +190,63 @@ func TestOps_SearchMessages_NotEnabled(t *testing.T) {
 	}
 }
 
+// newUserConnectorForTest stands up a Slack Connector with a user-token
+// (KindUserOAuth) config wired to the mock — used to exercise search_messages
+// which is only available for user installs.
+func newUserConnectorForTest(t *testing.T, mock *mockslack.Server) *Connector {
+	t.Helper()
+	cfg := &Config{
+		AuthKind:   KindUserOAuth,
+		OAuthToken: map[string]any{"access_token": "xoxp-user-token"},
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate user config: %v", err)
+	}
+	ts, err := buildTokenSource(cfg, mock.URL, nil)
+	if err != nil {
+		t.Fatalf("build token source: %v", err)
+	}
+	cli, err := newClient(ts, mock.URL, nil)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return &Connector{cfg: cfg, client: cli}
+}
+
+// TestOps_SearchMessages_UserToken — a user-token install executes
+// search.messages and returns the normalized {items, next_cursor} shape.
+func TestOps_SearchMessages_UserToken(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+	c := newUserConnectorForTest(t, mock)
+
+	got, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "incident"})
+	if err != nil {
+		t.Fatalf("search_messages (user token): %v", err)
+	}
+	m := got.(map[string]any)
+	items, ok := m["items"].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("expected matches array, got %+v", m["items"])
+	}
+	if _, ok := m["next_cursor"]; !ok {
+		t.Fatal("expected next_cursor key")
+	}
+}
+
+// TestOps_SearchMessages_BotTokenStillGated — a bot install still gets the
+// ErrOperationNotEnabled sentinel (SC-006: existing connections unchanged).
+func TestOps_SearchMessages_BotTokenStillGated(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+	c, _ := newConnectorForTest(t, mock)
+
+	_, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "foo"})
+	if !errors.Is(err, connector.ErrOperationNotEnabled) {
+		t.Fatalf("bot token search must stay gated, got %v", err)
+	}
+}
+
 func TestOps_PostMessage(t *testing.T) {
 	mock := mockslack.New()
 	t.Cleanup(mock.Close)

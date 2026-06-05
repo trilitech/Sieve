@@ -28,6 +28,12 @@ func (c *Connector) validate(ctx context.Context) error {
 	}
 	if botID, ok := resp["user_id"].(string); ok && botID != "" {
 		c.cfg.BotUserID = botID
+		// For a user-token install, auth.test's user_id is the authorizing
+		// operator (the acting identity), not a bot user. Record it for UI
+		// labeling and audit attribution.
+		if c.cfg.AuthKind == KindUserOAuth {
+			c.cfg.ActingUserID = botID
+		}
 	}
 	return nil
 }

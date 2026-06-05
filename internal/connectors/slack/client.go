@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"golang.org/x/oauth2"
 )
 
 // defaultBaseURL is the production Slack Web API root. Tests override
@@ -20,9 +22,9 @@ const defaultBaseURL = "https://slack.com"
 // token and the terminal-auth callback so each method call doesn't have
 // to thread them.
 type client struct {
-	httpClient *http.Client
-	baseURL    string
-	token      string
+	httpClient  *http.Client
+	baseURL     string
+	tokenSource oauth2.TokenSource
 
 	// onTerminalAuth fires when the classifier flags the response as a
 	// terminal-auth failure (token revoked, account deactivated, etc.).
@@ -32,13 +34,14 @@ type client struct {
 	onTerminalAuth func()
 }
 
-// newClient builds a client from the validated Config plus the
-// optional `_base_url` and `_on_terminal_auth` injections. Returns
-// an error if the config has no usable bearer token.
-func newClient(cfg *Config, baseURL string, onTerminalAuth func()) (*client, error) {
-	tok := cfg.accessToken()
-	if tok == "" {
-		return nil, fmt.Errorf("slack: empty access token")
+// newClient builds a client from a resolved token source plus the optional
+// `_base_url` and `_on_terminal_auth` injections. The token source is either
+// static (bot tokens, non-rotating user tokens) or refreshing (rotating user
+// tokens) — see buildTokenSource. Holding a source rather than a fixed string
+// means a renewed user token is picked up on the next call automatically.
+func newClient(ts oauth2.TokenSource, baseURL string, onTerminalAuth func()) (*client, error) {
+	if ts == nil {
+		return nil, fmt.Errorf("slack: nil token source")
 	}
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -48,9 +51,21 @@ func newClient(cfg *Config, baseURL string, onTerminalAuth func()) (*client, err
 	return &client{
 		httpClient:     http.DefaultClient,
 		baseURL:        baseURL,
-		token:          tok,
+		tokenSource:    ts,
 		onTerminalAuth: onTerminalAuth,
 	}, nil
+}
+
+// bearer resolves the current access token from the token source. For a
+// rotating user token this may trigger a refresh; a terminal refresh failure
+// surfaces here as connector.ErrNeedsReauth, which post/get propagate so the
+// API/MCP layers can return the re-auth contract.
+func (c *client) bearer() (string, error) {
+	tok, err := c.tokenSource.Token()
+	if err != nil {
+		return "", err
+	}
+	return tok.AccessToken, nil
 }
 
 // post issues a Slack Web API call. The Slack docs accept either form-
@@ -61,11 +76,15 @@ func newClient(cfg *Config, baseURL string, onTerminalAuth func()) (*client, err
 // before returning the structured error. Callers see the same error
 // shape regardless — the side effect is the status transition.
 func (c *client) post(ctx context.Context, method string, params url.Values) (map[string]any, error) {
+	tok, err := c.bearer()
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/"+method, strings.NewReader(params.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("slack: build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := c.httpClient.Do(req)
@@ -105,6 +124,10 @@ func (c *client) post(ctx context.Context, method string, params url.Values) (ma
 // Slack permits GET on every Web API method but we use POST for
 // writes; only auth.test in this codebase uses GET so far.
 func (c *client) get(ctx context.Context, method string, params url.Values) (map[string]any, error) {
+	tok, err := c.bearer()
+	if err != nil {
+		return nil, err
+	}
 	u := c.baseURL + "/api/" + method
 	if len(params) > 0 {
 		u += "?" + params.Encode()
@@ -113,7 +136,7 @@ func (c *client) get(ctx context.Context, method string, params url.Values) (map
 	if err != nil {
 		return nil, fmt.Errorf("slack: build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+tok)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

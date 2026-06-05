@@ -1627,6 +1627,58 @@ test.describe('Slack connector — UI surfaces', () => {
     ).toBeVisible();
   });
 
+  test('Slack card offers a user-token "Connect as me" install when OAuth is configured', async ({ page, request }) => {
+    // The user-token install form only renders once OAuth app creds are set.
+    await request.post(`${s.web_url}/connections/slack/oauth/configure`, {
+      form: { client_id: '1234567890.1234567890', client_secret: 'x'.repeat(32) },
+    });
+    try {
+      await page.goto(`${s.web_url}/connections`);
+      await expect(
+        page.locator('form[action="/connections/slack/user/oauth/start"]')
+      ).toBeVisible();
+    } finally {
+      await request.post(`${s.web_url}/connections/slack/oauth/clear`);
+    }
+  });
+
+  test('abandoned user-token authorization leaves no orphaned connection', async ({ page, request }) => {
+    // Starting the flow redirects to Slack but MUST NOT persist a connection
+    // until the OAuth callback completes (FR-004; US1 acceptance scenario 3).
+    await request.post(`${s.web_url}/connections/slack/oauth/configure`, {
+      form: { client_id: '1234567890.1234567890', client_secret: 'x'.repeat(32) },
+    });
+    try {
+      const start = await request.post(`${s.web_url}/connections/slack/user/oauth/start`, {
+        form: { id: 'abandoned-user-conn', display_name: 'Abandoned' },
+        maxRedirects: 0,
+      });
+      // Redirect to Slack's authorize endpoint (we never complete it).
+      expect([302, 303]).toContain(start.status());
+
+      // No connection row was created — the connections page must not list it.
+      await page.goto(`${s.web_url}/connections`);
+      await expect(page.locator('tr:has-text("abandoned-user-conn")')).toHaveCount(0);
+    } finally {
+      await request.post(`${s.web_url}/connections/slack/oauth/clear`);
+    }
+  });
+
+  test('connection list distinguishes Slack user-token vs bot-token installs', async ({ page }) => {
+    // testserver seeds slack-as-me (user_oauth) and slack-bot (token).
+    await page.goto(`${s.web_url}/connections`);
+
+    const userRow = page.locator('tr:has-text("slack-as-me")');
+    await expect(userRow).toBeVisible();
+    await expect(userRow.locator('text=User token')).toBeVisible();
+    // Acting identity is shown for the user-token connection.
+    await expect(userRow.locator('text=U0OPERATOR')).toBeVisible();
+
+    const botRow = page.locator('tr:has-text("slack-bot")');
+    await expect(botRow).toBeVisible();
+    await expect(botRow.locator('text=Bot token')).toBeVisible();
+  });
+
   test('disable button transitions a connection to disabled status', async ({ page, request }) => {
     // Seed a fresh connection via the API (no Slack creds needed).
     // Use the existing "test-conn" mock connection (already seeded

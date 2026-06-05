@@ -100,6 +100,23 @@ func main() {
 	must(connSvc.Add("reauth-conn", "mock", "Needs Re-auth", map[string]any{}))
 	must(connSvc.SetStatusWithReason("reauth-conn", connections.StatusReauthRequired, "seeded for e2e reauth_required assertion"))
 
+	// A Slack user-token connection so the Playwright suite can assert the
+	// install-mode + acting-identity labeling (US3 / FR-010). Stored with a
+	// user-token config; the connections-list view derives the "User token"
+	// label and acting identity from acting_user_id.
+	must(connSvc.Add("slack-as-me", "slack", "Slack (as me)", map[string]any{
+		"auth_kind":      "user_oauth",
+		"team_id":        "T012ABCDEF",
+		"acting_user_id": "U0OPERATOR",
+		"oauth_token":    map[string]any{"access_token": "xoxp-e2e-seed-token", "token_type": "user"},
+	}))
+	// A Slack bot-token connection for contrast (shows the "Bot token" label).
+	must(connSvc.Add("slack-bot", "slack", "Slack (bot)", map[string]any{
+		"auth_kind": "token",
+		"bot_token": "xoxb-e2e-seed-token",
+		"team_id":   "T012ABCDEF",
+	}))
+
 	// Get the read-only preset for a pre-built role+token.
 	readOnly, err := policiesSvc.GetByName("read-only")
 	mustErr(err, "get read-only")
@@ -118,13 +135,13 @@ func main() {
 	// Two pending approvals.
 	_, err = approvalQ.Submit(&approval.SubmitRequest{
 		TokenID: tokResult.Token.ID, ConnectionID: "test-conn",
-		Operation: "send_email",
+		Operation:   "send_email",
 		RequestData: map[string]any{"to": "alice@test.com", "subject": "Approval 1", "body": "body1"},
 	})
 	mustErr(err, "submit approval 1")
 	_, err = approvalQ.Submit(&approval.SubmitRequest{
 		TokenID: tokResult.Token.ID, ConnectionID: "test-conn",
-		Operation: "send_email",
+		Operation:   "send_email",
 		RequestData: map[string]any{"to": "bob@test.com", "subject": "Approval 2", "body": "body2"},
 	})
 	mustErr(err, "submit approval 2")
@@ -163,11 +180,11 @@ func main() {
 
 	// Output server info.
 	info := map[string]any{
-		"web_url":         fmt.Sprintf("http://127.0.0.1:%d", webPort),
-		"api_url":         fmt.Sprintf("http://127.0.0.1:%d", apiPort),
-		"seed_token":      tokResult.PlaintextToken,
-		"seed_token_id":   tokResult.Token.ID,
-		"seed_role_id":    role.ID,
+		"web_url":             fmt.Sprintf("http://127.0.0.1:%d", webPort),
+		"api_url":             fmt.Sprintf("http://127.0.0.1:%d", apiPort),
+		"seed_token":          tokResult.PlaintextToken,
+		"seed_token_id":       tokResult.Token.ID,
+		"seed_role_id":        role.ID,
 		"read_only_policy_id": readOnly.ID,
 	}
 	infoJSON, _ := json.Marshal(info)

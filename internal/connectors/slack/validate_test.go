@@ -20,7 +20,11 @@ func newConnectorForTest(t *testing.T, mock *mockslack.Server) (*Connector, *boo
 		t.Fatalf("validate config: %v", err)
 	}
 	terminalFired := new(bool)
-	cli, err := newClient(cfg, mock.URL, func() { *terminalFired = true })
+	ts, err := buildTokenSource(cfg, mock.URL, nil)
+	if err != nil {
+		t.Fatalf("build token source: %v", err)
+	}
+	cli, err := newClient(ts, mock.URL, func() { *terminalFired = true })
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

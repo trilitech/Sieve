@@ -13,6 +13,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"golang.org/x/oauth2"
 )
 
 // faultyReader returns one chunk of bytes, then a custom error on the
@@ -70,8 +72,8 @@ func TestClient_Get_PropagatesIOReadError(t *testing.T) {
 				Request: req,
 			}, nil
 		})},
-		baseURL: "http://example.invalid",
-		token:   "xoxb-test",
+		baseURL:     "http://example.invalid",
+		tokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "xoxb-test"}),
 	}
 
 	_, err := c.get(context.Background(), "auth.test", nil)

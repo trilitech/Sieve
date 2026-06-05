@@ -62,10 +62,11 @@ var operations = []connector.OperationDef{
 	},
 	{
 		Name:        "search_messages",
-		Description: "Search messages (requires user-token install — not enabled in v1).",
+		Description: "Search messages (requires a user-token install; not available for bot-token connections).",
 		ReadOnly:    true,
 		Params: map[string]connector.ParamDef{
-			"query": {Type: "string", Required: true},
+			"query":  {Type: "string", Required: true},
+			"cursor": {Type: "string", Description: "Pagination cursor from a previous response's next_cursor."},
 		},
 	},
 	{
@@ -196,19 +197,45 @@ func (c *Connector) opReadThread(ctx context.Context, params map[string]any) (an
 	}, nil
 }
 
-// opSearchMessages always returns the typed connector.ErrOperationNotEnabled
-// sentinel: search.messages requires a user-token install, which is out
-// of scope for v1 (classic bot scopes only).
-//
-// The connector exposes this op anyway so the operation surface stays
-// stable and policies that mention `search_messages` continue to bind
-// even after v2 unlocks user-token installs. Returning a typed error
-// (rather than a phantom-success map with "error" inside) lets the API
-// layer map this to HTTP 501 and the MCP layer to a tool-error result,
-// so agent SDKs branch on the status code / prefix without inspecting
-// response bodies.
+// opSearchMessages calls Slack's search.messages — but only for a user-token
+// install. Slack's search.* API rejects bot tokens (not_allowed_token_type),
+// so for KindOAuth/KindToken connections this returns the typed
+// connector.ErrOperationNotEnabled sentinel unchanged: the operation stays in
+// the catalog (so policies binding `search_messages` keep working) but the
+// API layer maps the sentinel to HTTP 501 and MCP to a tool error with the
+// canonical "operation_not_enabled:" prefix. For KindUserOAuth it executes and
+// returns the matches paginated like the other list ops.
 func (c *Connector) opSearchMessages(ctx context.Context, params map[string]any) (any, error) {
-	return nil, fmt.Errorf("%w: slack search.messages requires user-token install; v1 supports bot tokens only", connector.ErrOperationNotEnabled)
+	if c.cfg.AuthKind != KindUserOAuth {
+		return nil, fmt.Errorf("%w: slack search.messages requires a user-token install (this connection uses a bot token)", connector.ErrOperationNotEnabled)
+	}
+	query, _ := params["query"].(string)
+	if query == "" {
+		return nil, fmt.Errorf("slack: search_messages requires query")
+	}
+	v := url.Values{}
+	v.Set("query", query)
+	v.Set("count", strconv.Itoa(pageSizeFrom(params)))
+	if cur := cursorFrom(params); cur != "" {
+		v.Set("cursor", cur)
+	}
+	resp, err := c.client.post(ctx, "search.messages", v)
+	if err != nil {
+		return nil, err
+	}
+	// search.messages nests results under messages.matches with paging under
+	// messages.pagination / messages.paging — surface a flat shape consistent
+	// with the other list ops.
+	var matches []any
+	if msgs, ok := resp["messages"].(map[string]any); ok {
+		matches, _ = msgs["matches"].([]any)
+	}
+	// search.messages returns the cursor for the next page under the
+	// top-level response_metadata when called with a `cursor` param.
+	return map[string]any{
+		"items":       matches,
+		"next_cursor": nextCursorFrom(resp),
+	}, nil
 }
 
 func (c *Connector) opPostMessage(ctx context.Context, params map[string]any) (any, error) {

@@ -68,7 +68,7 @@
           <tr class="border-b border-slate-700/50 hover:bg-slate-700/30">
             <td class="px-4 py-3 text-sm text-slate-300">{{timeAgo .Timestamp}}</td>
             <td class="px-4 py-3 text-sm text-slate-300">{{truncate 20 .TokenName}}</td>
-            <td class="px-4 py-3 text-sm text-slate-300">{{.ConnectionID}}</td>
+            <td class="px-4 py-3 text-sm text-slate-300">{{.ConnectionID}}{{$acting := mapGet $.ActingIdentities .ConnectionID}}{{if $acting}}<span class="ml-1 text-xs text-purple-300" title="User-token install — acted as this Slack user">(as {{$acting}})</span>{{end}}</td>
             <td class="px-4 py-3">
               <span class="text-sm font-mono text-blue-400">{{.Operation}}</span>
             </td>

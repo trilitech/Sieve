@@ -54,9 +54,12 @@ func (c *Connector) Validate(ctx context.Context) error {
 //     wires this to SetStatus(id, "reauth_required") via the same
 //     indirection Gmail uses for `_on_token_refresh`. Nil-safe.
 //
-// Slack uses classic non-rotating bot scopes, so there is no
-// `_on_token_refresh` wiring here — Linear/Jira/Asana will use it via
-// the existing Gmail callback in internal/connections.injectRefreshCallback.
+// Bot tokens (KindOAuth/KindToken) are classic non-rotating credentials, so
+// their token source is static. KindUserOAuth installs against a Slack app
+// with Token Rotation enabled carry a refresh_token; for those, buildTokenSource
+// returns a refreshing source that renews the user token and persists the
+// rotated pair via the `_on_token_refresh` / `_on_token_refresh_failure`
+// callbacks the connections service injects (the same seam Gmail uses).
 func Factory() connector.Factory {
 	return func(raw map[string]any) (connector.Connector, error) {
 		cfg, err := parseConfig(raw)
@@ -67,8 +70,15 @@ func Factory() connector.Factory {
 			return nil, fmt.Errorf("slack: invalid config: %w", err)
 		}
 		baseURL, _ := raw["_base_url"].(string)
+		if baseURL == "" {
+			baseURL = defaultBaseURL
+		}
+		ts, err := buildTokenSource(cfg, baseURL, raw)
+		if err != nil {
+			return nil, err
+		}
 		onTerminalAuth, _ := raw["_on_terminal_auth"].(func())
-		cli, err := newClient(cfg, baseURL, onTerminalAuth)
+		cli, err := newClient(ts, baseURL, onTerminalAuth)
 		if err != nil {
 			return nil, err
 		}

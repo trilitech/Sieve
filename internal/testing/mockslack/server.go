@@ -42,6 +42,12 @@ type Server struct {
 	channels []map[string]any
 	users    []map[string]any
 
+	// userInstall, when true, makes oauth.v2.access return an authed_user
+	// block (user-token install) instead of a bot-only response. rotation
+	// adds a refresh_token + expires_in to simulate Slack Token Rotation.
+	userInstall bool
+	rotation    bool
+
 	// calls records each request the mock received. Tests assert
 	// against this slice to verify the connector translated params
 	// correctly (cursor → cursor, page_size → limit, etc.).
@@ -81,6 +87,17 @@ func (s *Server) SetChannels(channels []map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.channels = channels
+}
+
+// SetUserInstall switches oauth.v2.access to return a user-token install
+// (an authed_user block with an xoxp-/xoxe.xoxp- token). When rotation is
+// true the response also carries refresh_token + expires_in, simulating a
+// Slack app with Token Rotation enabled.
+func (s *Server) SetUserInstall(userInstall, rotation bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.userInstall = userInstall
+	s.rotation = rotation
 }
 
 // Calls returns a snapshot of recorded invocations.
@@ -123,9 +140,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	case "/api/chat.postMessage":
 		s.handlePostMessage(w, r)
 	case "/api/search.messages":
-		// Search requires user-token install — return the documented
-		// "operation_not_enabled" shape per research R1a.
-		writeJSON(w, map[string]any{"ok": false, "error": "not_allowed_token_type"})
+		s.handleSearchMessages(w, r)
 	case "/api/oauth.v2.access":
 		s.handleOAuthAccess(w, r)
 	default:
@@ -201,7 +216,7 @@ func (s *Server) handleUsersList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConversationsHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"ok":       true,
+		"ok": true,
 		"messages": []any{
 			map[string]any{"type": "message", "user": "U0K1", "text": "hello", "ts": "1700000001.000100"},
 			map[string]any{"type": "message", "user": "U0K2", "text": "world", "ts": "1700000002.000200"},
@@ -213,7 +228,7 @@ func (s *Server) handleConversationsHistory(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleConversationsReplies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"ok":       true,
+		"ok": true,
 		"messages": []any{
 			map[string]any{"type": "message", "user": "U0K1", "text": "thread root", "ts": "1700000001.000100", "thread_ts": "1700000001.000100"},
 			map[string]any{"type": "message", "user": "U0K2", "text": "reply", "ts": "1700000003.000100", "thread_ts": "1700000001.000100"},
@@ -249,9 +264,73 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleSearchMessages mirrors Slack's token-type gating: search.* rejects
+// bot tokens (not_allowed_token_type) and returns matches for user tokens
+// (xoxp-…/xoxe.xoxp-…). The connector only calls this for user installs, so
+// the bearer should be a user token in practice; the gate keeps the mock
+// faithful so a regression that sends a bot token here is caught.
+func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !strings.HasPrefix(bearer, "xoxp-") && !strings.HasPrefix(bearer, "xoxe.xoxp-") {
+		writeJSON(w, map[string]any{"ok": false, "error": "not_allowed_token_type"})
+		return
+	}
+	query := r.FormValue("query")
+	writeJSON(w, map[string]any{
+		"ok": true,
+		"messages": map[string]any{
+			"total": 2,
+			"matches": []any{
+				map[string]any{"type": "message", "text": "match for " + query, "ts": "1700000010.000100", "channel": map[string]any{"id": "C0000001", "name": "general"}},
+				map[string]any{"type": "message", "text": "another " + query, "ts": "1700000011.000100", "channel": map[string]any{"id": "C0000002", "name": "random"}},
+			},
+		},
+		"response_metadata": map[string]any{"next_cursor": ""},
+	})
+}
+
 func (s *Server) handleOAuthAccess(w http.ResponseWriter, r *http.Request) {
-	// Minimal v2 access response. The connector's OAuth callback uses
-	// the access_token + bot_user_id fields.
+	s.mu.Lock()
+	userInstall, rotation := s.userInstall, s.rotation
+	s.mu.Unlock()
+
+	// Token-rotation refresh: oauth.v2.access?grant_type=refresh_token.
+	if r.FormValue("grant_type") == "refresh_token" {
+		resp := map[string]any{
+			"ok":            true,
+			"access_token":  "xoxe.xoxp-rotated-token",
+			"refresh_token": "xoxe-1-rotated-refresh",
+			"token_type":    "user",
+			"expires_in":    43200,
+		}
+		writeJSON(w, resp)
+		return
+	}
+
+	if userInstall {
+		authedUser := map[string]any{
+			"id":           "U0OPERATOR",
+			"scope":        "search:read,channels:read,channels:history,chat:write",
+			"access_token": "xoxp-user-installed-token",
+			"token_type":   "user",
+		}
+		if rotation {
+			authedUser["access_token"] = "xoxe.xoxp-user-installed-token"
+			authedUser["refresh_token"] = "xoxe-1-initial-refresh"
+			authedUser["expires_in"] = 43200
+		}
+		writeJSON(w, map[string]any{
+			"ok":          true,
+			"app_id":      "A0KRD7HC3",
+			"scope":       "",
+			"team":        map[string]any{"id": "T012ABCDEF", "name": "Acme Workspace"},
+			"authed_user": authedUser,
+		})
+		return
+	}
+
+	// Default: bot-token install. The connector's OAuth callback uses the
+	// access_token + bot_user_id fields.
 	writeJSON(w, map[string]any{
 		"ok":           true,
 		"access_token": "xoxb-test-installed-token",

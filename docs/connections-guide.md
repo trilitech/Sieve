@@ -283,6 +283,18 @@ A Slack connection lets agents read and write to one Slack workspace under polic
 2. In Sieve, **Add Connection** → **Slack** → **Use existing bot token**. Paste the token and submit.
 3. Sieve calls `auth.test`; on success the connection lands `active`.
 
+### Setup steps — user-token install ("Connect as me")
+
+Use this when you want Sieve to act with **your own Slack identity** — required for `search_messages`, and gives the agent the breadth of access you personally have (private channels, DMs, posting as you).
+
+> ⚠️ Broader blast radius than a bot install: the connection can do anything you can in Slack. Bind restrictive policies; prefer bot mode unless you need user-level reach. See [`connectors-slack.md`](connectors-slack.md) Option 3 for the full security note.
+
+1. Configure the Slack OAuth app credentials (same as the OAuth install above).
+2. On your Slack app's **OAuth & Permissions** page, add the **User Token Scopes** (`search:read`, the `*:read`/`*:history` set, `users:read`, `users.profile:read`, `chat:write`).
+3. Optionally enable **Token Rotation** for short-lived, auto-renewing tokens.
+4. In Sieve's Connections page, pick **Slack** → **Connect as me (user token)** → approve in Slack.
+5. The connection lands `active`, labeled **User token** with your Slack identity as the acting user.
+
 ### What you get
 
 Curated operations exposed to agents (subject to policies):
@@ -293,7 +305,7 @@ Curated operations exposed to agents (subject to policies):
 - **read_channel_history** — recent messages in a channel
 - **read_thread** — replies under a parent message
 - **post_message** — post a message to a channel
-- **search_messages** — *disabled in v1* (requires user-token install, on the roadmap)
+- **search_messages** — search workspace messages; **requires a user-token install** ("Connect as me"). Bot-token connections return `operation_not_enabled`.
 
 All `list_*` operations use Sieve's normalized `{items, next_cursor}` pagination shape. Pass `cursor` and optional `page_size` (default 100, max 100) to walk past the first page.
 
@@ -326,12 +338,13 @@ When status is non-active, agent calls fail fast with HTTP 403 `{"error": "reaut
 
 Add a second Slack connection with a different alias (e.g., `acme-slack` and `engineering-slack`). Agents address each by alias on the agent-facing surface, and the MCP tool prefix disambiguates per-connection automatically.
 
-### Limitations (v1)
+### Limitations
 
-- `search_messages` is disabled — Slack's `search.*` API requires a user token, not a bot token. The operation is exposed for policy binding stability and always returns `{"error": "operation_not_enabled", ...}` until a future release adds user-token install support.
+- `search_messages` requires a user-token install — Slack's `search.*` API rejects bot tokens. Bot-token connections expose the operation for policy-binding stability but return `{"error": "operation_not_enabled", ...}`; install with **Connect as me** to enable it.
 - No Slack Enterprise Grid org-level installs.
-- No inbound webhooks (Slack Events API). Sieve is outbound-only in v1; agents poll `read_channel_history` for event-driven workflows.
-- No granular-scope token rotation. v1 uses classic non-rotating bot tokens.
+- No inbound webhooks (Slack Events API). Sieve is outbound-only; agents poll `read_channel_history` for event-driven workflows.
+- Bot tokens don't rotate. User-token installs support Slack Token Rotation (transparent renewal, re-auth fallback).
+- A user-token connection acts as exactly one Slack identity (the operator who authorized it).
 
 ## After creating a connection
 

@@ -45,10 +45,15 @@ const (
 	slackTokenURL     = "https://slack.com/api/oauth.v2.access"
 	slackAuthTestURL  = "https://slack.com/api/auth.test"
 
-	// Default bot scopes for v1 (classic non-rotating). Expanded scopes
-	// — search:read, user-token install — are deferred along with
-	// Enterprise Grid.
+	// Default bot scopes for the bot-token OAuth install (classic
+	// non-rotating).
 	slackDefaultBotScopes = "channels:read,groups:read,users:read,users.profile:read,channels:history,groups:history,chat:write"
+
+	// Default user scopes for the user-token install ("Connect as me").
+	// Mirrors every exposed Slack operation evaluated as the operator —
+	// read across public/private/DM/group-DM, message search, and posting
+	// as the user. See contracts/slack-user-token.md §1.
+	slackDefaultUserScopes = "search:read,channels:read,groups:read,im:read,mpim:read,channels:history,groups:history,im:history,mpim:history,users:read,users.profile:read,chat:write"
 )
 
 // slackOAuthEndpointOverride lets tests point Slack OAuth at a mock
@@ -137,7 +142,32 @@ func (s *Server) handleSlackOAuthStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("connection %q already exists", id), http.StatusBadRequest)
 		return
 	}
-	s.beginSlackOAuth(w, r, id, displayName)
+	s.beginSlackOAuth(w, r, id, displayName, false)
+}
+
+// handleSlackUserOAuthStart kicks off a user-token ("Connect as me") install.
+// Identical to handleSlackOAuthStart but requests user_scope so Slack issues
+// a user token bound to the authorizing operator's access (unlocks search and
+// acts as the user). Gated by rejectIfAgentToken.
+func (s *Server) handleSlackUserOAuthStart(w http.ResponseWriter, r *http.Request) {
+	if rejectIfAgentToken(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	displayName := strings.TrimSpace(r.FormValue("display_name"))
+	if id == "" || displayName == "" {
+		http.Error(w, "id and display_name are required", http.StatusBadRequest)
+		return
+	}
+	if exists, _ := s.connections.Exists(id); exists {
+		http.Error(w, fmt.Sprintf("connection %q already exists", id), http.StatusBadRequest)
+		return
+	}
+	s.beginSlackOAuth(w, r, id, displayName, true)
 }
 
 // beginSlackOAuth stashes a pendingOAuth entry and redirects to the
@@ -145,7 +175,7 @@ func (s *Server) handleSlackOAuthStart(w http.ResponseWriter, r *http.Request) {
 // fresh install, handleSlackReauth for re-installing an existing
 // connection) supply the id + display name; this helper handles the
 // state generation, TTL setup, and redirect uniformly.
-func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, displayName string) {
+func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, displayName string, userMode bool) {
 	clientID := s.slackOAuthClientID()
 	if clientID == "" {
 		http.Error(w, "Slack OAuth not configured — paste your Slack app credentials at /connections (the 'Set up Slack OAuth' form), or use the bot-token entry path", http.StatusBadRequest)
@@ -159,18 +189,33 @@ func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, dis
 	}
 	state := hex.EncodeToString(stateBytes)
 
+	// Preserve the reauth flag for an existing connection so the callback
+	// updates rather than inserts. A fresh install has neither set.
+	isReauth := false
+	if exists, _ := s.connections.Exists(id); exists {
+		isReauth = true
+	}
+
 	s.oauthMu.Lock()
 	s.oauthPending[state] = pendingOAuth{
 		ID:            id,
 		ConnectorType: "slack",
 		DisplayName:   displayName,
 		CreatedAt:     time.Now(),
+		IsReauth:      isReauth,
+		UserMode:      userMode,
 	}
 	s.oauthMu.Unlock()
 
 	q := url.Values{}
 	q.Set("client_id", clientID)
-	q.Set("scope", slackDefaultBotScopes)
+	if userMode {
+		// User-token install: request user_scope, no bot scope, so Slack
+		// issues a user token in authed_user and mints no bot token.
+		q.Set("user_scope", slackDefaultUserScopes)
+	} else {
+		q.Set("scope", slackDefaultBotScopes)
+	}
 	q.Set("redirect_uri", fmt.Sprintf("http://%s/oauth/callback", r.Host))
 	q.Set("state", state)
 	target := slackEndpoint(slackAuthorizeURL) + "?" + q.Encode()
@@ -283,7 +328,16 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 	// OAuth-path reauth: stash + redirect to Slack. handleOAuthCallback
 	// notices that the connection id already exists and routes the
 	// completion through UpdateConfig + SetStatus(active) instead of Add.
-	s.beginSlackOAuth(w, r, id, existing.DisplayName)
+	// Preserve the install kind: a user-token connection re-installs in
+	// user mode (so it keeps acting as the operator); anything else
+	// re-installs as a bot. A failed config read defaults to bot mode.
+	userMode := false
+	if full, err := s.connections.GetWithConfig(id); err == nil {
+		if kind, _ := full.Config["auth_kind"].(string); kind == slackconn.KindUserOAuth {
+			userMode = true
+		}
+	}
+	s.beginSlackOAuth(w, r, id, existing.DisplayName, userMode)
 }
 
 // slackAuthTest calls Slack auth.test and returns the team / user
@@ -382,7 +436,7 @@ func (s *Server) handleSlackOAuthClearConfig(w http.ResponseWriter, r *http.Requ
 // handleOAuthCallback after state validation. Persists via Add for a
 // new install or via UpdateConfig+SetStatus(active) for a reauth.
 func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pending pendingOAuth, code string) {
-	cfg, err := s.slackOAuthExchange(r.Context(), r.Host, code)
+	cfg, err := s.slackOAuthExchange(r.Context(), r.Host, code, pending.UserMode)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -411,7 +465,7 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 // install. Called from handleOAuthCallback once the dispatcher has
 // confirmed pending.ConnectorType == "slack". Returns the connection
 // config that handleOAuthCallback then persists via Add or UpdateConfig.
-func (s *Server) slackOAuthExchange(ctx context.Context, host, code string) (map[string]any, error) {
+func (s *Server) slackOAuthExchange(ctx context.Context, host, code string, userMode bool) (map[string]any, error) {
 	clientID, clientSecret, err := s.slackOAuthCreds()
 	if err != nil {
 		return nil, fmt.Errorf("Slack OAuth credentials: %w", err)
@@ -447,12 +501,24 @@ func (s *Server) slackOAuthExchange(ctx context.Context, host, code string) (map
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"team"`
+		AuthedUser struct {
+			ID           string `json:"id"`
+			Scope        string `json:"scope"`
+			AccessToken  string `json:"access_token"`
+			TokenType    string `json:"token_type"`
+			RefreshToken string `json:"refresh_token"`
+			ExpiresIn    int    `json:"expires_in"`
+		} `json:"authed_user"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("oauth.v2.access decode: %w", err)
 	}
 	if !out.OK {
 		return nil, fmt.Errorf("oauth.v2.access rejected: %s", out.Error)
+	}
+
+	if userMode {
+		return slackUserOAuthConfig(out.Team.ID, out.Team.Name, clientID, clientSecret, out.AuthedUser.ID, out.AuthedUser.Scope, out.AuthedUser.AccessToken, out.AuthedUser.TokenType, out.AuthedUser.RefreshToken, out.AuthedUser.ExpiresIn)
 	}
 
 	scopes := []any{}
@@ -474,4 +540,42 @@ func (s *Server) slackOAuthExchange(ctx context.Context, host, code string) (map
 		},
 	}
 	return cfg, nil
+}
+
+// slackUserOAuthConfig assembles the connection config for a user-token
+// install from the authed_user block. The client_id/client_secret are stored
+// (envelope-encrypted with the rest of the config, mirroring Gmail) so the
+// connector's refreshing token source can renew a rotating user token. A
+// refresh_token + expires_in are present only when the Slack app has Token
+// Rotation enabled; otherwise the token is long-lived and stored without them.
+func slackUserOAuthConfig(teamID, teamName, clientID, clientSecret, actingUserID, scope, accessToken, tokenType, refreshToken string, expiresIn int) (map[string]any, error) {
+	if accessToken == "" {
+		return nil, fmt.Errorf("oauth.v2.access returned no user token (authed_user.access_token empty) — did you authorize user scopes?")
+	}
+	scopes := []any{}
+	for _, sc := range strings.Split(scope, ",") {
+		if sc = strings.TrimSpace(sc); sc != "" {
+			scopes = append(scopes, sc)
+		}
+	}
+	oauthToken := map[string]any{
+		"access_token": accessToken,
+		"token_type":   tokenType,
+	}
+	if refreshToken != "" {
+		oauthToken["refresh_token"] = refreshToken
+	}
+	if expiresIn > 0 {
+		oauthToken["expiry"] = time.Now().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339)
+	}
+	return map[string]any{
+		"auth_kind":      slackconn.KindUserOAuth,
+		"team_id":        teamID,
+		"team_name":      teamName,
+		"acting_user_id": actingUserID,
+		"scopes":         scopes,
+		"client_id":      clientID,
+		"client_secret":  clientSecret,
+		"oauth_token":    oauthToken,
+	}, nil
 }

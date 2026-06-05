@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 	"github.com/trilitech/Sieve/internal/scriptgen"
@@ -78,6 +79,25 @@ func slackMockHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
 	case "/api/oauth.v2.access":
+		// A user-token install is signalled by the sentinel code
+		// "user-code" (the user-mode tests pass it through the callback);
+		// otherwise return a bot-token install. Token-rotation refresh is
+		// signalled by grant_type=refresh_token.
+		if r.FormValue("code") == "user-code" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":     true,
+				"app_id": "A0KRD7HC3",
+				"scope":  "",
+				"team":   map[string]any{"id": "T012", "name": "Acme"},
+				"authed_user": map[string]any{
+					"id":           "U0OPERATOR",
+					"scope":        "search:read,channels:read,chat:write",
+					"access_token": "xoxp-user-installed",
+					"token_type":   "user",
+				},
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok":           true,
 			"access_token": "xoxb-test-installed",
@@ -300,6 +320,86 @@ func TestHandleOAuthCallback_SlackHappyPath(t *testing.T) {
 	}
 }
 
+// TestHandleSlackUserOAuthStart_RequestsUserScope — the "Connect as me"
+// start handler must redirect to Slack with user_scope set (and no bot
+// scope), so Slack issues a user token bound to the operator.
+func TestHandleSlackUserOAuthStart_RequestsUserScope(t *testing.T) {
+	handler, mockSlack, _ := slackTestServer(t)
+
+	rec := formPost(handler, "/connections/slack/user/oauth/start", url.Values{
+		"id":           {"acme-user"},
+		"display_name": {"Acme (as me)"},
+	})
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, mockSlack.URL+"/oauth/v2/authorize") {
+		t.Fatalf("redirect target %q does not point at mock authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "user_scope=") {
+		t.Fatalf("user-mode redirect missing user_scope: %s", loc)
+	}
+	if strings.Contains(loc, "&scope=") || strings.Contains(loc, "?scope=") {
+		t.Fatalf("user-mode redirect must not request bot scope: %s", loc)
+	}
+}
+
+// TestHandleOAuthCallback_SlackUserToken drives the user-token install end to
+// end: start → callback(user-code) → connection persisted as user_oauth with
+// the xoxp- user token and the acting identity. Also asserts no plaintext
+// token leaks into the connections row's stored ciphertext blob (FR-004/SC-004).
+func TestHandleOAuthCallback_SlackUserToken(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	startRec := formPost(handler, "/connections/slack/user/oauth/start", url.Values{
+		"id":           {"acme-user"},
+		"display_name": {"Acme (as me)"},
+	})
+	if startRec.Code != http.StatusFound {
+		t.Fatalf("user oauth/start failed: %d", startRec.Code)
+	}
+	loc, _ := url.Parse(startRec.Header().Get("Location"))
+	state := loc.Query().Get("state")
+	if state == "" {
+		t.Fatal("no state in start redirect")
+	}
+
+	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=user-code&state="+state, nil)
+	cbRec := httptest.NewRecorder()
+	handler.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 after user callback, got %d (body: %s)", cbRec.Code, cbRec.Body.String())
+	}
+
+	full, err := env.Connections.GetWithConfig("acme-user")
+	if err != nil {
+		t.Fatalf("connection not persisted: %v", err)
+	}
+	if full.Config["auth_kind"] != slackconn.KindUserOAuth {
+		t.Fatalf("expected auth_kind=user_oauth, got %v", full.Config["auth_kind"])
+	}
+	if full.Config["acting_user_id"] != "U0OPERATOR" {
+		t.Fatalf("acting_user_id not recorded: %v", full.Config["acting_user_id"])
+	}
+	tokenMap, _ := full.Config["oauth_token"].(map[string]any)
+	if tokenMap["access_token"] != "xoxp-user-installed" {
+		t.Fatalf("user access_token not persisted: %v", tokenMap)
+	}
+
+	// No-plaintext check: the stored ciphertext column must not contain the
+	// raw user token (it is envelope-encrypted).
+	var ciphertext []byte
+	if err := env.DB.DB.QueryRow(
+		`SELECT config_ciphertext FROM connections WHERE id = ?`, "acme-user",
+	).Scan(&ciphertext); err != nil {
+		t.Fatalf("read ciphertext: %v", err)
+	}
+	if strings.Contains(string(ciphertext), "xoxp-user-installed") {
+		t.Fatal("plaintext user token found in stored config_ciphertext blob")
+	}
+}
+
 // slackUITestServer brings up a fully-templated Server (via NewServer)
 // for tests that need to render the connections page. Use the lighter
 // slackTestServer helper for handler-only tests — that path skips
@@ -349,6 +449,87 @@ func TestConnectionsPage_SlackCard_OAuthEnabled(t *testing.T) {
 	// fix closes. Look for the specific bad pattern.
 	if strings.Contains(body, `<input type="hidden" name="connector_type" value="slack">`) {
 		t.Errorf("Slack card should not render the generic /connections/add hidden input — it must use the Slack-specific routes")
+	}
+	// The user-token ("Connect as me") install option must be present.
+	if !strings.Contains(body, `action="/connections/slack/user/oauth/start"`) {
+		t.Errorf("Slack card missing user-token install form (action=/connections/slack/user/oauth/start)")
+	}
+}
+
+// TestConnectionsPage_SlackInstallModeLabels asserts the connection list
+// distinguishes a user-token install from a bot-token install and shows the
+// acting identity for the user install (FR-010, SC-007, US3).
+func TestConnectionsPage_SlackInstallModeLabels(t *testing.T) {
+	handler, env := slackUITestServer(t)
+
+	// Seed one bot-token and one user-token Slack connection directly.
+	if err := env.Connections.Add("bot-slack", "slack", "Bot Slack", map[string]any{
+		"auth_kind": slackconn.KindToken,
+		"bot_token": "xoxb-seed",
+		"team_id":   "T012",
+	}); err != nil {
+		t.Fatalf("seed bot connection: %v", err)
+	}
+	if err := env.Connections.Add("user-slack", "slack", "User Slack", map[string]any{
+		"auth_kind":      slackconn.KindUserOAuth,
+		"team_id":        "T012",
+		"acting_user_id": "U0OPERATOR",
+		"oauth_token":    map[string]any{"access_token": "xoxp-seed"},
+	}); err != nil {
+		t.Fatalf("seed user connection: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "User token") {
+		t.Errorf("connection list missing 'User token' install-mode label")
+	}
+	if !strings.Contains(body, "Bot token") {
+		t.Errorf("connection list missing 'Bot token' install-mode label")
+	}
+	if !strings.Contains(body, "U0OPERATOR") {
+		t.Errorf("connection list missing acting identity for user-token connection")
+	}
+}
+
+// TestAuditPage_AttributesUserTokenIdentity asserts the audit view resolves a
+// Slack user-token connection's acting identity (acting_user_id) at display
+// time and shows it next to the connection_id (FR-011, US3). No audit schema
+// change — attribution is a connection_id → acting_user_id lookup.
+func TestAuditPage_AttributesUserTokenIdentity(t *testing.T) {
+	handler, env := slackUITestServer(t)
+
+	if err := env.Connections.Add("user-slack", "slack", "User Slack", map[string]any{
+		"auth_kind":      slackconn.KindUserOAuth,
+		"team_id":        "T012",
+		"acting_user_id": "U0OPERATOR",
+		"oauth_token":    map[string]any{"access_token": "xoxp-seed"},
+	}); err != nil {
+		t.Fatalf("seed user connection: %v", err)
+	}
+	if err := env.Audit.Log(&audit.LogRequest{
+		TokenID:      "tok1",
+		TokenName:    "agent",
+		ConnectionID: "user-slack",
+		Operation:    "search_messages",
+		PolicyResult: "allow",
+	}); err != nil {
+		t.Fatalf("write audit entry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/audit", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "as U0OPERATOR") {
+		t.Errorf("audit view did not attribute the operation to the acting identity")
 	}
 }
 
@@ -628,4 +809,3 @@ func TestPoliciesPage_SlackScope(t *testing.T) {
 		t.Errorf("expected JS SCOPE to be set to \"slack\"")
 	}
 }
-

@@ -109,6 +109,96 @@ func TestValidate_Token(t *testing.T) {
 	}
 }
 
+// TestValidate_UserOAuth covers the user-token install kind: accept user
+// tokens (xoxp- non-rotating, xoxe.xoxp- rotating), reject bot tokens and
+// empty/missing — a mismatched credential must fail at the factory (FR-005).
+func TestValidate_UserOAuth(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			"happy path xoxp user token",
+			Config{AuthKind: KindUserOAuth, OAuthToken: map[string]any{"access_token": "xoxp-T-1234-5678"}},
+			false,
+		},
+		{
+			"happy path rotating xoxe.xoxp",
+			Config{AuthKind: KindUserOAuth, OAuthToken: map[string]any{"access_token": "xoxe.xoxp-1-abc"}},
+			false,
+		},
+		{
+			"missing oauth_token map",
+			Config{AuthKind: KindUserOAuth},
+			true,
+		},
+		{
+			"empty access_token",
+			Config{AuthKind: KindUserOAuth, OAuthToken: map[string]any{"access_token": ""}},
+			true,
+		},
+		{
+			"bot token in user install rejected (mismatch)",
+			Config{AuthKind: KindUserOAuth, OAuthToken: map[string]any{"access_token": "xoxb-T-1234"}},
+			true,
+		},
+		{
+			"enterprise bot token in user install rejected",
+			Config{AuthKind: KindUserOAuth, OAuthToken: map[string]any{"access_token": "xoxe.xoxb-1-abc"}},
+			true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validate(%+v) err=%v, wantErr=%v", tc.cfg, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidate_OAuthRejectsUserToken: a bot OAuth install must reject a user
+// token prefix with a clear mismatch error pointing at the user_oauth kind.
+func TestValidate_OAuthRejectsUserToken(t *testing.T) {
+	c := Config{AuthKind: KindOAuth, OAuthToken: map[string]any{"access_token": "xoxe.xoxp-1-abc"}}
+	if err := c.validate(); err == nil {
+		t.Fatal("expected bot oauth install to reject a rotating user token")
+	}
+}
+
+// TestParseConfig_UserOAuthFields confirms acting_user_id and the rotating
+// oauth_token keys (refresh_token, expiry) decode and round-trip.
+func TestParseConfig_UserOAuthFields(t *testing.T) {
+	raw := map[string]any{
+		"auth_kind":      "user_oauth",
+		"team_id":        "T012",
+		"acting_user_id": "U0OPERATOR",
+		"scopes":         []any{"search:read", "chat:write"},
+		"oauth_token": map[string]any{
+			"access_token":  "xoxe.xoxp-1-abc",
+			"refresh_token": "xoxe-1-refresh",
+			"token_type":    "user",
+			"expiry":        "2026-06-04T18:00:00Z",
+		},
+	}
+	c, err := parseConfig(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.AuthKind != KindUserOAuth || c.ActingUserID != "U0OPERATOR" {
+		t.Fatalf("decoded fields wrong: %+v", c)
+	}
+	if c.accessToken() != "xoxe.xoxp-1-abc" || c.refreshToken() != "xoxe-1-refresh" {
+		t.Fatalf("token accessors wrong: access=%q refresh=%q", c.accessToken(), c.refreshToken())
+	}
+	tok := c.oauth2Token()
+	if tok.Expiry.IsZero() {
+		t.Fatal("expected non-zero expiry parsed from oauth_token.expiry")
+	}
+}
+
 func TestValidate_UnknownAuthKind(t *testing.T) {
 	c := Config{AuthKind: "totp"}
 	if err := c.validate(); err == nil {
