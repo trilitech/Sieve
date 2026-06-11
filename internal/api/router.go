@@ -1124,7 +1124,17 @@ func (rt *Router) gmailListMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *Router) gmailGetMessage(w http.ResponseWriter, r *http.Request) {
-	rt.gmailExecute(w, r, "read_email", map[string]any{
+	// Gmail's REST API accepts ?format= with values full, metadata, minimal,
+	// raw. We route format=raw to a distinct connector op so policies can bind
+	// to it explicitly (an archival role may grant read_email_raw but not
+	// read_email, or vice versa). Every other format value — including unset
+	// — keeps the existing read_email path which returns the Sieve-simplified
+	// shape; the connector's behavior is "full" regardless.
+	op := "read_email"
+	if r.URL.Query().Get("format") == "raw" {
+		op = "read_email_raw"
+	}
+	rt.gmailExecute(w, r, op, map[string]any{
 		"message_id": r.PathValue("id"),
 	})
 }

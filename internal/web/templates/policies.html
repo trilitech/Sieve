@@ -131,310 +131,7 @@
                   <div class="space-y-3">
                     <div>
                       <label class="block text-sm text-slate-400 mb-1">Operations</label>
-                      <div id="ops-checkboxes" class="bg-slate-800 border border-slate-700 rounded-lg p-3 space-y-3">
-                        {{if eq .Scope "gmail"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_emails"><span class="text-xs text-slate-300">list_emails</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_email"><span class="text-xs text-slate-300">read_email</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_thread"><span class="text-xs text-slate-300">read_thread</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="get_attachment"><span class="text-xs text-slate-300">get_attachment</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Compose</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="create_draft"><span class="text-xs text-slate-300">create_draft</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="update_draft"><span class="text-xs text-slate-300">update_draft</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="reply"><span class="text-xs text-slate-300">reply</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Send</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="send_email"><span class="text-xs text-slate-300">send_email</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="send_draft"><span class="text-xs text-slate-300">send_draft</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Organize</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="add_label"><span class="text-xs text-slate-300">add_label</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="remove_label"><span class="text-xs text-slate-300">remove_label</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="archive"><span class="text-xs text-slate-300">archive</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_labels"><span class="text-xs text-slate-300">list_labels</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "llm"}}
-                        <div class="mb-3">
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Provider</p>
-                          <div class="flex gap-4">
-                            <label class="flex items-center gap-1.5 cursor-pointer">
-                              <input type="checkbox" class="llm-provider rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="anthropic" checked>
-                              <span class="text-xs text-slate-300">Anthropic (Claude)</span>
-                            </label>
-                            <label class="flex items-center gap-1.5 cursor-pointer">
-                              <input type="checkbox" class="llm-provider rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="openai">
-                              <span class="text-xs text-slate-300">OpenAI</span>
-                            </label>
-                            <label class="flex items-center gap-1.5 cursor-pointer">
-                              <input type="checkbox" class="llm-provider rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gemini">
-                              <span class="text-xs text-slate-300">Gemini</span>
-                            </label>
-                            <label class="flex items-center gap-1.5 cursor-pointer">
-                              <input type="checkbox" class="llm-provider rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="bedrock">
-                              <span class="text-xs text-slate-300">AWS Bedrock</span>
-                            </label>
-                          </div>
-                        </div>
-                        <div id="llm-ops-container">
-                          <!-- Populated dynamically by updateLLMOps() -->
-                        </div>
-                        {{else if eq .Scope "http_proxy"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Methods</p>
-                          <div class="grid grid-cols-3 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="GET"><span class="text-xs text-slate-300">GET</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="POST"><span class="text-xs text-slate-300">POST</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="PUT"><span class="text-xs text-slate-300">PUT</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="DELETE"><span class="text-xs text-slate-300">DELETE</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="PATCH"><span class="text-xs text-slate-300">PATCH</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "drive"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Browse</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="drive.list_files"><span class="text-xs text-slate-300">drive.list_files</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="drive.get_file"><span class="text-xs text-slate-300">drive.get_file</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Download</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="drive.download_file"><span class="text-xs text-slate-300">drive.download_file</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Upload</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="drive.upload_file"><span class="text-xs text-slate-300">drive.upload_file</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Share</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="drive.share_file"><span class="text-xs text-slate-300">drive.share_file</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "calendar"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="calendar.list_events"><span class="text-xs text-slate-300">calendar.list_events</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="calendar.get_event"><span class="text-xs text-slate-300">calendar.get_event</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="calendar.create_event"><span class="text-xs text-slate-300">calendar.create_event</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="calendar.update_event"><span class="text-xs text-slate-300">calendar.update_event</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="calendar.delete_event"><span class="text-xs text-slate-300">calendar.delete_event</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "people"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="people.list_contacts"><span class="text-xs text-slate-300">people.list_contacts</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="people.get_contact"><span class="text-xs text-slate-300">people.get_contact</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="people.create_contact"><span class="text-xs text-slate-300">people.create_contact</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="people.update_contact"><span class="text-xs text-slate-300">people.update_contact</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="people.delete_contact"><span class="text-xs text-slate-300">people.delete_contact</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "sheets"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="sheets.get_spreadsheet"><span class="text-xs text-slate-300">sheets.get_spreadsheet</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="sheets.read_range"><span class="text-xs text-slate-300">sheets.read_range</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="sheets.write_range"><span class="text-xs text-slate-300">sheets.write_range</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="sheets.create_spreadsheet"><span class="text-xs text-slate-300">sheets.create_spreadsheet</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "docs"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="docs.get_document"><span class="text-xs text-slate-300">docs.get_document</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="docs.list_documents"><span class="text-xs text-slate-300">docs.list_documents</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="docs.create_document"><span class="text-xs text-slate-300">docs.create_document</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="docs.update_document"><span class="text-xs text-slate-300">docs.update_document</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "aws-ec2"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Describe</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.describe_instances"><span class="text-xs text-slate-300">ec2.describe_instances</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.describe_vpcs"><span class="text-xs text-slate-300">ec2.describe_vpcs</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.describe_security_groups"><span class="text-xs text-slate-300">ec2.describe_security_groups</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.describe_subnets"><span class="text-xs text-slate-300">ec2.describe_subnets</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.describe_images"><span class="text-xs text-slate-300">ec2.describe_images</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Lifecycle</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.run_instances"><span class="text-xs text-slate-300">ec2.run_instances</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.start_instances"><span class="text-xs text-slate-300">ec2.start_instances</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.stop_instances"><span class="text-xs text-slate-300">ec2.stop_instances</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.terminate_instances"><span class="text-xs text-slate-300">ec2.terminate_instances</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.reboot_instances"><span class="text-xs text-slate-300">ec2.reboot_instances</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Network & Security</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.create_security_group"><span class="text-xs text-slate-300">ec2.create_security_group</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.authorize_security_group_ingress"><span class="text-xs text-slate-300">ec2.authorize_ingress</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ec2.create_key_pair"><span class="text-xs text-slate-300">ec2.create_key_pair</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "aws-s3"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="s3.list_buckets"><span class="text-xs text-slate-300">s3.list_buckets</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="s3.list_objects"><span class="text-xs text-slate-300">s3.list_objects</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="s3.get_object"><span class="text-xs text-slate-300">s3.get_object</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="s3.head_object"><span class="text-xs text-slate-300">s3.head_object</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="s3.put_object"><span class="text-xs text-slate-300">s3.put_object</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="s3.delete_object"><span class="text-xs text-slate-300">s3.delete_object</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="s3.copy_object"><span class="text-xs text-slate-300">s3.copy_object</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "aws-lambda"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="lambda.list_functions"><span class="text-xs text-slate-300">lambda.list_functions</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="lambda.get_function"><span class="text-xs text-slate-300">lambda.get_function</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Invoke</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="lambda.invoke"><span class="text-xs text-slate-300">lambda.invoke</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="lambda.invoke_async"><span class="text-xs text-slate-300">lambda.invoke_async</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "aws-ses"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Send</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ses.send_email"><span class="text-xs text-slate-300">ses.send_email</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ses.send_templated_email"><span class="text-xs text-slate-300">ses.send_templated_email</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ses.list_identities"><span class="text-xs text-slate-300">ses.list_identities</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="ses.get_send_quota"><span class="text-xs text-slate-300">ses.get_send_quota</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "aws-dynamodb"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="dynamodb.get_item"><span class="text-xs text-slate-300">dynamodb.get_item</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="dynamodb.query"><span class="text-xs text-slate-300">dynamodb.query</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="dynamodb.scan"><span class="text-xs text-slate-300">dynamodb.scan</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="dynamodb.list_tables"><span class="text-xs text-slate-300">dynamodb.list_tables</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="dynamodb.put_item"><span class="text-xs text-slate-300">dynamodb.put_item</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="dynamodb.update_item"><span class="text-xs text-slate-300">dynamodb.update_item</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="dynamodb.delete_item"><span class="text-xs text-slate-300">dynamodb.delete_item</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "hyperstack"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Virtual Machines</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.list_vms"><span class="text-xs text-slate-300">hyperstack.list_vms</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.get_vm"><span class="text-xs text-slate-300">hyperstack.get_vm</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.create_vm"><span class="text-xs text-slate-300">hyperstack.create_vm</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.delete_vm"><span class="text-xs text-slate-300">hyperstack.delete_vm</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.start_vm"><span class="text-xs text-slate-300">hyperstack.start_vm</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.stop_vm"><span class="text-xs text-slate-300">hyperstack.stop_vm</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.restart_vm"><span class="text-xs text-slate-300">hyperstack.restart_vm</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">GPU Flavors</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.list_flavors"><span class="text-xs text-slate-300">hyperstack.list_flavors</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Images</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="hyperstack.list_images"><span class="text-xs text-slate-300">hyperstack.list_images</span></label>
-                          </div>
-                        </div>
-                        {{else if eq .Scope "slack"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_channels"><span class="text-xs text-slate-300">list_channels</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_users"><span class="text-xs text-slate-300">list_users</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_user_profile"><span class="text-xs text-slate-300">read_user_profile</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_channel_history"><span class="text-xs text-slate-300">read_channel_history</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_thread"><span class="text-xs text-slate-300">read_thread</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="post_message"><span class="text-xs text-slate-300">post_message</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Search <span class="text-slate-600 font-normal">(disabled in v1 — user-token install required)</span></p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-not-allowed opacity-60"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="search_messages" disabled><span class="text-xs text-slate-400">search_messages</span></label>
-                          </div>
-                        </div>
-                        {{end}}
-                      </div>
+                      {{template "policy_ops_picker" .}}
                     </div>
 
                     <!-- Contextual filters — visibility driven by which ops are checked -->
@@ -916,7 +613,7 @@
           <button type="submit"
                   class="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-slate-800">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
             </svg>
             Create Policy
           </button>
@@ -1804,6 +1501,18 @@
       var checked = [];
       document.querySelectorAll(".rule-op:checked").forEach(function(cb) { checked.push(cb.value); });
 
+      // LLM scope is a special case: typed operations aren't implemented
+      // yet, so there's nothing to check off. The filters below (model,
+      // max_tokens, max_cost, providers) are the only knobs that actually
+      // gate behavior, so they must stay visible regardless.
+      if (SCOPE === "llm") {
+        var llmFilters = ALL_FILTERS_LLM || ALL_FILTERS;
+        ALL_FILTERS.forEach(function(id) {
+          document.getElementById(id).classList.toggle("hidden", llmFilters.indexOf(id) === -1);
+        });
+        return;
+      }
+
       if (checked.length === 0) {
         // Nothing checked — hide all filters
         ALL_FILTERS.forEach(function(id) { document.getElementById(id).classList.add("hidden"); });
@@ -1826,7 +1535,19 @@
       });
     }
 
-    // --- LLM provider-aware operations builder ---
+    // --- LLM operations builder ---
+    // Typed LLM operations (messages_create, chat_completions_create, etc.)
+    // are not implemented by any current connector — they exist only as
+    // upcoming surface. The actual mechanism for LLM policy today is an
+    // http_proxy connection pointed at the provider's API, on which this
+    // policy enforces match fields (model glob, max_tokens / max_cost
+    // ceilings, providers allowlist) against the proxied request body.
+    //
+    // Rather than show a picker of unimplemented operations, render a
+    // clear "not yet available" notice and let the filters below drive
+    // policy behavior. The save path pins the rule's operations to
+    // ["*", "proxy_request"] so it fires correctly on bound http_proxy
+    // connections.
     function updateLLMOps() {
       var container = document.getElementById("llm-ops-container");
       if (!container) return;
@@ -2000,6 +1721,11 @@
         if (SCOPE === "http_proxy") {
           match.operations = ["*", "proxy_request"];
           if (r.ops && r.ops.length > 0) match.method = r.ops;
+        } else if (SCOPE === "llm") {
+          // No typed LLM ops yet — bind the rule to proxy_request (the only
+          // op an http_proxy LLM connection actually exposes) and "*" so a
+          // future typed connector with discrete ops is also covered.
+          match.operations = ["*", "proxy_request"];
         } else if (r.ops && r.ops.length > 0) {
           match.operations = r.ops;
         }

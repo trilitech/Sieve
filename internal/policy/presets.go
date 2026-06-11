@@ -8,7 +8,7 @@ func RulesPresetReadOnly() map[string]any {
 	return map[string]any{
 		"rules": []any{
 			map[string]any{
-				"match":  map[string]any{"operations": []any{"list_emails", "read_email", "read_thread", "list_labels", "get_attachment"}},
+				"match":  map[string]any{"operations": []any{"list_emails", "read_email", "read_email_raw", "read_thread", "list_labels", "get_attachment"}},
 				"action": "allow",
 			},
 		},
@@ -26,7 +26,7 @@ func RulesPresetDrafter() map[string]any {
 				"reason": "Sending requires approval",
 			},
 			map[string]any{
-				"match":  map[string]any{"operations": []any{"list_emails", "read_email", "read_thread", "list_labels", "get_attachment", "create_draft", "update_draft"}},
+				"match":  map[string]any{"operations": []any{"list_emails", "read_email", "read_email_raw", "read_thread", "list_labels", "get_attachment", "create_draft", "update_draft"}},
 				"action": "allow",
 			},
 		},
@@ -53,7 +53,7 @@ func RulesPresetTriage() map[string]any {
 	return map[string]any{
 		"rules": []any{
 			map[string]any{
-				"match":  map[string]any{"operations": []any{"list_emails", "read_email", "read_thread", "list_labels", "get_attachment", "add_label", "remove_label", "archive"}},
+				"match":  map[string]any{"operations": []any{"list_emails", "read_email", "read_email_raw", "read_thread", "list_labels", "get_attachment", "add_label", "remove_label", "archive"}},
 				"action": "allow",
 			},
 		},

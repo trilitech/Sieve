@@ -68,6 +68,30 @@ curl "http://localhost:19817/gmail/v1/users/me/messages/MESSAGE_ID" \
   -H "Authorization: Bearer sieve_tok_xxxxx"
 ```
 
+By default, Sieve returns its simplified parsed shape (`id`, `from`, `to`,
+`subject`, `body`, attachment metadata) — suitable for interactive agent use.
+For byte-faithful archival, request Google's `format=raw`:
+
+```bash
+curl "http://localhost:19817/gmail/v1/users/me/messages/MESSAGE_ID?format=raw" \
+  -H "Authorization: Bearer sieve_tok_xxxxx"
+```
+
+Returns Google's wire shape verbatim: `{id, threadId, labelIds, internalDate,
+raw}`, where `raw` is the base64url-encoded RFC822 message (full headers
+including `Message-ID`/`References`/`In-Reply-To`, all MIME parts, attachments
+inline). This routes to a distinct connector operation (`read_email_raw`) so
+archival roles can be granted only this surface, or vice versa.
+
+Decode the raw payload locally:
+
+```bash
+RAW=$(curl -sH "Authorization: Bearer sieve_tok_xxxxx" \
+  "http://localhost:19817/gmail/v1/users/me/messages/MESSAGE_ID?format=raw" \
+  | jq -r .raw)
+echo "$RAW" | tr '_-' '/+' | base64 -d > message.eml
+```
+
 ### Read a thread
 
 ```bash
@@ -133,7 +157,7 @@ curl -X POST "http://localhost:19817/gmail/v1/users/me/messages/MESSAGE_ID/modif
 |--------|----------|-------------|
 | GET | `/gmail/v1/users` | List available Google accounts (Sieve extension) |
 | GET | `/gmail/v1/users/{userId}/messages` | list_emails |
-| GET | `/gmail/v1/users/{userId}/messages/{id}` | read_email |
+| GET | `/gmail/v1/users/{userId}/messages/{id}` | read_email (or read_email_raw when `?format=raw`) |
 | GET | `/gmail/v1/users/{userId}/threads/{id}` | read_thread |
 | POST | `/gmail/v1/users/{userId}/messages/send` | send_email |
 | POST | `/gmail/v1/users/{userId}/drafts` | create_draft |
