@@ -160,32 +160,51 @@ func (a *Connector) doRequest(ctx context.Context, method, path string, body any
 		return nil, fmt.Errorf("anthropic: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
-	respBytes, err := io.ReadAll(resp.Body)
+
+	// Cap the response body so a misbehaving (or hostile) upstream
+	// can't drive us out of memory. 16 MiB is far above any legitimate
+	// Anthropic response — count_tokens returns a few bytes, and a
+	// completion at max_tokens=8192 with full content blocks is well
+	// under a megabyte.
+	const maxResponseBytes = 16 << 20
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: read response: %w", err)
 	}
-
-	var out map[string]any
-	if err := json.Unmarshal(respBytes, &out); err != nil {
-		return nil, fmt.Errorf("anthropic: decode response (status %d): %w; body: %s",
-			resp.StatusCode, err, truncate(respBytes, 256))
+	if int64(len(respBytes)) > maxResponseBytes {
+		return nil, fmt.Errorf("anthropic: %s %s: upstream response exceeded %d byte cap",
+			method, path, maxResponseBytes)
 	}
 
+	// JSON-decode opportunistically. Failure here is treated as
+	// "no structured body" rather than fatal, because non-2xx
+	// responses from proxy frontends are often plain text ("502 Bad
+	// Gateway") and we still need to surface those — especially 401,
+	// which must map to ErrNeedsReauth regardless of body shape.
+	var out map[string]any
+	jsonOK := json.Unmarshal(respBytes, &out) == nil
+
 	if resp.StatusCode/100 != 2 {
-		// Anthropic returns {"type":"error","error":{"type":"...", "message":"..."}}.
-		// Surface that to callers so audit + agents see the upstream reason.
 		var errType, errMsg string
-		if errObj, ok := out["error"].(map[string]any); ok {
-			errType, _ = errObj["type"].(string)
-			errMsg, _ = errObj["message"].(string)
+		if jsonOK {
+			if errObj, ok := out["error"].(map[string]any); ok {
+				errType, _ = errObj["type"].(string)
+				errMsg, _ = errObj["message"].(string)
+			}
 		}
 		// Auth-class failures must wrap connector.ErrNeedsReauth so the
 		// API + MCP layers map them to a structured 403 + reauth_url
-		// rather than an opaque 500. An invalid key, a revoked key, and
-		// the older "permission_error" shape all surface as 401 — the
-		// status code is the authoritative signal; errType is a
-		// belt-and-suspenders cover for upstream shape drift.
+		// rather than an opaque 500. Status 401 alone is sufficient —
+		// errType is the belt-and-suspenders cover for upstream shape
+		// drift (e.g. a proxy frontend returning 403 with an
+		// authentication_error envelope).
 		if resp.StatusCode == http.StatusUnauthorized || errType == "authentication_error" {
+			if errType == "" && errMsg == "" {
+				// No structured body; surface a clean message without
+				// empty ": :" placeholders.
+				return nil, fmt.Errorf("anthropic: %s %s: status %d: %w",
+					method, path, resp.StatusCode, connector.ErrNeedsReauth)
+			}
 			return nil, fmt.Errorf("anthropic: %s %s: %d %s: %s: %w",
 				method, path, resp.StatusCode, errType, errMsg, connector.ErrNeedsReauth)
 		}
@@ -195,6 +214,16 @@ func (a *Connector) doRequest(ctx context.Context, method, path string, body any
 		}
 		return nil, fmt.Errorf("anthropic: %s %s: status %d, body: %s",
 			method, path, resp.StatusCode, truncate(respBytes, 256))
+	}
+
+	// 2xx without a parseable body shouldn't happen against the real
+	// Anthropic API, but a proxy frontend (or a future content-type
+	// negotiation gone wrong) could produce it. Fail loudly rather
+	// than returning nil out, which downstream callers would
+	// nil-dereference.
+	if !jsonOK {
+		return nil, fmt.Errorf("anthropic: %s %s: 2xx response was not valid JSON; body: %s",
+			method, path, truncate(respBytes, 256))
 	}
 
 	return out, nil

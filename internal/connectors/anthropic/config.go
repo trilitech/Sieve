@@ -29,8 +29,12 @@ func parseConfig(raw map[string]any) (*Config, error) {
 		// Soft sanity check. Anthropic keys carry this prefix; rejecting
 		// non-conforming values catches the common operator mistake of
 		// pasting an OpenAI key into the Anthropic form.
-		return nil, fmt.Errorf("anthropic: api_key must start with %q (got prefix %q)",
-			"sk-ant-", firstN(apiKey, 7))
+		//
+		// Deliberately do NOT echo any of the rejected key in the error
+		// message — even a 7-character prefix would land in logs and
+		// audit rows. The operator sees the value in the form field they
+		// just typed; we don't need to reflect it.
+		return nil, errors.New("anthropic: api_key must start with \"sk-ant-\"")
 	}
 
 	baseURL, _ := raw["base_url"].(string)
@@ -54,14 +58,4 @@ func parseConfig(raw map[string]any) (*Config, error) {
 		BaseURL:          baseURL,
 		AnthropicVersion: version,
 	}, nil
-}
-
-// firstN returns the first n bytes of a string, or the full string if
-// shorter. Used only to produce informative error messages without
-// leaking the rest of an API key.
-func firstN(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }

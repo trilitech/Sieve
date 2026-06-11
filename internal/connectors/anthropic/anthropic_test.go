@@ -146,7 +146,7 @@ func TestMessagesCreate_StripsMaxCostFromOutboundBody(t *testing.T) {
 		"model":      "claude-sonnet-4-5",
 		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
 		"max_tokens": 16,
-		"max_cost":   "0.50",
+		"max_cost":   0.50, // catalog declares max_cost as float; matches the wire shape clients will send
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -545,5 +545,122 @@ func TestOperationsParamTypes_MatchAnthropicSchema(t *testing.T) {
 				t.Errorf("%s: param %q type = %q, want %q", op.Name, name, got.Type, expectedType)
 			}
 		}
+	}
+}
+
+// TestDoRequest_PlainText401MapsToReauth covers the proxy-frontend
+// shape: a 401 with no JSON envelope (e.g. text/plain "Unauthorized"
+// from a corporate LLM gateway). Even though the body can't be
+// decoded, the status code alone must drive the reauth mapping.
+func TestDoRequest_PlainText401MapsToReauth(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/plain")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("Unauthorized"))
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 16,
+	})
+	if err == nil {
+		t.Fatal("expected error on plain-text 401")
+	}
+	if !errors.Is(err, connector.ErrNeedsReauth) {
+		t.Errorf("plain-text 401 must wrap ErrNeedsReauth; got %v", err)
+	}
+}
+
+// TestDoRequest_PlainText500NotReauth pins the negative side for the
+// non-JSON case — a plain-text 502 from a flaky proxy must not be
+// mistaken for an auth problem.
+func TestDoRequest_PlainText500NotReauth(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/plain")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("502 Bad Gateway"))
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 16,
+	})
+	if err == nil {
+		t.Fatal("expected error on 502")
+	}
+	if errors.Is(err, connector.ErrNeedsReauth) {
+		t.Errorf("plain-text 5xx must NOT trip ErrNeedsReauth; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "502 Bad Gateway") {
+		t.Errorf("error should preserve upstream body excerpt; got %v", err)
+	}
+}
+
+// TestDoRequest_401EmptyEnvelopeNoPlaceholderColons confirms the
+// formatting fix for the {"error": null} / {} case: the rendered
+// message must not contain dangling ": :" placeholders where errType
+// and errMsg would have gone.
+func TestDoRequest_401EmptyEnvelopeNoPlaceholderColons(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 16,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, connector.ErrNeedsReauth) {
+		t.Errorf("must still wrap ErrNeedsReauth; got %v", err)
+	}
+	if strings.Contains(err.Error(), ": :") {
+		t.Errorf("error must not contain empty \": :\" placeholders; got %q", err.Error())
+	}
+}
+
+// TestDoRequest_OversizedResponseCappedCleanly verifies that a
+// massively oversized upstream response is rejected with a clean
+// error rather than consuming unbounded memory. The 16 MiB cap is
+// chosen far above any legitimate Messages API response.
+func TestDoRequest_OversizedResponseCappedCleanly(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		// 20 MiB of garbage — exceeds the 16 MiB cap. Writing in
+		// 64-KiB chunks keeps the test fast.
+		chunk := make([]byte, 64*1024)
+		for i := 0; i < 320; i++ {
+			_, _ = w.Write(chunk)
+		}
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 16,
+	})
+	if err == nil {
+		t.Fatal("expected error on oversized response")
+	}
+	if !strings.Contains(err.Error(), "byte cap") {
+		t.Errorf("error should mention the cap; got %v", err)
+	}
+}
+
+// TestParseConfig_RejectsWrongPrefixWithoutEchoingKey verifies the
+// secret-hygiene fix: the rejection error must not contain any portion
+// of the supplied key (since errors land in logs and audit rows).
+func TestParseConfig_RejectsWrongPrefixWithoutEchoingKey(t *testing.T) {
+	bogus := "sk-openai-abcdef-do-not-log-this"
+	_, err := parseConfig(map[string]any{"api_key": bogus})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), bogus) ||
+		strings.Contains(err.Error(), bogus[:7]) ||
+		strings.Contains(err.Error(), bogus[:5]) {
+		t.Errorf("error must not echo any portion of the supplied key; got %q", err.Error())
 	}
 }
