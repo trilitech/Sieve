@@ -916,7 +916,7 @@
           <button type="submit"
                   class="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-slate-800">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
             </svg>
             Create Policy
           </button>
@@ -1804,6 +1804,18 @@
       var checked = [];
       document.querySelectorAll(".rule-op:checked").forEach(function(cb) { checked.push(cb.value); });
 
+      // LLM scope is a special case: typed operations aren't implemented
+      // yet, so there's nothing to check off. The filters below (model,
+      // max_tokens, max_cost, providers) are the only knobs that actually
+      // gate behavior, so they must stay visible regardless.
+      if (SCOPE === "llm") {
+        var llmFilters = ALL_FILTERS_LLM || ALL_FILTERS;
+        ALL_FILTERS.forEach(function(id) {
+          document.getElementById(id).classList.toggle("hidden", llmFilters.indexOf(id) === -1);
+        });
+        return;
+      }
+
       if (checked.length === 0) {
         // Nothing checked — hide all filters
         ALL_FILTERS.forEach(function(id) { document.getElementById(id).classList.add("hidden"); });
@@ -1826,44 +1838,31 @@
       });
     }
 
-    // --- LLM provider-aware operations builder ---
+    // --- LLM operations builder ---
+    // Typed LLM operations (messages_create, chat_completions_create, etc.)
+    // are not implemented by any current connector — they exist only as
+    // upcoming surface. The actual mechanism for LLM policy today is an
+    // http_proxy connection pointed at the provider's API, on which this
+    // policy enforces match fields (model glob, max_tokens / max_cost
+    // ceilings, providers allowlist) against the proxied request body.
+    //
+    // Rather than show a picker of unimplemented operations, render a
+    // clear "not yet available" notice and let the filters below drive
+    // policy behavior. The save path pins the rule's operations to
+    // ["*", "proxy_request"] so it fires correctly on bound http_proxy
+    // connections.
     function updateLLMOps() {
       var container = document.getElementById("llm-ops-container");
       if (!container) return;
-      var checkedProviders = [];
-      document.querySelectorAll(".llm-provider:checked").forEach(function(cb) { checkedProviders.push(cb.value); });
-
-      // Remember which ops were previously checked
-      var prevChecked = {};
-      container.querySelectorAll(".rule-op:checked").forEach(function(cb) { prevChecked[cb.value] = true; });
-      var isFirstBuild = container.innerHTML.trim() === "";
-
-      var html = "";
-      checkedProviders.forEach(function(provKey) {
-        var prov = LLM_PROVIDERS[provKey];
-        if (!prov) return;
-        html += '<div class="mb-2"><p class="text-xs text-indigo-400 font-semibold mb-1">' + prov.label + '</p>';
-        prov.groups.forEach(function(group) {
-          html += '<div class="mb-1.5"><p class="text-xs text-slate-500 font-medium mb-1">' + group.name + '</p>';
-          html += '<div class="grid grid-cols-2 gap-1.5">';
-          group.ops.forEach(function(op) {
-            var isChecked = isFirstBuild || prevChecked[op] ? " checked" : "";
-            html += '<label class="flex items-center gap-1.5 cursor-pointer">' +
-              '<input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="' + op + '"' + isChecked + '>' +
-              '<span class="text-xs text-slate-300">' + op + '</span></label>';
-          });
-          html += '</div></div>';
-        });
-        html += '</div>';
-      });
-
-      if (checkedProviders.length === 0) {
-        html = '<p class="text-xs text-slate-500 italic">Select at least one provider above.</p>';
-      }
-
-      container.innerHTML = html;
-
-      // Re-bind change listeners on new checkboxes and refresh filters
+      container.innerHTML =
+        '<div class="rounded-lg bg-amber-500/5 border border-amber-500/20 px-3 py-2.5 mb-2">' +
+          '<p class="text-xs font-semibold text-amber-400 mb-1">Provider-typed operations not yet implemented</p>' +
+          '<p class="text-xs text-slate-400 leading-relaxed">' +
+            'Typed connectors for Anthropic / OpenAI / Gemini / Bedrock are tracked but not yet built. ' +
+            'For now, this policy applies to <em>all</em> LLM API calls routed through an http_proxy connection. ' +
+            'Use the filters below to constrain by model, token budget, cost ceiling, or upstream provider.' +
+          '</p>' +
+        '</div>';
       updateFiltersFromOps();
     }
 
@@ -2001,6 +2000,11 @@
         if (SCOPE === "http_proxy") {
           match.operations = ["*", "proxy_request"];
           if (r.ops && r.ops.length > 0) match.method = r.ops;
+        } else if (SCOPE === "llm") {
+          // No typed LLM ops yet — bind the rule to proxy_request (the only
+          // op an http_proxy LLM connection actually exposes) and "*" so a
+          // future typed connector with discrete ops is also covered.
+          match.operations = ["*", "proxy_request"];
         } else if (r.ops && r.ops.length > 0) {
           match.operations = r.ops;
         }
