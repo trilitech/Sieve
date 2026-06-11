@@ -92,7 +92,7 @@
                 </form>
                 {{else}}
                 <form method="POST" action="/connections/{{.ID}}/disable"
-                      onsubmit="return confirm('Disable connection \'{{.ID}}\'? Agent operations will fail until you re-enable it.');"
+                      data-confirm="Disable connection '{{.ID}}'? Agent operations will fail until you re-enable it."
                       class="inline mr-3">
                   <button type="submit"
                           class="text-sm text-amber-400 hover:text-amber-300 font-medium transition-colors">
@@ -101,7 +101,7 @@
                 </form>
                 {{end}}
                 <form method="POST" action="/connections/{{.ID}}/delete"
-                      onsubmit="return confirm('Delete connection \'{{.ID}}\'? This cannot be undone.');"
+                      data-confirm="Delete connection '{{.ID}}'? This cannot be undone."
                       class="inline">
                   <button type="submit"
                           class="text-sm text-red-400 hover:text-red-300 font-medium transition-colors">
@@ -835,6 +835,23 @@
       {{end}}
     </div>
   </main>
+
+  {{/*
+    Single delegated submit handler for forms that carry data-confirm.
+    Replaces per-form onsubmit="return confirm(...)" inline event-handler
+    attributes, which require script-src 'unsafe-inline' even with CSP
+    nonces and are harder to migrate to a stricter CSP later. The
+    confirmation message lives in the data-confirm attribute, which Go's
+    html/template contextually escapes — no JS-string injection surface.
+  */}}
+  <script>
+    document.addEventListener("submit", function (e) {
+      var msg = e.target && e.target.getAttribute && e.target.getAttribute("data-confirm");
+      if (msg && !window.confirm(msg)) {
+        e.preventDefault();
+      }
+    });
+  </script>
 </body>
 </html>
 {{end}}
