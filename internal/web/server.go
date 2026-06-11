@@ -240,12 +240,17 @@ func NewServer(
 		stopCleanup:           make(chan struct{}),
 	}
 
-	// Parse each page template together with the nav partial.
+	// Parse each page template together with the nav + ops-picker partials.
+	// Partials added here are loaded for EVERY page; pages that don't use a
+	// given partial just ignore it. The ops picker partial is included so
+	// policies.html and policy_edit.html resolve to the same scope-aware
+	// markup — making create/edit divergence structurally impossible.
 	pages := []string{"connections", "connection_edit", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit", "docs"}
 	for _, page := range pages {
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
 				"templates/nav.html",
+				"templates/policy_ops_picker.html",
 				fmt.Sprintf("templates/%s.html", page),
 			),
 		)

@@ -80,66 +80,7 @@
                   <div class="space-y-3">
                     <div>
                       <label class="block text-sm text-slate-400 mb-1">Operations</label>
-                      <div id="ops-checkboxes" class="bg-slate-800 border border-slate-700 rounded-lg p-3 space-y-3">
-                        {{if eq .Scope "slack"}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_channels"><span class="text-xs text-slate-300">list_channels</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_users"><span class="text-xs text-slate-300">list_users</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_user_profile"><span class="text-xs text-slate-300">read_user_profile</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_channel_history"><span class="text-xs text-slate-300">read_channel_history</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_thread"><span class="text-xs text-slate-300">read_thread</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="post_message"><span class="text-xs text-slate-300">post_message</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Search <span class="text-slate-600 font-normal">(disabled in v1)</span></p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-not-allowed opacity-60"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="search_messages" disabled><span class="text-xs text-slate-400">search_messages</span></label>
-                          </div>
-                        </div>
-                        {{else}}
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_emails"><span class="text-xs text-slate-300">list_emails</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_email"><span class="text-xs text-slate-300">read_email</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="read_thread"><span class="text-xs text-slate-300">read_thread</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="get_attachment"><span class="text-xs text-slate-300">get_attachment</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Compose</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="create_draft"><span class="text-xs text-slate-300">create_draft</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="update_draft"><span class="text-xs text-slate-300">update_draft</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="reply"><span class="text-xs text-slate-300">reply</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Send</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="send_email"><span class="text-xs text-slate-300">send_email</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="send_draft"><span class="text-xs text-slate-300">send_draft</span></label>
-                          </div>
-                        </div>
-                        <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Organize</p>
-                          <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="add_label"><span class="text-xs text-slate-300">add_label</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="remove_label"><span class="text-xs text-slate-300">remove_label</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="archive"><span class="text-xs text-slate-300">archive</span></label>
-                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="list_labels"><span class="text-xs text-slate-300">list_labels</span></label>
-                          </div>
-                        </div>
-                        {{end}}
-                      </div>
+                      {{template "policy_ops_picker" .}}
                     </div>
 
                     <!-- Contextual filters — visibility driven by which ops are checked -->
