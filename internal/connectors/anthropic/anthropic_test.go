@@ -3,11 +3,14 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 // newTestConnector spins up an httptest.Server with the given handler
@@ -324,6 +327,223 @@ func TestOperations_CatalogShape(t *testing.T) {
 		}
 		if actual != ro {
 			t.Errorf("operation %q: ReadOnly = %v, want %v", name, actual, ro)
+		}
+	}
+}
+
+// TestMessagesCreate_401MapsToErrNeedsReauth pins the contract that an
+// auth-class upstream failure becomes a typed ErrNeedsReauth at the
+// connector boundary. The API and MCP layers branch on
+// errors.Is(err, connector.ErrNeedsReauth) to return a structured 403
+// pointing the operator at the reauth flow — without this mapping a
+// revoked API key would surface as a generic 500.
+func TestMessagesCreate_401MapsToErrNeedsReauth(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`))
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 16,
+	})
+	if err == nil {
+		t.Fatal("expected error on 401")
+	}
+	if !errors.Is(err, connector.ErrNeedsReauth) {
+		t.Errorf("error must wrap connector.ErrNeedsReauth on 401; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "authentication_error") || !strings.Contains(err.Error(), "invalid x-api-key") {
+		t.Errorf("expected upstream type + message preserved in error; got %v", err)
+	}
+}
+
+// TestMessagesCreate_AuthErrorTypeWithout401Maps confirms the
+// belt-and-suspenders cover: if a future upstream rev returns errType
+// "authentication_error" with a non-401 status (rare but observed in
+// proxy frontends), we still treat it as a reauth signal.
+func TestMessagesCreate_AuthErrorTypeWithout401Maps(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"key revoked"}}`))
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 16,
+	})
+	if !errors.Is(err, connector.ErrNeedsReauth) {
+		t.Errorf("authentication_error must map to ErrNeedsReauth regardless of status; got %v", err)
+	}
+}
+
+// TestMessagesCreate_401WithoutStructuredBodyStillMaps covers the
+// case where the upstream returns a bare 401 with no error envelope
+// (e.g. an upstream proxy returning text/plain "Unauthorized"). The
+// status code alone is sufficient to flag a reauth need.
+func TestMessagesCreate_401WithoutStructuredBodyStillMaps(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 16,
+	})
+	if !errors.Is(err, connector.ErrNeedsReauth) {
+		t.Errorf("bare 401 must map to ErrNeedsReauth; got %v", err)
+	}
+}
+
+// TestMessagesCreate_5xxIsNotReauthError pins the negative side of the
+// contract — transient server errors must NOT trip the reauth flow.
+// Otherwise a Bedrock outage would cause every operator to be told
+// their API key is bad.
+func TestMessagesCreate_5xxIsNotReauthError(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"api_error","message":"backend overloaded"}}`))
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 16,
+	})
+	if err == nil {
+		t.Fatal("expected error on 500")
+	}
+	if errors.Is(err, connector.ErrNeedsReauth) {
+		t.Errorf("5xx must NOT trip ErrNeedsReauth; got %v", err)
+	}
+}
+
+// TestMessagesCreate_RejectsEmptyMessages ensures the local pre-flight
+// catches []any{} for the messages param. Previously ensureNonEmpty
+// only checked string types, so an empty array fell through.
+func TestMessagesCreate_RejectsEmptyMessages(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("upstream should not be called when messages is empty")
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{},
+		"max_tokens": 16,
+	})
+	if err == nil {
+		t.Fatal("expected error for empty messages")
+	}
+	if !strings.Contains(err.Error(), "messages") {
+		t.Errorf("error should mention messages; got %v", err)
+	}
+}
+
+// TestMessagesCreate_RejectsZeroMaxTokens covers the numeric-zero case
+// that JSON-decoded params expose: a missing max_tokens field decodes
+// to float64(0), which Anthropic would reject upstream with a
+// confusing 400. Catch it locally.
+func TestMessagesCreate_RejectsZeroMaxTokens(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("upstream should not be called when max_tokens is 0")
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": float64(0),
+	})
+	if err == nil {
+		t.Fatal("expected error for max_tokens=0")
+	}
+	if !strings.Contains(err.Error(), "max_tokens") {
+		t.Errorf("error should mention max_tokens; got %v", err)
+	}
+}
+
+// TestMessagesCreate_StripsStreamFalseFromOutboundBody pins the
+// contract that this connector NEVER sends a stream field upstream,
+// regardless of what callers pass. stream=true is rejected; stream=false
+// is dropped silently so the outbound body shape is deterministic.
+func TestMessagesCreate_StripsStreamFalseFromOutboundBody(t *testing.T) {
+	var receivedBody map[string]any
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedBody)
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_01","type":"message","content":[]}`))
+	})
+	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+		"max_tokens": 16,
+		"stream":     false,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, present := receivedBody["stream"]; present {
+		t.Errorf("stream=false leaked to upstream body: %v", receivedBody)
+	}
+}
+
+// TestMessagesCountTokens_RejectsEmptyMessages covers the same
+// empty-array guard on the count_tokens path.
+func TestMessagesCountTokens_RejectsEmptyMessages(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("upstream should not be called when messages is empty")
+	})
+	_, err := conn.Execute(context.Background(), "messages_count_tokens", map[string]any{
+		"model":    "claude-sonnet-4-5",
+		"messages": []any{},
+	})
+	if err == nil {
+		t.Fatal("expected error for empty messages")
+	}
+}
+
+// TestOperationsParamTypes_MatchAnthropicSchema pins the param types
+// against the wire shapes Anthropic actually expects. Drift here would
+// cause the MCP tool catalog to advertise wrong types and clients to
+// send malformed requests that fail upstream with confusing errors.
+func TestOperationsParamTypes_MatchAnthropicSchema(t *testing.T) {
+	want := map[string]map[string]string{
+		"messages_create": {
+			"model":          "string",
+			"messages":       "[]object",
+			"max_tokens":     "int",
+			"temperature":    "float",
+			"top_p":          "float",
+			"top_k":          "int",
+			"stop_sequences": "[]string",
+			"metadata":       "object",
+			"tools":          "[]object",
+			"tool_choice":    "object",
+			"max_cost":       "float",
+		},
+		"messages_count_tokens": {
+			"model":       "string",
+			"messages":    "[]object",
+			"tools":       "[]object",
+			"tool_choice": "object",
+		},
+	}
+	for _, op := range operations {
+		wantParams, ok := want[op.Name]
+		if !ok {
+			continue
+		}
+		for name, expectedType := range wantParams {
+			got, present := op.Params[name]
+			if !present {
+				t.Errorf("%s: param %q missing", op.Name, name)
+				continue
+			}
+			if got.Type != expectedType {
+				t.Errorf("%s: param %q type = %q, want %q", op.Name, name, got.Type, expectedType)
+			}
 		}
 	}
 }

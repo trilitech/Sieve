@@ -174,9 +174,22 @@ func (a *Connector) doRequest(ctx context.Context, method, path string, body any
 	if resp.StatusCode/100 != 2 {
 		// Anthropic returns {"type":"error","error":{"type":"...", "message":"..."}}.
 		// Surface that to callers so audit + agents see the upstream reason.
+		var errType, errMsg string
 		if errObj, ok := out["error"].(map[string]any); ok {
-			errType, _ := errObj["type"].(string)
-			errMsg, _ := errObj["message"].(string)
+			errType, _ = errObj["type"].(string)
+			errMsg, _ = errObj["message"].(string)
+		}
+		// Auth-class failures must wrap connector.ErrNeedsReauth so the
+		// API + MCP layers map them to a structured 403 + reauth_url
+		// rather than an opaque 500. An invalid key, a revoked key, and
+		// the older "permission_error" shape all surface as 401 — the
+		// status code is the authoritative signal; errType is a
+		// belt-and-suspenders cover for upstream shape drift.
+		if resp.StatusCode == http.StatusUnauthorized || errType == "authentication_error" {
+			return nil, fmt.Errorf("anthropic: %s %s: %d %s: %s: %w",
+				method, path, resp.StatusCode, errType, errMsg, connector.ErrNeedsReauth)
+		}
+		if errType != "" {
 			return nil, fmt.Errorf("anthropic: %s %s: %d %s: %s",
 				method, path, resp.StatusCode, errType, errMsg)
 		}
@@ -196,15 +209,57 @@ func truncate(b []byte, max int) string {
 	return string(b[:max]) + "...(truncated)"
 }
 
-// ensureNonEmpty is a small helper to surface a clearer error than
-// "key not found" when a required param is missing.
+// ensureNonEmpty surfaces a clearer error than "key not found" when a
+// required param is missing, present-but-nil, present-but-empty, or
+// present-but-zero (for numeric counts).
+//
+// It covers the three shapes a required Messages API param can take:
+//
+//   - strings (model, system) — empty string treated as missing
+//   - slices ([]any "messages") — empty array treated as missing
+//   - numbers (max_tokens) — zero treated as missing, since Anthropic
+//     requires max_tokens > 0 and JSON decoding turns missing keys
+//     into the default zero value
+//
+// Without this, the connector would happily POST `{"messages": [],
+// "max_tokens": 0}` to Anthropic and surface a confusing upstream 400
+// instead of catching the obvious mistake locally.
 func ensureNonEmpty(params map[string]any, key string) error {
 	v, ok := params[key]
-	if !ok {
+	if !ok || v == nil {
 		return fmt.Errorf("anthropic: missing required param %q", key)
 	}
-	if s, ok := v.(string); ok && s == "" {
-		return errors.New("anthropic: param " + key + " is empty")
+	switch x := v.(type) {
+	case string:
+		if x == "" {
+			return errors.New("anthropic: param " + key + " is empty")
+		}
+	case []any:
+		if len(x) == 0 {
+			return errors.New("anthropic: param " + key + " is empty")
+		}
+	case []map[string]any:
+		if len(x) == 0 {
+			return errors.New("anthropic: param " + key + " is empty")
+		}
+	case []string:
+		if len(x) == 0 {
+			return errors.New("anthropic: param " + key + " is empty")
+		}
+	case float64:
+		// JSON numbers decode to float64. max_tokens=0 is the relevant
+		// "missing-shaped" case — Anthropic rejects it anyway.
+		if x == 0 {
+			return errors.New("anthropic: param " + key + " must be > 0")
+		}
+	case int:
+		if x == 0 {
+			return errors.New("anthropic: param " + key + " must be > 0")
+		}
+	case int64:
+		if x == 0 {
+			return errors.New("anthropic: param " + key + " must be > 0")
+		}
 	}
 	return nil
 }
