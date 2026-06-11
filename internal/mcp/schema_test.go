@@ -10,9 +10,16 @@ import (
 // JSON Schema type translation. Drift here would cause MCP clients to
 // validate against the wrong types and reject valid agent payloads.
 //
-// The vocabulary is intentionally small: the values listed below are
-// the ONLY Type strings any registered connector uses. New types must
-// extend this table AND the switch in buildInputSchema together.
+// The vocabulary is intentionally small. Most of the values listed
+// below are in active use by some registered connector — anthropic
+// uses object / []object / float / int / string, http_proxy uses
+// string, gmail uses string / int / []string, etc. "number" is
+// included as a documented alias of "float" that no connector
+// currently emits but buildInputSchema accepts so a future connector
+// can use the more JSON-Schema-native name without an additional
+// switch case. The "unknown_future_type" row pins the safety net:
+// anything outside the known set falls back to "string" so an
+// outdated connector still produces a workable schema.
 func TestBuildInputSchema_TypeMapping(t *testing.T) {
 	cases := []struct {
 		paramType  string

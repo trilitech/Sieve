@@ -22,6 +22,12 @@ type Config struct {
 // at add-time, not at the first agent call.
 func parseConfig(raw map[string]any) (*Config, error) {
 	apiKey, _ := raw["api_key"].(string)
+	// Trim leading/trailing whitespace consistent with base_url and
+	// anthropic_version below. Pasted keys frequently arrive with a
+	// trailing newline or surrounding spaces; without the trim the
+	// prefix check would reject the (otherwise-valid) key and an
+	// untrimmed value would fail auth upstream with a confusing 401.
+	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return nil, errors.New("anthropic: api_key is required")
 	}

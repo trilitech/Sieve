@@ -305,15 +305,19 @@ func truncate(b []byte, max int) string {
 
 // ensureNonEmpty surfaces a clearer error than "key not found" when a
 // required param is missing, present-but-nil, present-but-empty, or
-// present-but-zero (for numeric counts).
+// present-but-non-positive (for numeric counts).
 //
 // It covers the three shapes a required Messages API param can take:
 //
 //   - strings (model, system) — empty string treated as missing
 //   - slices ([]any "messages") — empty array treated as missing
-//   - numbers (max_tokens) — zero treated as missing, since Anthropic
-//     requires max_tokens > 0 and JSON decoding turns missing keys
-//     into the default zero value
+//   - numbers (max_tokens) — non-positive treated as missing.
+//     Anthropic requires max_tokens > 0; the connector enforces the
+//     same contract locally. JSON-decoded missing keys come through
+//     as float64(0), so zero is the natural sentinel — but a caller
+//     who explicitly passes max_tokens=-1 would also slip through if
+//     we only rejected zero, and Anthropic would respond with a
+//     confusing 400. Reject the whole non-positive half-line.
 //
 // Without this, the connector would happily POST `{"messages": [],
 // "max_tokens": 0}` to Anthropic and surface a confusing upstream 400
@@ -341,17 +345,15 @@ func ensureNonEmpty(params map[string]any, key string) error {
 			return errors.New("anthropic: param " + key + " is empty")
 		}
 	case float64:
-		// JSON numbers decode to float64. max_tokens=0 is the relevant
-		// "missing-shaped" case — Anthropic rejects it anyway.
-		if x == 0 {
+		if x <= 0 {
 			return errors.New("anthropic: param " + key + " must be > 0")
 		}
 	case int:
-		if x == 0 {
+		if x <= 0 {
 			return errors.New("anthropic: param " + key + " must be > 0")
 		}
 	case int64:
-		if x == 0 {
+		if x <= 0 {
 			return errors.New("anthropic: param " + key + " must be > 0")
 		}
 	}

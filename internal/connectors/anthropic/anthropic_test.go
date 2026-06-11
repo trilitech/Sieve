@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -477,24 +478,35 @@ func TestMessagesCreate_RejectsEmptyMessages(t *testing.T) {
 	}
 }
 
-// TestMessagesCreate_RejectsZeroMaxTokens covers the numeric-zero case
-// that JSON-decoded params expose: a missing max_tokens field decodes
-// to float64(0), which Anthropic would reject upstream with a
-// confusing 400. Catch it locally.
-func TestMessagesCreate_RejectsZeroMaxTokens(t *testing.T) {
-	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("upstream should not be called when max_tokens is 0")
-	})
-	_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
-		"model":      "claude-sonnet-4-5",
-		"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
-		"max_tokens": float64(0),
-	})
-	if err == nil {
-		t.Fatal("expected error for max_tokens=0")
-	}
-	if !strings.Contains(err.Error(), "max_tokens") {
-		t.Errorf("error should mention max_tokens; got %v", err)
+// TestMessagesCreate_RejectsNonPositiveMaxTokens covers BOTH numeric
+// edge cases that JSON-decoded params expose: a missing key decoded as
+// float64(0), AND a caller explicitly passing a negative integer. Both
+// would surface as confusing upstream 400s if forwarded; the connector
+// catches them locally with a contract that matches the documented
+// "must be > 0" semantic.
+func TestMessagesCreate_RejectsNonPositiveMaxTokens(t *testing.T) {
+	for _, badValue := range []any{
+		float64(0),
+		float64(-1),
+		int(-100),
+		int64(-1),
+	} {
+		t.Run(fmt.Sprintf("%v", badValue), func(t *testing.T) {
+			conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Fatalf("upstream should not be called when max_tokens is %v", badValue)
+			})
+			_, err := conn.Execute(context.Background(), "messages_create", map[string]any{
+				"model":      "claude-sonnet-4-5",
+				"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
+				"max_tokens": badValue,
+			})
+			if err == nil {
+				t.Fatalf("expected error for max_tokens=%v", badValue)
+			}
+			if !strings.Contains(err.Error(), "max_tokens") || !strings.Contains(err.Error(), "> 0") {
+				t.Errorf("error should mention max_tokens and the > 0 contract; got %v", err)
+			}
+		})
 	}
 }
 
@@ -776,5 +788,28 @@ func TestDoRequest_ReauthErrorEnvelopeTypeOnly(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), ": :") {
 		t.Errorf("must not contain \": :\"; got %q", err.Error())
+	}
+}
+
+// TestParseConfig_TrimsAPIKeyWhitespace covers the most common
+// paste-time mistake: the operator copies a key from a webpage and
+// gets a trailing newline (or surrounding spaces). Without the trim,
+// the prefix check would reject a valid key and an untrimmed value
+// passed upstream would fail auth with a confusing 401.
+func TestParseConfig_TrimsAPIKeyWhitespace(t *testing.T) {
+	for _, sample := range []string{
+		"  sk-ant-abc123  ",
+		"\tsk-ant-abc123\n",
+		"sk-ant-abc123\n",
+	} {
+		t.Run(fmt.Sprintf("%q", sample), func(t *testing.T) {
+			cfg, err := parseConfig(map[string]any{"api_key": sample})
+			if err != nil {
+				t.Fatalf("expected trim to make key acceptable; got %v", err)
+			}
+			if cfg.APIKey != "sk-ant-abc123" {
+				t.Errorf("api_key should be trimmed; got %q", cfg.APIKey)
+			}
+		})
 	}
 }
