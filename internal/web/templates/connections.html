@@ -92,8 +92,7 @@
                 </form>
                 {{else}}
                 <form method="POST" action="/connections/{{.ID}}/disable"
-                      hx-post="/connections/{{.ID}}/disable"
-                      hx-confirm="Disable connection '{{.ID}}'? Agent operations will fail until you re-enable it."
+                      onsubmit="return confirm('Disable connection \'{{.ID}}\'? Agent operations will fail until you re-enable it.');"
                       class="inline mr-3">
                   <button type="submit"
                           class="text-sm text-amber-400 hover:text-amber-300 font-medium transition-colors">
@@ -102,8 +101,7 @@
                 </form>
                 {{end}}
                 <form method="POST" action="/connections/{{.ID}}/delete"
-                      hx-post="/connections/{{.ID}}/delete"
-                      hx-confirm="Delete connection '{{.ID}}'? This cannot be undone."
+                      onsubmit="return confirm('Delete connection \'{{.ID}}\'? This cannot be undone.');"
                       class="inline">
                   <button type="submit"
                           class="text-sm text-red-400 hover:text-red-300 font-medium transition-colors">
