@@ -1103,6 +1103,13 @@ func TestGmailGetMessage_FormatRaw(t *testing.T) {
 	if _, ok := result["labelIds"]; !ok {
 		t.Errorf("expected 'labelIds' (camelCase) on format=raw response; got: %s", body)
 	}
+	// internalDate must be a JSON string (Google's "string (int64 format)").
+	// json.Unmarshal into map[string]any leaves a JSON string as Go string
+	// and a JSON number as float64, so the type assertion alone is enough.
+	if _, ok := result["internalDate"].(string); !ok {
+		t.Errorf("internalDate must be a JSON string per Google's REST schema; got %T (%v) in: %s",
+			result["internalDate"], result["internalDate"], body)
+	}
 	// Negative assertions: the read_email shape MUST NOT appear here.
 	if _, ok := result["subject"]; ok {
 		t.Errorf("format=raw response should not include parsed 'subject'; got: %s", body)

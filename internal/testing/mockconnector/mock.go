@@ -299,11 +299,16 @@ func (m *Mock) Execute(_ context.Context, op string, params map[string]any) (any
 			"body": "Hello world", "labels": []string{"INBOX"},
 		}, nil
 	case "read_email_raw":
+		// Mirror the real Gmail wire format: internalDate is a JSON string
+		// per Google's "string (int64 format)" spec, not a bare number. The
+		// REST-level test (router_test.go::TestGmailGetMessage_FormatRaw)
+		// asserts the string shape end-to-end so a future regression in the
+		// connector's serialization tags is caught here.
 		return map[string]any{
 			"id":           params["message_id"],
 			"threadId":     "t1",
 			"labelIds":     []string{"INBOX"},
-			"internalDate": int64(1735689600000),
+			"internalDate": "1735689600000",
 			"raw":          "RnJvbTogYWxpY2VAZXhhbXBsZS5jb20NCk1lc3NhZ2UtSUQ6IDxhYmNAeD4NCg0KaGk=",
 		}, nil
 	case "read_thread":

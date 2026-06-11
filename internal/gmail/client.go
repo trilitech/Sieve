@@ -189,13 +189,20 @@ func (c *Client) GetEmail(ctx context.Context, messageID string) (*Email, error)
 // RFC822 message in `raw`. JSON field names are camelCase to match the Gmail
 // API verbatim — clients written against the Google API can consume this
 // without a translation layer.
+//
+// internalDate and historyId carry the `,string` JSON tag because Google's
+// REST schema declares them as "string (int64/uint64 format)" — the wire
+// format is a JSON string wrapping the number, not a bare number. Emitting
+// bare numbers would round-trip through encoding/json fine but would break
+// downstream consumers that feed the response into Google's own client
+// libraries.
 type RawEmail struct {
 	ID           string   `json:"id"`
 	ThreadID     string   `json:"threadId"`
 	LabelIDs     []string `json:"labelIds,omitempty"`
 	Snippet      string   `json:"snippet,omitempty"`
-	HistoryID    uint64   `json:"historyId,omitempty"`
-	InternalDate int64    `json:"internalDate,omitempty"`
+	HistoryID    uint64   `json:"historyId,omitempty,string"`
+	InternalDate int64    `json:"internalDate,omitempty,string"`
 	SizeEstimate int64    `json:"sizeEstimate,omitempty"`
 	Raw          string   `json:"raw"`
 }

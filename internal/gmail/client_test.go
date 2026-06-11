@@ -198,6 +198,21 @@ func TestGetEmailRaw_PassesRawFormatAndReturnsGoogleShape(t *testing.T) {
 			t.Errorf("Marshal output should not contain snake_case key %s; got: %s", snake, wire)
 		}
 	}
+
+	// Google's REST schema declares internalDate and historyId as
+	// "string (int64/uint64 format)" — i.e., they must be JSON strings on
+	// the wire. Pin this so a future refactor that drops the `,string` tag
+	// regresses loudly.
+	if !strings.Contains(wire, `"internalDate":"1735689600000"`) {
+		t.Errorf("internalDate must be wire-encoded as a JSON string; got: %s", wire)
+	}
+	if !strings.Contains(wire, `"historyId":"424242"`) {
+		t.Errorf("historyId must be wire-encoded as a JSON string; got: %s", wire)
+	}
+	// sizeEstimate, by contrast, is documented as plain integer.
+	if !strings.Contains(wire, `"sizeEstimate":1024`) || strings.Contains(wire, `"sizeEstimate":"1024"`) {
+		t.Errorf("sizeEstimate must be wire-encoded as a JSON number; got: %s", wire)
+	}
 }
 
 // TestGetEmail_ReturnsFullBody verifies read_email still fetches the full
