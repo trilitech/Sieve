@@ -314,7 +314,7 @@
                  '<div class="text-xs text-slate-400 mt-1">' + excerpt + '</div>' +
                  '</a>';
         }).join('');
-        results.innerHTML = html;
+        results.innerHTML = html; // xss-safe: every interpolation in `html` is wrapped in highlight() (which escapes via escapeHTML) or escapeHTML() directly — see lines above
         results.hidden = false;
       }
 

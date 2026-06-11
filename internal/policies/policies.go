@@ -18,6 +18,12 @@ type Policy struct {
 	PolicyType   string         `json:"policy_type"`
 	PolicyConfig map[string]any `json:"policy_config"`
 	CreatedAt    time.Time      `json:"created_at"`
+	// LintAck stores sticky acknowledgements of lint warnings keyed by
+	// the lint rule name (e.g., "deny_ceiling_v1"). Spec
+	// A non-empty value means the
+	// operator has accepted the named lint for the current policy shape;
+	// subsequent saves that produce the same fingerprint don't re-warn.
+	LintAck map[string]any `json:"lint_ack,omitempty"`
 }
 
 type Service struct {
@@ -79,7 +85,7 @@ func (s *Service) Update(id, name, policyType string, config map[string]any) err
 // Get returns a policy by ID.
 func (s *Service) Get(id string) (*Policy, error) {
 	row := s.db.DB.QueryRow(
-		`SELECT id, name, policy_type, policy_config, created_at FROM policies WHERE id = ?`, id,
+		`SELECT id, name, policy_type, policy_config, created_at, lint_ack FROM policies WHERE id = ?`, id,
 	)
 	return scanPolicy(row)
 }
@@ -87,7 +93,7 @@ func (s *Service) Get(id string) (*Policy, error) {
 // GetByName returns a policy by name.
 func (s *Service) GetByName(name string) (*Policy, error) {
 	row := s.db.DB.QueryRow(
-		`SELECT id, name, policy_type, policy_config, created_at FROM policies WHERE name = ?`, name,
+		`SELECT id, name, policy_type, policy_config, created_at, lint_ack FROM policies WHERE name = ?`, name,
 	)
 	return scanPolicy(row)
 }
@@ -95,7 +101,7 @@ func (s *Service) GetByName(name string) (*Policy, error) {
 // List returns all policies.
 func (s *Service) List() ([]Policy, error) {
 	rows, err := s.db.DB.Query(
-		`SELECT id, name, policy_type, policy_config, created_at FROM policies ORDER BY created_at`,
+		`SELECT id, name, policy_type, policy_config, created_at, lint_ack FROM policies ORDER BY created_at`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list policies: %w", err)
@@ -105,12 +111,15 @@ func (s *Service) List() ([]Policy, error) {
 	var result []Policy
 	for rows.Next() {
 		var p Policy
-		var configJSON string
-		if err := rows.Scan(&p.ID, &p.Name, &p.PolicyType, &configJSON, &p.CreatedAt); err != nil {
+		var configJSON, lintAckJSON string
+		if err := rows.Scan(&p.ID, &p.Name, &p.PolicyType, &configJSON, &p.CreatedAt, &lintAckJSON); err != nil {
 			return nil, fmt.Errorf("scan policy: %w", err)
 		}
 		if err := json.Unmarshal([]byte(configJSON), &p.PolicyConfig); err != nil {
 			return nil, fmt.Errorf("unmarshal policy config: %w", err)
+		}
+		if lintAckJSON != "" && lintAckJSON != "{}" {
+			_ = json.Unmarshal([]byte(lintAckJSON), &p.LintAck)
 		}
 		result = append(result, p)
 	}
@@ -162,14 +171,43 @@ func (s *Service) SeedPresets() error {
 
 func scanPolicy(row interface{ Scan(...any) error }) (*Policy, error) {
 	var p Policy
-	var configJSON string
-	if err := row.Scan(&p.ID, &p.Name, &p.PolicyType, &configJSON, &p.CreatedAt); err != nil {
+	var configJSON, lintAckJSON string
+	if err := row.Scan(&p.ID, &p.Name, &p.PolicyType, &configJSON, &p.CreatedAt, &lintAckJSON); err != nil {
 		return nil, fmt.Errorf("scan policy: %w", err)
 	}
 	if err := json.Unmarshal([]byte(configJSON), &p.PolicyConfig); err != nil {
 		return nil, fmt.Errorf("unmarshal policy config: %w", err)
 	}
+	if lintAckJSON != "" && lintAckJSON != "{}" {
+		_ = json.Unmarshal([]byte(lintAckJSON), &p.LintAck)
+	}
 	return &p, nil
+}
+
+// SetLintAck overwrites the lint_ack JSON for the given policy.
+// Callers compute the payload (typically a single rule_name → AckPayload
+// entry) and pass it in. Pass nil/empty to clear the acks (the
+// composition was removed).
+func (s *Service) SetLintAck(id string, ack map[string]any) error {
+	var payload string
+	if len(ack) == 0 {
+		payload = "{}"
+	} else {
+		b, err := json.Marshal(ack)
+		if err != nil {
+			return fmt.Errorf("marshal lint_ack: %w", err)
+		}
+		payload = string(b)
+	}
+	res, err := s.db.DB.Exec(`UPDATE policies SET lint_ack = ? WHERE id = ?`, payload, id)
+	if err != nil {
+		return fmt.Errorf("update lint_ack: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("policy %q not found", id)
+	}
+	return nil
 }
 
 // BuildEvaluator creates a composite evaluator from a list of policy IDs.

@@ -24,7 +24,6 @@ import (
 // stdout. This lets Claude Desktop — which only supports stdio MCP servers —
 // talk to Sieve without putting the bearer token in plaintext in
 // claude_desktop_config.json.
-//
 // Token sources are tried in order: macOS Keychain, --token-file. There is
 // deliberately no env-var fallback (consistent with secrets.Acquire).
 func runMCPLaunch(args []string) error {
@@ -52,7 +51,7 @@ func runMCPLaunch(args []string) error {
 // (when applicable) and falling back to a file path.
 func loadToken(keychainService, tokenFile string) (string, error) {
 	if runtime.GOOS == "darwin" && keychainService != "" {
-		// user.Current() works under LaunchAgent / non-interactive contexts
+		// user.Current works under LaunchAgent / non-interactive contexts
 		// where $USER may be empty; falls back to $USER if it errors.
 		username := os.Getenv("USER")
 		if u, err := user.Current(); err == nil && u.Username != "" {
@@ -85,7 +84,6 @@ func loadToken(keychainService, tokenFile string) (string, error) {
 // endpoint and writes responses back to out. It returns when in is closed
 // or an unrecoverable error occurs. Notifications (requests with no `id`
 // field) are forwarded but their responses are suppressed, per JSON-RPC.
-//
 // If the upstream returns a non-2xx response, the body is unlikely to be
 // valid JSON-RPC (e.g. the auth middleware returns plain-text 401). In that
 // case the raw body is logged to errOut for diagnostics and a synthesized

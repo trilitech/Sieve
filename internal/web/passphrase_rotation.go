@@ -32,21 +32,16 @@ func SetRotateLockoutCooldownForTest(d time.Duration) (restore func()) {
 // handleRotatePassphrase serves POST /settings/rotate-passphrase. It runs an
 // online rotation against the running keyring and re-renders the Settings
 // page with a success card (303 PRG redirect) or a typed error chip.
-//
 // Order of validation gates:
-//
-//  1. rejectIfAgentToken — block any agent bearer token (existing middleware)
-//  2. checkRotationOrigin — Origin/Referer allow-list (CSRF)
-//  3. checkRotationLockout — per-process brute-force lockout
-//  4. Field presence
-//  5. Confirmation match
-//  6. New != current
-//  7. keyring.Rotate (verifies current passphrase, runs the SQL tx and the
-//     in-memory KEK swap, writes the audit row inside the same tx)
+// 1. rejectIfAgentToken — block any agent bearer token (existing middleware)
+// 2. checkRotationOrigin — Origin/Referer allow-list (CSRF)
+// 3. checkRotationLockout — per-process brute-force lockout
+// 4. Field presence
+// 5. Confirmation match
+// 6. New != current
+// 7. keyring.Rotate (verifies current passphrase, runs the SQL tx and the
+// in-memory KEK swap, writes the audit row inside the same tx)
 func (s *Server) handleRotatePassphrase(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	if !s.checkRotationOrigin(r) {
 		http.Error(w, "rotation requires same-origin admin UI submission", http.StatusForbidden)
 		return
@@ -167,7 +162,7 @@ func (s *Server) renderRotationError(w http.ResponseWriter, r *http.Request, sta
 	// Failed-rotation responses MUST NOT be cached. A shared HTTP cache or a
 	// browser bfcache entry could replay the page (and the visible
 	// rotation-error chip) to a later operator. The form fields aren't
-	// echoed (FR-015), but the *fact that a rotation failed* is itself a
+	// echoed, but the *fact that a rotation failed* is itself a
 	// signal we don't want to leak to a different session on the same
 	// machine.
 	w.Header().Set("Cache-Control", "no-store")
@@ -180,12 +175,10 @@ func (s *Server) renderRotationError(w http.ResponseWriter, r *http.Request, sta
 // canonical lightweight CSRF defense for state-mutating POSTs — browsers
 // always set Origin to the scheme://host of the page that initiated the
 // form submission, and an attacker on a different origin cannot forge it.
-//
 // Matching against r.Host (rather than the configured webAddr) makes the
 // check robust to ephemeral test ports and to operators running Sieve on
 // any local interface; the security property is "the form was submitted
 // from the same origin that served the page", which is exactly r.Host.
-//
 // Returns false (reject) when both Origin and Referer are absent — a
 // real browser always sends at least one for state-mutating POSTs.
 func (s *Server) checkRotationOrigin(r *http.Request) bool {
@@ -215,26 +208,23 @@ func zeroBytes(b []byte) {
 }
 
 // --- Lockout state machine (Phase 4) ---
-//
 // Scope:
-//
-//   - Per-process. State lives on the *Server, so a Sieve restart clears
-//     the counter and the cooldown. An attacker who can force a restart
-//     (or wait through one) bypasses the lockout. Acceptable here because
-//     the only surface that hits this state machine is the admin web UI,
-//     which is single-process and not exposed to agents.
-//   - Global, not per-source. A locked-out form blocks every browser and
-//     every IP; a legitimate operator from a different machine cannot
-//     submit until the cooldown elapses. Sieve is admin-only with a
-//     small operator population, so we accept the friction in exchange
-//     for a much simpler state machine. If multi-operator deployments
-//     ever become a goal, scope this by source IP (and persist across
-//     restarts).
+// - Per-process. State lives on the *Server, so a Sieve restart clears
+// the counter and the cooldown. An attacker who can force a restart
+// (or wait through one) bypasses the lockout. Acceptable here because
+// the only surface that hits this state machine is the admin web UI,
+// which is single-process and not exposed to agents.
+// - Global, not per-source. A locked-out form blocks every browser and
+// every IP; a legitimate operator from a different machine cannot
+// submit until the cooldown elapses. Sieve is admin-only with a
+// small operator population, so we accept the friction in exchange
+// for a much simpler state machine. If multi-operator deployments
+// ever become a goal, scope this by source IP (and persist across
+// restarts).
 
 // checkRotationLockout returns (true, retryAfter) if the rotation form is
 // currently in cooldown (5 consecutive wrong-current-passphrase
 // submissions trigger a 15-minute cooldown).
-//
 // Side effect: if the cooldown has elapsed since the last check, the
 // counter and the lockout are cleared so the next submission runs
 // normally — saving callers from a separate "expired-lockout cleanup"

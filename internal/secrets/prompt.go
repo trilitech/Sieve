@@ -42,15 +42,13 @@ func IsStdinTerminal() bool {
 }
 
 // Acquire reads a passphrase using the documented priority order:
-//
-//  1. If stdin is a TTY → prompt with echo off (golang.org/x/term).
-//  2. Else if SIEVE_PASSPHRASE_FILE is set → read that file. If the path
-//     starts with /run/secrets or is otherwise an ephemeral mount the
-//     operator manages, the file is *not* deleted; it's the operator's
-//     responsibility. Reading it once into memory is enough.
-//  3. Else if FD 3 is open → read until EOF (matches systemd LoadCredential).
-//  4. Else → return an error so startup fails loudly.
-//
+// 1. If stdin is a TTY → prompt with echo off (golang.org/x/term).
+// 2. Else if SIEVE_PASSPHRASE_FILE is set → read that file. If the path
+// starts with /run/secrets or is otherwise an ephemeral mount the
+// operator manages, the file is *not* deleted; it's the operator's
+// responsibility. Reading it once into memory is enough.
+// 3. Else if FD 3 is open → read until EOF (matches systemd LoadCredential).
+// 4. Else → return an error so startup fails loudly.
 // Environment variables (other than the file pointer) are deliberately
 // not supported — env leaks through /proc/<pid>/environ, ps, and crash
 // dumps. If you need to plumb a passphrase from CI, write it to a file

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/trilitech/Sieve/internal/httpguard"
 	"github.com/trilitech/Sieve/internal/testing/mockslack"
 )
 
@@ -20,7 +21,10 @@ func newConnectorForTest(t *testing.T, mock *mockslack.Server) (*Connector, *boo
 		t.Fatalf("validate config: %v", err)
 	}
 	terminalFired := new(bool)
-	cli, err := newClient(cfg, mock.URL, func() { *terminalFired = true })
+	// Tests dial loopback (mock Slack server on 127.0.0.1) — supply the
+	// outbound allowlist that httpguard requires for non-public IPs.
+	allowlist, _ := httpguard.ParseCIDRs([]string{"127.0.0.0/8"})
+	cli, err := newClient(cfg, mock.URL, func() { *terminalFired = true }, allowlist)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/httpguard"
 )
 
 // ConnectorType is the stable string used by the registry, audit logs,
@@ -15,7 +16,6 @@ const ConnectorType = "slack"
 // Connector is the per-connection Slack adapter. One instance per
 // connections.Connection — owns a client (with the bound token) and a
 // validated Config.
-//
 // Implements connector.Connector via Type/Operations/Execute/Validate.
 type Connector struct {
 	cfg    *Config
@@ -44,16 +44,14 @@ func (c *Connector) Validate(ctx context.Context) error {
 
 // Factory returns a connector.Factory bound to slack.com. The factory
 // pulls two optional injections from the config map:
-//
-//   - "_base_url"          (string)  — overrides the production
-//     endpoint for tests and the e2e testserver. Production configs
-//     omit this and fall back to https://slack.com.
-//   - "_on_terminal_auth"  (func())  — invoked when the classifier
-//     flags an upstream response as a terminal-auth failure (token
-//     revoked, account deactivated, etc.). The connections.Service
-//     wires this to SetStatus(id, "reauth_required") via the same
-//     indirection Gmail uses for `_on_token_refresh`. Nil-safe.
-//
+// - "_base_url" (string) — overrides the production
+// endpoint for tests and the e2e testserver. Production configs
+// omit this and fall back to https://slack.com.
+// - "_on_terminal_auth" (func) — invoked when the classifier
+// flags an upstream response as a terminal-auth failure (token
+// revoked, account deactivated, etc.). The connections.Service
+// wires this to SetStatus(id, "reauth_required") via the same
+// indirection Gmail uses for `_on_token_refresh`. Nil-safe.
 // Slack uses classic non-rotating bot scopes, so there is no
 // `_on_token_refresh` wiring here — Linear/Jira/Asana will use it via
 // the existing Gmail callback in internal/connections.injectRefreshCallback.
@@ -68,7 +66,26 @@ func Factory() connector.Factory {
 		}
 		baseURL, _ := raw["_base_url"].(string)
 		onTerminalAuth, _ := raw["_on_terminal_auth"].(func())
-		cli, err := newClient(cfg, baseURL, onTerminalAuth)
+		// Outbound SSRF guard ( The Slack
+		// API base is fixed to slack.com in production so the allowlist
+		// is normally empty; tests using the mock Slack server set
+		// _base_url to a 127.0.0.1 httptest.Server and supply 127.0.0.0/8
+		// in outbound_allowlist.
+		allowlistStrings, _ := raw["outbound_allowlist"].([]string)
+		if allowlistStrings == nil {
+			if rs, ok := raw["outbound_allowlist"].([]any); ok {
+				for _, v := range rs {
+					if s, ok := v.(string); ok {
+						allowlistStrings = append(allowlistStrings, s)
+					}
+				}
+			}
+		}
+		allowlist, err := httpguard.ParseCIDRs(allowlistStrings)
+		if err != nil {
+			return nil, fmt.Errorf("slack: outbound_allowlist: %w", err)
+		}
+		cli, err := newClient(cfg, baseURL, onTerminalAuth, allowlist)
 		if err != nil {
 			return nil, err
 		}

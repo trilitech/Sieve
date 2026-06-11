@@ -72,12 +72,16 @@ func TestFactory_AuthValueBearerAutoPrefix(t *testing.T) {
 
 // makeProxy builds a ProxyConnector pointing at the supplied test server, with
 // the given auth_header/auth_value and scrub-on-by-default.
+// httpguard (
+// default; httptest.Server always binds to 127.0.0.1, so every test config
+// gets 127.0.0.0/8 in outbound_allowlist.
 func makeProxy(t *testing.T, ts *httptest.Server, authHeader, authValue string) *ProxyConnector {
 	t.Helper()
 	c, err := Factory(map[string]any{
-		"target_url":  ts.URL,
-		"auth_header": authHeader,
-		"auth_value":  authValue,
+		"target_url":         ts.URL,
+		"auth_header":        authHeader,
+		"auth_value":         authValue,
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -294,10 +298,11 @@ func TestAuthValueScrubOptOut(t *testing.T) {
 	defer upstream.Close()
 
 	c, err := Factory(map[string]any{
-		"target_url":       upstream.URL,
-		"auth_header":      "x-api-key",
-		"auth_value":       secret,
-		"auth_value_scrub": false,
+		"target_url":         upstream.URL,
+		"auth_header":        "x-api-key",
+		"auth_value":         secret,
+		"auth_value_scrub":   false,
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -376,6 +381,7 @@ func TestExecuteRespectsAdditionalDeniedHeaders(t *testing.T) {
 		"auth_header":               "x-api-key",
 		"auth_value":                "sk-test",
 		"additional_denied_headers": []any{"X-Custom", "X-App-Internal"},
+		"outbound_allowlist":        []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -416,6 +422,7 @@ func TestAdditionalDenyDoesNotReduceBaseline(t *testing.T) {
 		"auth_header":               "x-api-key",
 		"auth_value":                "sk-test",
 		"additional_denied_headers": []any{}, // empty: no extras
+		"outbound_allowlist":        []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -475,10 +482,11 @@ func makeQueryAuthProxy(t *testing.T, ts *httptest.Server, paramName, authValue 
 		authValue = "SECRET"
 	}
 	c, err := Factory(map[string]any{
-		"target_url":       ts.URL,
-		"auth_header":      "X-Unused",
-		"auth_value":       authValue,
-		"auth_query_param": paramName,
+		"target_url":         ts.URL,
+		"auth_header":        "X-Unused",
+		"auth_value":         authValue,
+		"auth_query_param":   paramName,
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -619,7 +627,7 @@ func TestExecuteUrlEncodesSpecialChars(t *testing.T) {
 	const secret = "key+with=special&chars/and%spaces"
 	var observedAppid string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// r.URL.Query() decodes — observedAppid receives the original byte sequence.
+		// r.URL.Query decodes — observedAppid receives the original byte sequence.
 		observedAppid = r.URL.Query().Get("appid")
 		w.WriteHeader(200)
 		w.Write([]byte(`{}`))

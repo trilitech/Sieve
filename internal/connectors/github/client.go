@@ -29,7 +29,6 @@ type httpResponse struct {
 
 // doRequest routes a request through the auth router, picks the right
 // credential, attaches the bearer, and executes against api.github.com.
-//
 // `path` must be an absolute API path (e.g. /repos/{owner}/{repo}/issues).
 // `body` is JSON-marshalled if non-nil. Returns the parsed status, response
 // headers (filtered), and raw response body.

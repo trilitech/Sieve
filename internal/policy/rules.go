@@ -1,16 +1,13 @@
 // Package policy implements the Sieve policy engine that governs what AI agents
 // can and cannot do.
-//
 // rules.go contains the rules-based policy evaluator, the most common evaluator
 // type. It implements a first-match-wins model inspired by firewall rule chains:
 // rules are evaluated top-to-bottom and the first rule whose conditions match
 // determines the outcome. If no rule matches, the configured default action
 // (typically "deny") applies.
-//
 // Rules are evaluated in a single pre-execution phase. Post-execution content
 // filtering is handled via ResponseFilter objects that are collected during
 // evaluation and applied by the caller after the operation executes.
-//
 // Match conditions within a single rule use AND logic: all specified conditions
 // must be true for the rule to fire. An empty match block matches everything,
 // which is useful for catch-all rules at the bottom of the list.

@@ -2,7 +2,6 @@ package web
 
 import (
 	"fmt"
-	"html/template"
 	"sort"
 	"strings"
 )
@@ -68,7 +67,7 @@ type DocNavIndex struct {
 	Current         *DocPage
 	CurrentCategory *DocCategory // category landing flag — non-nil when rendering /docs/category/{id}
 	Breadcrumbs     []Breadcrumb
-	SearchIndexJSON template.JS // pre-marshalled JSON corpus, embedded into the page
+	SearchIndexJSON string // pre-marshalled JSON corpus, embedded into a <script type="application/json"> block and consumed via JSON.parse(textContent). Plain string, not template.JS — that type is for code-author JS, not serialized data.
 }
 
 // Manifest returns the live category mapping. Pure; no I/O. Edit this function
@@ -199,11 +198,10 @@ func (m DocManifest) Validate(knownSlugs []string) error {
 
 // BuildIndex composes the live filesystem state with the manifest into a
 // renderable navigation index. Pure; no I/O.
-//
-//   - fsSlugs: the set of slugs present on disk (filenames under docs/ minus
-//     the .md extension), in any order.
-//   - fileTitle: callback returning the title for a given slug. Allowed to be
-//     nil; in that case the slug itself is used as the title.
+// - fsSlugs: the set of slugs present on disk (filenames under docs/ minus
+// the.md extension), in any order.
+// - fileTitle: callback returning the title for a given slug. Allowed to be
+// nil; in that case the slug itself is used as the title.
 func BuildIndex(m DocManifest, fsSlugs []string, fileTitle func(slug string) string) DocNavIndex {
 	if fileTitle == nil {
 		fileTitle = func(s string) string { return s }

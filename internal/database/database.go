@@ -55,14 +55,12 @@ func (db *DB) Close() error {
 
 // migrateNeedsReauthToStatus performs the needs_reauth → status
 // unification in one pass:
-//   - converges (needs_reauth=1, status='active') rows to
-//     status='reauth_required' (preserving reauth_reason).
-//   - drops the now-unused needs_reauth column.
-//
+// - converges (needs_reauth=1, status='active') rows to
+// status='reauth_required' (preserving reauth_reason).
+// - drops the now-unused needs_reauth column.
 // Both steps are skipped if the needs_reauth column has already been
 // dropped (idempotent across restarts). Safe with keyring unloaded —
 // touches no encrypted data.
-//
 // Sieve is pre-launch, so there is no deprecation window: the column
 // goes away in the same migration that converts data. SQLite 3.35+
 // supports native ALTER TABLE DROP COLUMN; the mattn/go-sqlite3 driver
@@ -112,6 +110,43 @@ func migrateNeedsReauthToStatus(db *DB) error {
 		return fmt.Errorf("drop needs_reauth column: %w", err)
 	}
 	log.Printf("migration status_migration: dropped connections.needs_reauth column")
+	return nil
+}
+
+// addColumnIfMissing runs the supplied ALTER TABLE if the column is not
+// already present. Lets the security-fixes migration stay idempotent without
+// duplicating the columnExists boilerplate at every call site.
+func addColumnIfMissing(db *DB, table, column, alterSQL string) error {
+	has, err := columnExists(db, table, column)
+	if err != nil {
+		return fmt.Errorf("check %s.%s: %w", table, column, err)
+	}
+	if has {
+		return nil
+	}
+	if _, err := db.Exec(alterSQL); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+// dropColumnIfPresent runs ALTER TABLE... DROP COLUMN when the column
+// exists. SQLite 3.35+ supports DROP COLUMN natively; this project's
+// modern-go-sqlite driver bundles a sufficiently recent SQLite. The drop
+// is idempotent — fresh databases never have the column and skip the
+// statement; databases that had it earlier (the security-fixes draft
+// landed a dead `outbound_allowlist` column) get it removed.
+func dropColumnIfPresent(db *DB, table, column string) error {
+	has, err := columnExists(db, table, column)
+	if err != nil {
+		return fmt.Errorf("check %s.%s: %w", table, column, err)
+	}
+	if !has {
+		return nil
+	}
+	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column)); err != nil {
+		return fmt.Errorf("drop %s.%s: %w", table, column, err)
+	}
 	return nil
 }
 
@@ -357,6 +392,65 @@ func (db *DB) migrate() error {
 				hasConnectionsCol = true
 			}
 		}
+	}
+
+	// Security-hardening migration. Adds:
+	// - operator_credential (singleton row holding Argon2id verifier + display name)
+	// - operator_session (one row per active admin browser session)
+	// - audit_log.actor_kind, audit_log.operator_display_name
+	// - policies.lint_ack (sticky numeric-ceiling lint acknowledgement)
+	// All additive; no destructive migrations.
+	// The per-connection outbound SSRF allowlist deliberately lives inside
+	// the envelope-encrypted config blob (see internal/connectors/{http,mcp}proxy,
+	// internal/connectors/slack), NOT in a top-level column — keeping it out
+	// of plaintext backups and reducing the chance of two divergent sources
+	// of truth.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS operator_credential (
+			id                  INTEGER PRIMARY KEY CHECK (id = 1),
+			display_name        TEXT    NOT NULL,
+			argon2_salt         BLOB    NOT NULL,
+			argon2_time         INTEGER NOT NULL,
+			argon2_memory_kib   INTEGER NOT NULL,
+			argon2_parallelism  INTEGER NOT NULL,
+			verifier            BLOB    NOT NULL,
+			created_at          TEXT    NOT NULL,
+			updated_at          TEXT    NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS operator_session (
+			id              TEXT PRIMARY KEY,
+			created_at      TEXT NOT NULL,
+			last_seen_at    TEXT NOT NULL,
+			expires_at      TEXT NOT NULL,
+			csrf_token_hash BLOB NOT NULL,
+			ip              TEXT NOT NULL,
+			user_agent      TEXT NOT NULL
+		);
+	`); err != nil {
+		return fmt.Errorf("create operator_credential/operator_session: %w", err)
+	}
+	if err := addColumnIfMissing(db, "audit_log", "actor_kind",
+		`ALTER TABLE audit_log ADD COLUMN actor_kind TEXT NOT NULL DEFAULT 'agent'`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "audit_log", "operator_display_name",
+		`ALTER TABLE audit_log ADD COLUMN operator_display_name TEXT`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "policies", "lint_ack",
+		`ALTER TABLE policies ADD COLUMN lint_ack TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return err
+	}
+	// connections.outbound_allowlist was added in an earlier draft of this
+	// migration but never read or written by any code path — the live
+	// allowlist is carried inside the encrypted config blob. Drop the dead
+	// column on existing dev databases so an operator who tightens it via
+	// direct SQL doesn't believe it took effect (it wouldn't), and so a
+	// future PR can't accidentally wire reads to the plaintext column and
+	// silently bypass the encrypted source of truth. New databases never
+	// see the column; this drop is idempotent.
+	if err := dropColumnIfPresent(db, "connections", "outbound_allowlist"); err != nil {
+		return err
 	}
 
 	if hasConnectionsCol {

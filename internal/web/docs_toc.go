@@ -9,7 +9,6 @@ import (
 // ExtractHeadings parses markdown body and returns its H2/H3 headings in
 // document order, with stable anchor IDs and the plain-text body of each
 // section. Headings inside fenced code blocks are skipped.
-//
 // The slugification rule MUST stay in sync with the client-side script in
 // docs.html. Tests cross-check this in docs_toc_test.go.
 func ExtractHeadings(body string) []DocHeading {

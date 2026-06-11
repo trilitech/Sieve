@@ -699,7 +699,7 @@
       }
       empty.classList.add("hidden");
 
-      list.innerHTML = rules.map(function(rule, i) {
+      list.innerHTML = rules.map(function(rule, i) { // xss-safe: every server-derived interpolation inside the map body is wrapped in escHtml(...)
         const c = ACTION_COLORS[rule.action] || ACTION_COLORS.deny;
         var opsText = rule.ops && rule.ops.length > 0 ? rule.ops.join(", ") : "any operation";
         var condParts = [];
@@ -1551,15 +1551,39 @@
     function updateLLMOps() {
       var container = document.getElementById("llm-ops-container");
       if (!container) return;
-      container.innerHTML =
-        '<div class="rounded-lg bg-amber-500/5 border border-amber-500/20 px-3 py-2.5 mb-2">' +
-          '<p class="text-xs font-semibold text-amber-400 mb-1">Provider-typed operations not yet implemented</p>' +
-          '<p class="text-xs text-slate-400 leading-relaxed">' +
-            'Typed connectors for Anthropic / OpenAI / Gemini / Bedrock are tracked but not yet built. ' +
-            'For now, this policy applies to <em>all</em> LLM API calls routed through an http_proxy connection. ' +
-            'Use the filters below to constrain by model, token budget, cost ceiling, or upstream provider.' +
-          '</p>' +
-        '</div>';
+      var checkedProviders = [];
+      document.querySelectorAll(".llm-provider:checked").forEach(function(cb) { checkedProviders.push(cb.value); });
+
+      // Remember which ops were previously checked
+      var prevChecked = {};
+      container.querySelectorAll(".rule-op:checked").forEach(function(cb) { prevChecked[cb.value] = true; });
+      var isFirstBuild = container.innerHTML.trim() === "";
+
+      var html = "";
+      checkedProviders.forEach(function(provKey) {
+        var prov = LLM_PROVIDERS[provKey];
+        if (!prov) return;
+        html += '<div class="mb-2"><p class="text-xs text-indigo-400 font-semibold mb-1">' + prov.label + '</p>';
+        prov.groups.forEach(function(group) {
+          html += '<div class="mb-1.5"><p class="text-xs text-slate-500 font-medium mb-1">' + group.name + '</p>';
+          html += '<div class="grid grid-cols-2 gap-1.5">';
+          group.ops.forEach(function(op) {
+            var isChecked = isFirstBuild || prevChecked[op] ? " checked" : "";
+            html += '<label class="flex items-center gap-1.5 cursor-pointer">' +
+              '<input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="' + op + '"' + isChecked + '>' +
+              '<span class="text-xs text-slate-300">' + op + '</span></label>';
+          });
+          html += '</div></div>';
+        });
+        html += '</div>';
+      });
+
+      if (checkedProviders.length === 0) {
+        html = '<p class="text-xs text-slate-500 italic">Select at least one provider above.</p>';
+      }
+
+      container.innerHTML = html; // xss-safe: html is built from hardcoded LLM_PROVIDERS constants, not from server data or user input
+      // Re-bind change listeners on new checkboxes and refresh filters
       updateFiltersFromOps();
     }
 

@@ -80,6 +80,54 @@
             <p class="text-xs text-slate-400 mt-1">Maximum number of tokens for the LLM to generate.</p>
           </div>
 
+          <div>
+            <label for="command_allowlist" class="block text-sm font-medium text-slate-300 mb-1.5">Script-policy command allowlist <span class="text-xs text-slate-500 font-normal">(one absolute path per line)</span></label>
+            <textarea id="command_allowlist" name="command_allowlist" rows="3"
+                      placeholder="/opt/sieve-py/bin/python3"
+                      class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2.5 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono">{{.CommandAllowlist}}</textarea>
+            <p class="text-xs text-slate-400 mt-1">Interpreters a script-type policy is permitted to invoke. Default <code class="text-slate-300">/opt/sieve-py/bin/python3</code> matches the bundled Python venv. Symlinks are resolved before comparison so an attacker cannot bypass the list by symlinking into an allowed name. Stored policies that reference a disallowed command will fail at evaluation with a clear error.</p>
+          </div>
+
+          <div class="border-t border-slate-700 pt-5 mt-1">
+            <p class="text-sm font-medium text-slate-300 mb-1">TLS (optional)</p>
+            <p class="text-xs text-slate-400 mb-3">Configure per-listener cert + key paths to serve HTTPS. Both fields in a pair must be set; leaving both empty keeps the listener on plaintext HTTP (the default for loopback). HSTS is set automatically on TLS responses.</p>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label for="admin.tls_cert_path" class="block text-xs text-slate-400 mb-1">Admin cert path</label>
+                <input type="text" id="admin.tls_cert_path" name="admin.tls_cert_path" value="{{.AdminTLSCertPath}}"
+                       placeholder="/etc/sieve/admin.crt"
+                       class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2 text-sm placeholder-slate-400 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label for="admin.tls_key_path" class="block text-xs text-slate-400 mb-1">Admin key path</label>
+                <input type="text" id="admin.tls_key_path" name="admin.tls_key_path" value="{{.AdminTLSKeyPath}}"
+                       placeholder="/etc/sieve/admin.key"
+                       class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2 text-sm placeholder-slate-400 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label for="api.tls_cert_path" class="block text-xs text-slate-400 mb-1">Agent API cert path</label>
+                <input type="text" id="api.tls_cert_path" name="api.tls_cert_path" value="{{.APITLSCertPath}}"
+                       placeholder="/etc/sieve/api.crt"
+                       class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2 text-sm placeholder-slate-400 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label for="api.tls_key_path" class="block text-xs text-slate-400 mb-1">Agent API key path</label>
+                <input type="text" id="api.tls_key_path" name="api.tls_key_path" value="{{.APITLSKeyPath}}"
+                       placeholder="/etc/sieve/api.key"
+                       class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2 text-sm placeholder-slate-400 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+            </div>
+            <p class="text-xs text-slate-500 mt-2">Changes take effect after restart.</p>
+          </div>
+
+          <div>
+            <label for="public_base_url" class="block text-sm font-medium text-slate-300 mb-1.5">Public base URL <span class="text-xs text-slate-500 font-normal">(OAuth callbacks)</span></label>
+            <input type="url" id="public_base_url" name="public_base_url" value="{{.PublicBaseURL}}"
+                   placeholder="http://127.0.0.1:19816"
+                   class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2.5 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
+            <p class="text-xs text-slate-400 mt-1">Externally-visible base URL used when Sieve constructs OAuth callback / redirect / setup URLs (GitHub App manifest, Google OAuth, Slack install). Default <code class="text-slate-300">http://127.0.0.1:19816</code> matches the documented loopback production binding. Set this to your reverse-proxy URL if the admin UI is reached at a different address — never relied on inbound <code class="text-slate-300">Host</code> headers.</p>
+          </div>
+
           <div class="pt-2">
             <button type="submit"
                     class="inline-flex items-center px-4 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-slate-800">
@@ -175,19 +223,30 @@
           if (oldText) oldText.remove();
           modelSelect.style.display = "";
 
-          html += '<option value="">-- Select a model --</option>';
+          // Build options via createElement so model IDs / display names
+          // never reach innerHTML as HTML strings (spec 001-fix-security-vulns
+          // FR-001/FR-002).
+          modelSelect.innerHTML = "";
+          var placeholder = document.createElement("option");
+          placeholder.value = "";
+          placeholder.textContent = "-- Select a model --";
+          modelSelect.appendChild(placeholder);
           models.forEach(function(m) {
-            var selected = m.id === currentModel ? " selected" : "";
-            var label = m.display_name && m.display_name !== m.id
+            var opt = document.createElement("option");
+            opt.value = m.id;
+            opt.textContent = (m.display_name && m.display_name !== m.id)
               ? m.display_name + " (" + m.id + ")"
               : m.id;
-            html += '<option value="' + m.id + '"' + selected + '>' + label + '</option>';
+            if (m.id === currentModel) opt.selected = true;
+            modelSelect.appendChild(opt);
           });
-          // Add option for custom model.
           if (currentModel && !models.some(function(m) { return m.id === currentModel; })) {
-            html += '<option value="' + currentModel + '" selected>' + currentModel + ' (custom)</option>';
+            var customOpt = document.createElement("option");
+            customOpt.value = currentModel;
+            customOpt.textContent = currentModel + " (custom)";
+            customOpt.selected = true;
+            modelSelect.appendChild(customOpt);
           }
-          modelSelect.innerHTML = html;
           modelHidden.value = modelSelect.value;
           modelHint.textContent = models.length + " model(s) available.";
         })
@@ -211,7 +270,13 @@
     } else {
       modelSelect.innerHTML = '<option value="">-- Select a connection first --</option>';
       if (currentModel) {
-        modelSelect.innerHTML += '<option value="' + currentModel + '" selected>' + currentModel + '</option>';
+        // Build via createElement to keep operator-supplied model strings out
+        // of the innerHTML sink (spec 001-fix-security-vulns FR-001).
+        var opt = document.createElement("option");
+        opt.value = currentModel;
+        opt.textContent = currentModel;
+        opt.selected = true;
+        modelSelect.appendChild(opt);
         modelHidden.value = currentModel;
       }
     }

@@ -1,14 +1,13 @@
 package connections_test
 
 // Regression tests for the unified connection lifecycle.
-//
 // In Sieve pre-launch, the unification dropped the legacy needs_reauth
 // column entirely (no deprecation window). These tests pin:
-//   - SetStatusWithReason is the canonical writer (atomic two-column update).
-//   - Get/List/GetWithConfig surface only Status + ReauthReason.
-//   - The reserved-prefix predicates correctly identify _oauth_app:* rows.
-//   - List() filters reserved-prefix rows.
-//   - GetConnector rejects reserved IDs.
+// - SetStatusWithReason is the canonical writer (atomic two-column update).
+// - Get/List/GetWithConfig surface only Status + ReauthReason.
+// - The reserved-prefix predicates correctly identify _oauth_app:* rows.
+// - List filters reserved-prefix rows.
+// - GetConnector rejects reserved IDs.
 
 import (
 	"path/filepath"
@@ -132,7 +131,7 @@ func TestList_FiltersReservedRows(t *testing.T) {
 		t.Fatalf("add tenant: %v", err)
 	}
 
-	// Seed a reserved row directly via SQL — the public Add() path
+	// Seed a reserved row directly via SQL — the public Add path
 	// doesn't recognise the synthetic _oauth_app:* connector type.
 	if _, err := env.DB.Exec(
 		`INSERT INTO connections (

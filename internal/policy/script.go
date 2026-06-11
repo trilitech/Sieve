@@ -46,6 +46,14 @@ func NewScriptEvaluator(config map[string]any) (*ScriptEvaluator, error) {
 		return nil, fmt.Errorf("script evaluator: script path is required")
 	}
 
+	// Command allowlist enforcement (
+	// ). Stored policies that pre-date the allowlist and
+	// reference a disallowed interpreter MUST fail at evaluation time
+	// with the documented error — see (hard-break migration).
+	if err := ValidateCommand(sc.Command, CurrentCommandAllowlist()); err != nil {
+		return nil, fmt.Errorf("script evaluator: %w", err)
+	}
+
 	if _, err := os.Stat(sc.Script); err != nil {
 		return nil, fmt.Errorf("script evaluator: script not found: %w", err)
 	}
@@ -68,7 +76,7 @@ func (s *ScriptEvaluator) Evaluate(ctx context.Context, req *PolicyRequest) (*Po
 	// Derive scriptCtx from the caller ctx when it is still live so that a
 	// client disconnect cancels the script process (saving resources).
 	// When the caller ctx is already done (e.g., already-cancelled context),
-	// fall back to context.Background() so the timeout is honoured in full.
+	// fall back to context.Background so the timeout is honoured in full.
 	baseCtx := ctx
 	if ctx.Err() != nil {
 		baseCtx = context.Background()

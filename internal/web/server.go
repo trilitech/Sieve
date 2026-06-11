@@ -1,27 +1,23 @@
 // Package web implements the Sieve admin web UI, served on a separate port
 // from the API/MCP server. This separation is intentional: the web UI is for
 // human operators only and must not be accessible to AI agents.
-//
 // Key security patterns:
-//
-//   - rejectIfAgentToken: approval endpoints check for Sieve bearer tokens in
-//     the Authorization header. If found, the request is rejected. This prevents
-//     an agent from self-approving its own pending operations by calling the
-//     web UI endpoints directly. The web UI port (19816) should ideally not be
-//     exposed to agents at all, but this check provides defense-in-depth.
-//
-//   - OAuth flow with pendingOAuth: When adding a Google account connection, the
-//     connection is NOT saved to the database until OAuth completes successfully.
-//     The pendingOAuth map holds the connection metadata (ID, type, display name)
-//     keyed by a random state parameter. After Google redirects back with a
-//     valid code, we exchange it for tokens, verify the email address, and only
-//     THEN persist the connection. This prevents orphaned connections with
-//     no credentials. The state parameter has a 10-minute expiry to limit the
-//     window for CSRF-style attacks.
-//
-//   - State parameter: The OAuth state ties the callback to a specific
-//     pending connection. It's a 16-byte random hex string, checked and consumed
-//     atomically in handleOAuthCallback. This prevents both CSRF and replay attacks.
+// - rejectIfAgentToken: approval endpoints check for Sieve bearer tokens in
+// the Authorization header. If found, the request is rejected. This prevents
+// an agent from self-approving its own pending operations by calling the
+// web UI endpoints directly. The web UI port (19816) should ideally not be
+// exposed to agents at all, but this check provides defense-in-depth.
+// - OAuth flow with pendingOAuth: When adding a Google account connection, the
+// connection is NOT saved to the database until OAuth completes successfully.
+// The pendingOAuth map holds the connection metadata (ID, type, display name)
+// keyed by a random state parameter. After Google redirects back with a
+// valid code, we exchange it for tokens, verify the email address, and only
+// THEN persist the connection. This prevents orphaned connections with
+// no credentials. The state parameter has a 10-minute expiry to limit the
+// window for CSRF-style attacks.
+// - State parameter: The OAuth state ties the callback to a specific
+// pending connection. It's a 16-byte random hex string, checked and consumed
+// atomically in handleOAuthCallback. This prevents both CSRF and replay attacks.
 package web
 
 import (
@@ -34,7 +30,10 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,11 +44,15 @@ import (
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/httpguard"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/ratelimit"
 	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/settings"
 	"github.com/trilitech/Sieve/internal/tokens"
 	"golang.org/x/oauth2"
@@ -60,6 +63,27 @@ import (
 
 //go:embed templates/*
 var templateFS embed.FS
+
+// llmModelsHealthClient is the shared *http.Client used by the
+// admin /api/models health check, which fetches /v1/models from an
+// operator-configured LLM provider target_url. The target_url is an
+// attacker-influenceable field — without httpguard, pointing it at
+// 169.254.169.254 would let an admin-side feature exfiltrate cloud
+// IMDS credentials. Loopback is allowed (matches the LLM evaluator's
+// rationale: Ollama dev installs are on localhost); AbsoluteDeny still
+// blocks IMDS.
+var llmModelsHealthClient = httpguard.Client(httpguard.ClientOptions{
+	Allowlist: mustParseCIDRs([]string{"127.0.0.0/8", "::1/128"}),
+	Timeout:   10 * time.Second,
+})
+
+func mustParseCIDRs(cidrs []string) []netip.Prefix {
+	p, err := httpguard.ParseCIDRs(cidrs)
+	if err != nil {
+		panic(fmt.Sprintf("web: bad allowlist CIDR: %v", err))
+	}
+	return p
+}
 
 // Server is the web UI server for the Sieve admin interface.
 type Server struct {
@@ -92,17 +116,48 @@ type Server struct {
 
 	stopCleanup     chan struct{} // closed by Close() to stop the cleanup goroutine
 	stopCleanupOnce sync.Once     // ensures Close() is safe under concurrent calls
+
+	// Operator + session services for the admin-authentication path.
+	// Populated by SetAuth; nil when running in tests/dev that don't
+	// need the auth gate. When non-nil, requireOperatorSession middleware
+	// enforces session + CSRF on every wrapped endpoint.
+	operatorSvc *operator.Service
+	sessionMgr  *session.Manager
+
+	// loginLimiter throttles POST /login and POST /setup per client IP.
+	// Without it, argon2's ~150-300 ms cost is the only brake on an
+	// online credential guess — not nearly enough to stop a determined
+	// attacker. Populated by SetLoginRateLimiter; when nil, /login and
+	// /setup are not throttled (tests, dev).
+	loginLimiter *ratelimit.Limiter
 }
 
 // funcMap returns the template function map used across all templates.
 func funcMap() template.FuncMap {
 	return template.FuncMap{
-		"json": func(v any) template.JS {
+		// json marshals v to a JSON string with aggressive escaping for
+		// values destined for <script type="application/json"> blocks.
+		// Returns a plain string -- template.JS was the legacy "this is
+		// already-safe JavaScript" marker, which is the wrong shape for
+		// serialized user-controlled data ( spec
+		// ). Callers MUST
+		// embed the result inside <script type="application/json" id="...">
+		// and read it via JSON.parse on.textContent.
+		"json": func(v any) string {
 			b, err := json.MarshalIndent(v, "", "  ")
 			if err != nil {
-				return template.JS(fmt.Sprintf("null /* error: %v */", err))
+				return fmt.Sprintf("null /* error: %v */", err)
 			}
-			return template.JS(b)
+			// json.MarshalIndent already escapes <, >, & (SetEscapeHTML
+			// default). Belt-and-suspenders: also escape "/" so a
+			// closing </script> inside a string value cannot terminate
+			// the surrounding script element, and U+2028 / U+2029 which
+			// break some JSON.parse paths.
+			out := string(b)
+			out = strings.ReplaceAll(out, "</", "<\\/")
+			out = strings.ReplaceAll(out, "\u2028", "\\u2028")
+			out = strings.ReplaceAll(out, "\u2029", "\\u2029")
+			return out
 		},
 		"jsonAttr": func(v any) string {
 			b, err := json.Marshal(v)
@@ -198,9 +253,8 @@ func funcMap() template.FuncMap {
 }
 
 // NewServer creates a new web UI server. It starts a background goroutine for
-// OAuth cleanup; callers MUST call (*Server).Close() when the server is no
+// OAuth cleanup; callers MUST call (*Server).Close when the server is no
 // longer needed (e.g. via defer or t.Cleanup) to stop the goroutine.
-//
 // keyring, db, and webAddr are required by the passphrase-rotation handler
 // (POST /settings/rotate-passphrase). keyring drives the actual rotation;
 // db is the SQL handle threaded into Keyring.Rotate; webAddr is the
@@ -266,11 +320,42 @@ func NewServer(
 	return s
 }
 
+// SetAuth wires the operator + session services that drive the
+// admin-authentication path.
+// Call this after NewServer to enable login / logout / setup
+// handlers and the requireOperatorSession middleware. When nil
+// values are passed (or SetAuth is never called) the auth surface
+// is disabled — existing dev/test flows that don't yet seed an
+// operator stay functional.
+// Production wiring lives in cmd/sieve/main.go.
+func (s *Server) SetAuth(op *operator.Service, sess *session.Manager) {
+	s.operatorSvc = op
+	s.sessionMgr = sess
+}
+
+// SetLoginRateLimiter wires the per-IP rate limiter that gates
+// POST /login and POST /setup. Pass nil to disable throttling
+// (default; tests and dev only). The agent listener has its own
+// rate limiter wired separately in cmd/sieve/main.go.
+func (s *Server) SetLoginRateLimiter(rl *ratelimit.Limiter) {
+	s.loginLimiter = rl
+}
+
 // Handler returns the HTTP handler with all routes registered.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Dashboard redirect
+	// --- Operator authentication (
+	// These routes are intentionally public: login itself can't require
+	// a session, and setup is one-shot for fresh installs. The follow-up
+	// commit wraps every OTHER admin route with requireOperatorSession.
+	mux.HandleFunc("GET /login", s.handleLoginGet)
+	mux.HandleFunc("POST /login", s.handleLoginPost)
+	mux.HandleFunc("POST /logout", s.handleLogout)
+	mux.HandleFunc("GET /setup", s.handleSetupGet)
+	mux.HandleFunc("POST /setup", s.handleSetupPost)
+
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/connections", http.StatusFound)
 	})
@@ -343,7 +428,72 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /docs/category/{id}", s.handleDocsCategory)
 	mux.HandleFunc("GET /docs/{name}", s.handleDocs)
 
-	return mux
+	// Wrap the admin mux with: (1) the operator-session gate ( /
+	// ), which exempts public auth pages and OAuth
+	// callbacks; (2) the sensitive-response header writer ( /
+	// ) so every admin response carries Cache-Control:
+	// no-store etc. Header wrapping is outermost so 401/403/redirect
+	// responses also get the headers.
+	return noCacheAllAdmin(s.adminAuthWrapper(mux))
+}
+
+// authExemptPaths is the set of admin paths that bypass the
+// requireOperatorSession middleware. Login + setup are bootstrap;
+// OAuth callbacks identify the operator via the OAuth state parameter
+// instead of a Sieve session.
+// ( exemption set).
+var authExemptPaths = map[string]bool{
+	"/login":  true,
+	"/setup":  true,
+	"/logout": true, // session needed, but CSRF gate skipped — see authExemptCSRF
+	"/oauth/callback":                  true,
+	"/connections/github/app/created":  true,
+	"/connections/github/app/installed": true,
+}
+
+// authExemptPrefixes is the set of path prefixes that bypass auth
+// entirely — currently just the bundled documentation. Operators
+// reading docs without logging in is a feature.
+var authExemptPrefixes = []string{
+	"/docs",
+}
+
+// authExemptCSRF is the set of paths that need a session but skip
+// the CSRF check. Logout is the only case: it's a recoverable
+// destructive action and a CSRF attacker forcing a logout costs
+// the operator a re-login at worst.
+var authExemptCSRF = map[string]bool{
+	"/logout": true,
+}
+
+// adminAuthWrapper routes admin requests through requireOperatorSession
+// unless the path is exempt. Exempt paths are served directly by the
+// wrapped mux (no session lookup, no CSRF check). The middleware
+// itself short-circuits to pass-through when SetAuth was never
+// called (transitional; tests that don't yet seed an operator stay
+// functional).
+func (s *Server) adminAuthWrapper(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if authExemptPaths[path] {
+			// Logout still needs a session lookup so we know whose to
+			// delete; the middleware no-ops the CSRF check via
+			// authExemptCSRF.
+			if path == "/logout" {
+				s.requireOperatorSessionExceptCSRF(next).ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		for _, prefix := range authExemptPrefixes {
+			if path == prefix || strings.HasPrefix(path, prefix+"/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		s.requireOperatorSession(next).ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) render(w http.ResponseWriter, page string, data any) {
@@ -490,19 +640,25 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 // pendingOAuth holds info for a connection being added via OAuth.
-//
 // IsReauth distinguishes a fresh-add flow (insert a new connection record on
 // success) from a re-authentication of an existing connection (update the
 // existing record's config and clear needs_reauth). The handler picks one or
 // the other based on this flag — keeping it explicit avoids accidentally
 // overwriting an existing connection during a normal Add, or duplicating one
 // during a Re-auth.
+// OperatorSessionHash binds the OAuth state to the operator session that
+// initiated /start. The callback (which is in authExemptPaths because the
+// upstream provider doesn't carry our cookie back) re-derives the hash
+// from the cookie presented by the browser and refuses the callback if it
+// differs. Closes a state-confusion attack where someone who can reach
+// /start (pre-auth attacker) races a legitimate operator's callback.
 type pendingOAuth struct {
-	ID            string
-	ConnectorType string
-	DisplayName   string
-	CreatedAt     time.Time
-	IsReauth      bool
+	ID                  string
+	ConnectorType       string
+	DisplayName         string
+	CreatedAt           time.Time
+	IsReauth            bool
+	OperatorSessionHash string // hex(sha256(cookie value)); empty when no session was active
 }
 
 func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
@@ -580,7 +736,7 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 	// after receiving valid credentials. This avoids orphaned connections that
 	// appear in the UI but have no working credentials.
 	if connectorType == "google" {
-		conf, err := s.googleOAuthConfig(r.Host)
+		conf, err := s.googleOAuthConfig(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -594,7 +750,13 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 		state := hex.EncodeToString(stateBytes)
 
 		s.oauthMu.Lock()
-		s.oauthPending[state] = pendingOAuth{ID: id, ConnectorType: connectorType, DisplayName: displayName, CreatedAt: time.Now()}
+		s.oauthPending[state] = pendingOAuth{
+			ID:                  id,
+			ConnectorType:       connectorType,
+			DisplayName:         displayName,
+			CreatedAt:           time.Now(),
+			OperatorSessionHash: operatorSessionHash(r),
+		}
 		s.oauthMu.Unlock()
 
 		url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
@@ -625,7 +787,6 @@ func (s *Server) handleConnectionDelete(w http.ResponseWriter, r *http.Request) 
 // token, even if the user's account already grants this app). On callback,
 // we'll UpdateConfig on the existing record (which atomically clears
 // needs_reauth) instead of inserting a new one.
-//
 // Limited to Google connections today; GitHub PAT/App connections have their
 // own setup flow and would need a separate re-auth surface if their tokens
 // expire.
@@ -641,7 +802,7 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	conf, err := s.googleOAuthConfig(r.Host)
+	conf, err := s.googleOAuthConfig(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -656,11 +817,12 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 
 	s.oauthMu.Lock()
 	s.oauthPending[state] = pendingOAuth{
-		ID:            id,
-		ConnectorType: conn.ConnectorType,
-		DisplayName:   conn.DisplayName,
-		CreatedAt:     time.Now(),
-		IsReauth:      true,
+		ID:                  id,
+		ConnectorType:       conn.ConnectorType,
+		DisplayName:         conn.DisplayName,
+		CreatedAt:           time.Now(),
+		IsReauth:            true,
+		OperatorSessionHash: operatorSessionHash(r),
 	}
 	s.oauthMu.Unlock()
 
@@ -675,9 +837,6 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 // explicitly; (2) re-auth flows do NOT clear it — only the explicit
 // Enable button does. Gated by rejectIfAgentToken.
 func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 	if err := s.connections.SetStatus(id, connections.StatusDisabled); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -695,9 +854,6 @@ func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request)
 // The action itself always succeeds — only the destination state
 // varies. Gated by rejectIfAgentToken.
 func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 
 	// Inspect reauth_reason: a non-empty value indicates the credential
@@ -721,9 +877,27 @@ func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
+// publicBaseURL returns the externally-visible base URL Sieve uses to
+// construct OAuth callback / redirect / setup / manifest URLs. Reads from
+// settings.PublicBaseURL — never from inbound Host / X-Forwarded-Host /
+// X-Forwarded-Proto headers, which an attacker could forge to redirect
+// an OAuth flow to an attacker-controlled callback (
+// ).
+// The *http.Request argument is intentionally accepted (and ignored) so
+// every call site reads with awareness of the forged-header threat — the
+// signature carries the reminder that r.Host MUST NOT be used here.
+func (s *Server) publicBaseURL(_ *http.Request) string {
+	if s.settings != nil {
+		if u := s.settings.PublicBaseURL(); u != "" {
+			return strings.TrimRight(u, "/")
+		}
+	}
+	return "http://127.0.0.1:19816"
+}
+
 // --- OAuth handlers ---
 
-func (s *Server) googleOAuthConfig(host string) (*oauth2.Config, error) {
+func (s *Server) googleOAuthConfig(r *http.Request) (*oauth2.Config, error) {
 	data, err := os.ReadFile(s.googleCredentialsFile)
 	if err != nil {
 		return nil, fmt.Errorf("read credentials file: %w", err)
@@ -743,7 +917,11 @@ func (s *Server) googleOAuthConfig(host string) (*oauth2.Config, error) {
 	}
 
 	// Single callback URL — connection ID is carried in the state parameter.
-	conf.RedirectURL = fmt.Sprintf("http://%s/oauth/callback", host)
+	// Derived from settings.public_base_url (
+	// MUST NOT be built from r.Host because an attacker reaching the admin
+	// listener could forge the Host header and redirect the OAuth callback
+	// to an attacker-controlled server.
+	conf.RedirectURL = s.publicBaseURL(r) + "/oauth/callback"
 	return conf, nil
 }
 
@@ -778,6 +956,17 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// State-confusion guard: the callback must come back through the same
+	// operator session that initiated /start. Without this check, anyone
+	// who can reach /start can pre-mint a state and claim the resulting
+	// connection record by racing a legitimate operator's callback.
+	if pending.OperatorSessionHash != "" {
+		if !operatorSessionHashesEqual(pending.OperatorSessionHash, operatorSessionHash(r)) {
+			http.Error(w, "OAuth callback rejected: session mismatch — restart the connection flow from the same browser session", http.StatusForbidden)
+			return
+		}
+	}
+
 	// Per-connector dispatch. Slack lands in slackOAuthExchange (web/slack.go);
 	// google falls through to the existing path below.
 	if pending.ConnectorType == "slack" {
@@ -785,7 +974,7 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conf, err := s.googleOAuthConfig(r.Host)
+	conf, err := s.googleOAuthConfig(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -865,13 +1054,11 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 // is for the same Google account the connection was originally bound to, or
 // a descriptive error if it isn't. Comparison is case-insensitive (Google
 // addresses are case-insensitive in the local part too in practice).
-//
 // The check exists because the re-auth flow uses oauth2.ApprovalForce — the
 // operator is shown the Google account chooser and could pick a different
 // one. Without this guard, an honest mistake silently rebinds the connection
 // to a different mailbox while the display_name and bindings keep pointing
 // at the old identity.
-//
 // If the existing config has no email at all (a state we don't currently
 // produce, but might in tests or after a future schema change), allow the
 // update — there's nothing to compare against.
@@ -889,7 +1076,7 @@ func matchesReauthIdentity(existing *connections.Connection, newEmail string) er
 	return nil
 }
 
-// oauthPendingCleanupLoop runs until Close() is called, deleting oauthPending
+// oauthPendingCleanupLoop runs until Close is called, deleting oauthPending
 // entries older than 10 minutes every 5 minutes.
 func (s *Server) oauthPendingCleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -1017,6 +1204,11 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Audit producer. Plaintext token redacted by
+	// audit.RedactSensitive via the LogOperator helper. Failures don't
+	// block the user-visible response — best-effort persistence.
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "token.create", result.Token.ID,
+		map[string]any{"name": name, "role_id": roleID}, "success")
 
 	// Re-fetch list for rendering
 	toks, err := s.tokens.List()
@@ -1061,6 +1253,7 @@ func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "token.revoke", id, nil, "success")
 	http.Redirect(w, r, "/tokens", http.StatusSeeOther)
 }
 
@@ -1116,10 +1309,13 @@ func (s *Server) handleRoleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := s.roles.Create(name, bindings); err != nil {
+	role, err := s.roles.Create(name, bindings)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "role.create", role.ID,
+		map[string]any{"name": name, "binding_count": len(bindings)}, "success")
 
 	http.Redirect(w, r, "/roles", http.StatusSeeOther)
 }
@@ -1130,6 +1326,7 @@ func (s *Server) handleRoleDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "role.delete", id, nil, "success")
 	http.Redirect(w, r, "/roles", http.StatusSeeOther)
 }
 
@@ -1258,13 +1455,61 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
 		return
 	}
+	// Script-command allowlist enforcement : rejects top-level
+	// script policies and nested rules[].script actions whose command
+	// field is not on the operator-configured allowlist.
+	if msg := validatePolicyCommandAllowlist(policyType, policyConfig); msg != "" {
+		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
+		return
+	}
+	// Numeric-ceiling lint : warn-once on the
+	// deny + ceiling + non-deny-default composition. On create there's
+	// no prior sticky ack, so any fire requires acknowledge_lint=true.
+	if warn := policy.DenyCeilingLint(policyType, policyConfig); warn != nil {
+		if r.FormValue("acknowledge_lint") != "true" {
+			writeLintWarningResponse(w, warn)
+			return
+		}
+	}
 
-	if _, err := s.policies.Create(name, policyType, policyConfig); err != nil {
+	pol, err := s.policies.Create(name, policyType, policyConfig)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.create", pol.ID,
+		map[string]any{"name": name, "policy_type": policyType}, "success")
+	// Store sticky acknowledgement for any lint that fired.
+	if warn := policy.DenyCeilingLint(policyType, policyConfig); warn != nil {
+		ack := map[string]any{
+			warn.Rule: map[string]any{
+				"acknowledged_at": time.Now().UTC().Format(time.RFC3339),
+				"by":              operatorDisplayName(r, s),
+				"fingerprint":     warn.Fingerprint,
+			},
+		}
+		if err := s.policies.SetLintAck(pol.ID, ack); err != nil {
+			// Log-and-continue: the policy is saved; the sticky ack is
+			// best-effort. A future save will re-warn until ack persists.
+			http.Error(w, "policy saved but lint ack failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 
 	http.Redirect(w, r, "/policies", http.StatusSeeOther)
+}
+
+// writeLintWarningResponse returns the structured lint warning to the
+// caller. JSON for fetch-style callers (admin JS); fallback text/html
+// 400 page for the form submission path.
+func writeLintWarningResponse(w http.ResponseWriter, warn *policy.LintWarning) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusBadRequest)
+	body := map[string]any{
+		"error": "lint_acknowledgement_required",
+		"lints": []*policy.LintWarning{warn},
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func (s *Server) handlePolicyEdit(w http.ResponseWriter, r *http.Request) {
@@ -1298,12 +1543,11 @@ func (s *Server) handlePolicyEdit(w http.ResponseWriter, r *http.Request) {
 // inferPolicyScope guesses a policy's connector scope from the shape of its
 // rules. Returns "" when nothing distinctive is found (caller defaults to
 // "gmail" for backwards compatibility with the legacy default).
-//
 // Signals checked, in order of specificity:
-//   - rule.match.method or rule.match.path  → http_proxy
-//   - match.operations contains "proxy_request" → http_proxy
-//   - rule.match.providers or LLM-only fields → llm
-//   - match.operations contains a Drive/Calendar/etc op name → that scope
+// - rule.match.method or rule.match.path → http_proxy
+// - match.operations contains "proxy_request" → http_proxy
+// - rule.match.providers or LLM-only fields → llm
+// - match.operations contains a Drive/Calendar/etc op name → that scope
 func inferPolicyScope(cfg map[string]any) string {
 	rules, _ := cfg["rules"].([]any)
 	for _, ri := range rules {
@@ -1386,13 +1630,143 @@ func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
 		return
 	}
+	// Script-command allowlist enforcement — applies on UPDATE so
+	// an existing benign policy cannot be flipped to bash/sh/perl.
+	if msg := validatePolicyCommandAllowlist(policyType, policyConfig); msg != "" {
+		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
+		return
+	}
+	// Numeric-ceiling lint with sticky ack. If the
+	// existing policy already has an ack whose fingerprint matches the
+	// current shape, the warning is silenced. Otherwise the operator
+	// must re-acknowledge.
+	warn := policy.DenyCeilingLint(policyType, policyConfig)
+	if warn != nil {
+		existing, _ := s.policies.Get(id)
+		var existingAck map[string]any
+		if existing != nil {
+			existingAck = existing.LintAck
+		}
+		if !policy.StickyAcknowledgmentMatches(existingAck, warn.Rule, warn.Fingerprint) {
+			if r.FormValue("acknowledge_lint") != "true" {
+				writeLintWarningResponse(w, warn)
+				return
+			}
+		}
+	}
 
 	if err := s.policies.Update(id, name, policyType, policyConfig); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.update", id,
+		map[string]any{"name": name, "policy_type": policyType}, "success")
+	// Sticky-ack maintenance. Three cases:
+	// - Lint fired AND no prior matching sticky ack → operator just
+	// supplied acknowledge_lint=true; persist a fresh ack row.
+	// - Lint fired AND prior matching sticky ack → keep the row.
+	// - Lint did NOT fire → composition was removed; clear the ack
+	// so a future re-introduction re-warns.
+	if warn != nil {
+		ack := map[string]any{
+			warn.Rule: map[string]any{
+				"acknowledged_at": time.Now().UTC().Format(time.RFC3339),
+				"by":              "operator",
+				"fingerprint":     warn.Fingerprint,
+			},
+		}
+		_ = s.policies.SetLintAck(id, ack)
+	} else {
+		// Clear any acks — composition removed.
+		_ = s.policies.SetLintAck(id, nil)
+	}
 
 	http.Redirect(w, r, "/policies", http.StatusSeeOther)
+}
+
+// validatePolicyCommandAllowlist enforces the script-command allowlist at
+// policy CREATE/UPDATE.
+// The allowlist applies in three places:
+// 1. Top-level script-type policy_config (policy_type == "script").
+// 2. Nested script actions inside a rules-type policy
+// (rules[i].action == "script" with rules[i].script.command).
+// 3. Post-execution response filters that exec a script command —
+// global response_filters[].script_command AND rule-scoped
+// rules[i].response_filters[].script_command. These run AFTER the
+// operation, so a disallowed script command silently failing the
+// filter would leak the un-redacted response to the agent. The
+// validator catches this at save time; the runtime fails closed
+// (see policy.ApplyResponseFilters / ResponseFilterError).
+// The package-level allowlist (policy.CurrentCommandAllowlist) is wired at
+// startup from settings.CommandAllowlist; when unset the bundled-Python
+// interpreter is the only permitted value. Returns a non-empty error string
+// when validation fails — caller surfaces it as HTTP 400.
+func validatePolicyCommandAllowlist(policyType string, config map[string]any) string {
+	allow := policy.CurrentCommandAllowlist()
+	if policyType == "script" {
+		cmd, _ := config["command"].(string)
+		if err := policy.ValidateCommand(cmd, allow); err != nil {
+			return fmt.Sprintf("script policy: %v", err)
+		}
+		// A script policy may still emit ResponseFilter values via its
+		// decision (the Python script controls that at runtime, not at
+		// save time). Nothing to validate statically here.
+		return ""
+	}
+	// Rules-type policy: walk rules[] for action=script entries AND for
+	// rule-scoped response_filters[].script_command.
+	rules, _ := config["rules"].([]any)
+	for i, ri := range rules {
+		rm, ok := ri.(map[string]any)
+		if !ok {
+			continue
+		}
+		action, _ := rm["action"].(string)
+		if action == "script" {
+			if sm, ok := rm["script"].(map[string]any); ok {
+				cmd, _ := sm["command"].(string)
+				if err := policy.ValidateCommand(cmd, allow); err != nil {
+					return fmt.Sprintf("rule %d (script action): %v", i+1, err)
+				}
+			}
+		}
+		if msg := validateResponseFilterCommands(rm["response_filters"], allow, fmt.Sprintf("rule %d", i+1)); msg != "" {
+			return msg
+		}
+	}
+	// Global (rules-config-level) response_filters[].
+	if msg := validateResponseFilterCommands(config["response_filters"], allow, "global"); msg != "" {
+		return msg
+	}
+	return ""
+}
+
+// validateResponseFilterCommands walks a response_filters[] list and runs
+// the script_command of each entry through policy.ValidateCommand. Returns
+// an empty string on success; otherwise an operator-facing message naming
+// the offending filter. `where` is a label ("global" or "rule N") used in
+// that message.
+func validateResponseFilterCommands(filtersAny any, allow []string, where string) string {
+	filters, ok := filtersAny.([]any)
+	if !ok {
+		return ""
+	}
+	for j, fi := range filters {
+		fm, ok := fi.(map[string]any)
+		if !ok {
+			continue
+		}
+		cmd, _ := fm["script_command"].(string)
+		path, _ := fm["script_path"].(string)
+		if cmd == "" && path == "" {
+			// Pure regex/exclude filter — no command to validate.
+			continue
+		}
+		if err := policy.ValidateCommand(cmd, allow); err != nil {
+			return fmt.Sprintf("%s response_filters[%d] (script_command): %v", where, j+1, err)
+		}
+	}
+	return ""
 }
 
 // validatePolicyRules gathers all operations from all live connections and
@@ -1432,6 +1806,7 @@ func (s *Server) handlePolicyDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.delete", id, nil, "success")
 	http.Redirect(w, r, "/policies", http.StatusSeeOther)
 }
 
@@ -1462,25 +1837,16 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "approvals", data)
 }
 
-// rejectIfAgentToken checks whether the request carries an Authorization header
-// with a Sieve bearer token. Agents communicate via the MCP API port using
-// bearer tokens; the web UI is intended for human operators only. Rejecting
-// requests that carry a Sieve token prevents an agent from approving its own
-// pending operations by hitting the web UI endpoint directly.
-// NOTE: The web UI port (19816) should NOT be exposed to agents.
-func rejectIfAgentToken(w http.ResponseWriter, r *http.Request) bool {
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer sieve_tok_") {
-		http.Error(w, "approval endpoints are not accessible to agents", http.StatusForbidden)
-		return true
-	}
-	return false
-}
+// The historical rejectIfAgentToken helper (spec / ) has been
+// removed. The requireOperatorSession middleware in auth.go is its
+// strict superset: a request without a valid operator-session cookie is
+// rejected (401 for browsers / 403 when the request carries a Sieve
+// bearer token — see isAgentTokenRequest), regardless of whether the
+// individual handler used to invoke rejectIfAgentToken. The middleware
+// runs from Server.Handler via adminAuthWrapper and gates every admin
+// endpoint that isn't in authExemptPaths/authExemptPrefixes.
 
 func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 
 	// Check if this is a policy proposal — if so, create the policy on approval.
@@ -1515,18 +1881,17 @@ func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "approval.approve", id, nil, "success")
 	http.Redirect(w, r, "/approvals", http.StatusSeeOther)
 }
 
 func (s *Server) handleApprovalReject(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 	if err := s.approval.Reject(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "approval.reject", id, nil, "success")
 	http.Redirect(w, r, "/approvals", http.StatusSeeOther)
 }
 
@@ -1652,6 +2017,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"LLMConnection":   allSettings[settings.KeyLLMConnection],
 		"LLMModel":        allSettings[settings.KeyLLMModel],
 		"LLMMaxTokens":    maxTokens,
+		"PublicBaseURL":   allSettings[settings.KeyPublicBaseURL],
+		"CommandAllowlist": allSettings[settings.KeyCommandAllowlist],
+		"AdminTLSCertPath": allSettings[settings.KeyAdminTLSCertPath],
+		"AdminTLSKeyPath":  allSettings[settings.KeyAdminTLSKeyPath],
+		"APITLSCertPath":   allSettings[settings.KeyAPITLSCertPath],
+		"APITLSKeyPath":    allSettings[settings.KeyAPITLSKeyPath],
 		"Success":         r.URL.Query().Get("saved") == "1",
 		"RotationSuccess": rotationSuccess,
 		"RotationCount":   rotationCount,
@@ -1670,6 +2041,53 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		settings.KeyLLMModel:      r.FormValue("llm_model"),
 		settings.KeyLLMMaxTokens:  r.FormValue("llm_max_tokens"),
 	}
+	// public_base_url is optional (empty = use loopback default). Validate
+	// the supplied value parses as a URL with http/https scheme so an
+	// operator can't accidentally persist garbage that would later be
+	// embedded into an OAuth manifest.
+	if v := strings.TrimSpace(r.FormValue("public_base_url")); v != "" {
+		if u, err := url.Parse(v); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			http.Error(w, "public_base_url must be a URL like https://sieve.example.com (http/https only, non-empty host)", http.StatusBadRequest)
+			return
+		}
+		pairs[settings.KeyPublicBaseURL] = v
+	} else {
+		// Empty submission clears the override (revert to loopback default).
+		pairs[settings.KeyPublicBaseURL] = ""
+	}
+
+	// TLS cert/key paths. Each pair is both-or-neither —
+	// validated at startup by tlsPair.enabled, but the form-save here
+	// only persists the strings.
+	for _, key := range []string{
+		settings.KeyAdminTLSCertPath, settings.KeyAdminTLSKeyPath,
+		settings.KeyAPITLSCertPath, settings.KeyAPITLSKeyPath,
+	} {
+		// form name == settings key.
+		pairs[key] = strings.TrimSpace(r.FormValue(key))
+	}
+
+	// command_allowlist is a newline-separated list of absolute interpreter
+	// paths. Each non-empty line MUST be an absolute path; empty submission
+	// reverts to the bundled-Python default. After save, push the new value
+	// into the policy package's in-process allowlist so subsequent policy
+	// CREATE/UPDATE and evaluation calls see the updated rules.
+	allowlistRaw := r.FormValue("command_allowlist")
+	if v := strings.TrimSpace(allowlistRaw); v != "" {
+		for _, line := range strings.Split(v, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if !filepath.IsAbs(line) {
+				http.Error(w, fmt.Sprintf("command_allowlist entry %q must be an absolute path", line), http.StatusBadRequest)
+				return
+			}
+		}
+		pairs[settings.KeyCommandAllowlist] = v
+	} else {
+		pairs[settings.KeyCommandAllowlist] = ""
+	}
 
 	for k, v := range pairs {
 		if err := s.settings.Set(k, v); err != nil {
@@ -1677,6 +2095,10 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	// Reload the in-process command allowlist so subsequent policy CRUD
+	// + evaluation calls observe the new value without a process restart.
+	policy.SetCommandAllowlist(s.settings.CommandAllowlist())
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }
@@ -1686,9 +2108,6 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 // handleListModels fetches available models from an LLM connection by calling
 // its /v1/models endpoint. Both Anthropic and OpenAI use this standard path.
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	connID := r.URL.Query().Get("connection_id")
 	if connID == "" {
 		w.Header().Set("Content-Type", "application/json")
@@ -1747,8 +2166,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := llmModelsHealthClient.Do(req)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"models": []any{}, "error": err.Error()})
@@ -1788,9 +2206,6 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 // --- Script generation API handler ---
 
 func (s *Server) handleGenerateScript(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	var req struct {
 		Description string `json:"description"`
 		Scope       string `json:"scope"`
@@ -1827,9 +2242,6 @@ func (s *Server) handleGenerateScript(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
 	var req struct {
 		Filename string `json:"filename"`
 		Content  string `json:"content"`
@@ -1848,16 +2260,20 @@ func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize filename — only allow alphanumeric, underscore, hyphen, dot.
-	safe := ""
-	for _, c := range req.Filename {
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' {
-			safe += string(c)
-		}
+	// Filename validation (
+	// ): single-segment safe filename only. No path separators,
+	// no ".." segments, no leading "." (hidden files), no empty name.
+	// The pre-fix code accepted the operator's filename after a loose
+	// allowlist filter; traced an arbitrary-file-
+	// write path through it that would have worked under a writable
+	// policies/ mount.
+	if msg := validateScriptFilename(req.Filename); msg != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid filename: " + msg})
+		return
 	}
-	if safe == "" {
-		safe = "generated_policy.py"
-	}
+	safe := req.Filename
 	if !strings.HasSuffix(safe, ".py") {
 		safe += ".py"
 	}
@@ -1873,12 +2289,41 @@ func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "script.save", safe, nil, "success")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"path": "./" + path})
 }
 
-// listDocSlugs returns the slugs of every .md file in docs/, in any order.
+// validateScriptFilename enforces single-segment safe-filename
+// semantics for /api/save-script. Returns the empty
+// string when the name is acceptable, or a human-readable reason
+// otherwise. Caller surfaces the reason in the 400 response body.
+func validateScriptFilename(name string) string {
+	if name == "" {
+		return "filename is empty"
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return "filename must be a single path segment (no separators)"
+	}
+	if name == "." || name == ".." || strings.HasPrefix(name, ".") {
+		return "filename must not start with '.'"
+	}
+	if strings.Contains(name, "..") {
+		return "filename must not contain '..'"
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_' || c == '-' || c == '.') {
+			return "filename contains a disallowed character"
+		}
+	}
+	return ""
+}
+
+// listDocSlugs returns the slugs of every.md file in docs/, in any order.
 // Used as the filesystem input to BuildIndex.
 func listDocSlugs() ([]string, error) {
 	entries, err := os.ReadDir("docs")
@@ -1922,7 +2367,15 @@ func (s *Server) buildDocsIndex() (DocNavIndex, error) {
 	idx := BuildIndex(m, slugs, docTitleForSlug)
 	corpus, err := BuildSearchIndex(idx, m, readDocBody)
 	if err == nil {
-		idx.SearchIndexJSON = template.JS(corpus)
+		// Plain string — embedded into <script type="application/json">
+		// in docs.html and consumed via JSON.parse(textContent) (spec
+		// ). corpus is already
+		// json.Marshal output; the consumer template applies the same
+		// </ and U+2028/U+2029 escaping as the `json` FuncMap helper
+		// via the docs template's inline encoder, since the corpus
+		// goes through Go's html/template auto-escaper inside <script
+		// type="application/json"> — which is text-content, not JS.
+		idx.SearchIndexJSON = string(corpus)
 	}
 	return idx, nil
 }

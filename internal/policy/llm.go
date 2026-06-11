@@ -7,10 +7,38 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/trilitech/Sieve/internal/httpguard"
 )
+
+// llmHTTPClient is the shared client used to call provider endpoints
+// (Ollama / Anthropic / OpenAI / Bedrock). Operator-supplied
+// LLMProviderConfig.Endpoint values are an attacker-influenced surface —
+// httpguard refuses cloud-metadata IPs (AbsoluteDeny) and RFC1918 / CGNAT
+// ranges, so a malicious provider config cannot pivot the policy engine
+// into IMDS or an internal admin plane.
+// Loopback (127.0.0.0/8) IS allowed here so the canonical Ollama default
+// endpoint (http://localhost:11434) keeps working. AbsoluteDeny still
+// blocks 169.254.169.254 regardless of this allowlist. The RFC1918 and
+// other private/reserved ranges remain default-deny, so an
+// operator-influenced endpoint cannot pivot into a private network even
+// though loopback is open.
+var llmHTTPClient = httpguard.Client(httpguard.ClientOptions{
+	Allowlist: mustParseLLMAllowlist([]string{"127.0.0.0/8", "::1/128"}),
+	Timeout:   60 * time.Second,
+})
+
+func mustParseLLMAllowlist(cidrs []string) []netip.Prefix {
+	p, err := httpguard.ParseCIDRs(cidrs)
+	if err != nil {
+		panic(fmt.Sprintf("policy/llm: bad allowlist CIDR: %v", err))
+	}
+	return p
+}
 
 // LLMConfig holds configuration for the LLM evaluator.
 type LLMConfig struct {
@@ -167,7 +195,7 @@ func (l *LLMEvaluator) evaluateOllama(ctx context.Context, prompt string) (*Poli
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := llmHTTPClient.Do(httpReq)
 	if err != nil {
 		return l.fallbackDecision("ollama request failed: " + err.Error()), nil
 	}
@@ -243,7 +271,7 @@ func (l *LLMEvaluator) evaluateAnthropic(ctx context.Context, prompt string) (*P
 		httpReq.Header.Set("x-api-key", apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := llmHTTPClient.Do(httpReq)
 	if err != nil {
 		return l.fallbackDecision("anthropic request failed: " + err.Error()), nil
 	}
@@ -316,7 +344,7 @@ func (l *LLMEvaluator) evaluateOpenAI(ctx context.Context, prompt string) (*Poli
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := llmHTTPClient.Do(httpReq)
 	if err != nil {
 		return l.fallbackDecision("openai request failed: " + err.Error()), nil
 	}
