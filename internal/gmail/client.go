@@ -184,6 +184,43 @@ func (c *Client) GetEmail(ctx context.Context, messageID string) (*Email, error)
 	return &email, nil
 }
 
+// RawEmail mirrors the Google REST shape returned by users.messages.get with
+// format=RAW: id, threadId, labelIds, internalDate, and the base64url-encoded
+// RFC822 message in `raw`. JSON field names are camelCase to match the Gmail
+// API verbatim — clients written against the Google API can consume this
+// without a translation layer.
+type RawEmail struct {
+	ID           string   `json:"id"`
+	ThreadID     string   `json:"threadId"`
+	LabelIDs     []string `json:"labelIds,omitempty"`
+	Snippet      string   `json:"snippet,omitempty"`
+	HistoryID    uint64   `json:"historyId,omitempty"`
+	InternalDate int64    `json:"internalDate,omitempty"`
+	SizeEstimate int64    `json:"sizeEstimate,omitempty"`
+	Raw          string   `json:"raw"`
+}
+
+// GetEmailRaw returns the message with format=RAW. The `raw` field is the
+// base64url-encoded RFC822 byte stream (full headers, all MIME parts,
+// attachments inline). Use this for byte-faithful archival; for interactive
+// reading prefer GetEmail (smaller payload, parsed body/attachments).
+func (c *Client) GetEmailRaw(ctx context.Context, messageID string) (*RawEmail, error) {
+	msg, err := c.service.Users.Messages.Get("me", messageID).Context(ctx).Format("raw").Do()
+	if err != nil {
+		return nil, fmt.Errorf("gmail: getting raw message %s: %w", messageID, err)
+	}
+	return &RawEmail{
+		ID:           msg.Id,
+		ThreadID:     msg.ThreadId,
+		LabelIDs:     msg.LabelIds,
+		Snippet:      msg.Snippet,
+		HistoryID:    msg.HistoryId,
+		InternalDate: msg.InternalDate,
+		SizeEstimate: msg.SizeEstimate,
+		Raw:          msg.Raw,
+	}, nil
+}
+
 // GetThread returns a full thread by thread ID.
 func (c *Client) GetThread(ctx context.Context, threadID string) (*Thread, error) {
 	t, err := c.service.Users.Threads.Get("me", threadID).Context(ctx).Format("full").Do()

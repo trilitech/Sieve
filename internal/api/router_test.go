@@ -1070,6 +1070,81 @@ func TestGmailGetMessage(t *testing.T) {
 	}
 }
 
+// TestGmailGetMessage_FormatRaw verifies that the Gmail-compatible REST
+// surface routes ?format=raw to the read_email_raw connector op and returns
+// the Google-shaped envelope (id, threadId, labelIds, internalDate, raw)
+// verbatim. The simplified read_email shape (with subject/from/to/body)
+// must NOT appear on this path — that's the contract archival pipelines
+// rely on.
+func TestGmailGetMessage_FormatRaw(t *testing.T) {
+	url, tok := setupGmail(t)
+
+	resp := doRequest(t, "GET", url+"/gmail/v1/users/test-conn/messages/msg123?format=raw", tok, "")
+	body := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if result["id"] != "msg123" {
+		t.Errorf("id = %v, want msg123", result["id"])
+	}
+	if result["threadId"] != "t1" {
+		t.Errorf("threadId = %v, want t1 (camelCase required)", result["threadId"])
+	}
+	if _, ok := result["raw"]; !ok {
+		t.Errorf("expected 'raw' field on format=raw response; got: %s", body)
+	}
+	if _, ok := result["labelIds"]; !ok {
+		t.Errorf("expected 'labelIds' (camelCase) on format=raw response; got: %s", body)
+	}
+	// Negative assertions: the read_email shape MUST NOT appear here.
+	if _, ok := result["subject"]; ok {
+		t.Errorf("format=raw response should not include parsed 'subject'; got: %s", body)
+	}
+	if _, ok := result["body"]; ok {
+		t.Errorf("format=raw response should not include parsed 'body'; got: %s", body)
+	}
+	if _, ok := result["thread_id"]; ok {
+		t.Errorf("format=raw must use camelCase 'threadId', not snake_case 'thread_id'; got: %s", body)
+	}
+}
+
+// TestGmailGetMessage_FormatFullUsesSimplifiedPath verifies that any format
+// value other than `raw` (including unset, full, metadata, minimal) keeps
+// using the existing read_email path. This pins the back-compat contract:
+// only `raw` opts into the new operation.
+func TestGmailGetMessage_FormatFullUsesSimplifiedPath(t *testing.T) {
+	url, tok := setupGmail(t)
+
+	for _, fmt := range []string{"", "full", "metadata", "minimal", "anything-else"} {
+		path := "/gmail/v1/users/test-conn/messages/msg123"
+		if fmt != "" {
+			path += "?format=" + fmt
+		}
+		resp := doRequest(t, "GET", url+path, tok, "")
+		body := readBody(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("format=%q: expected 200, got %d: %s", fmt, resp.StatusCode, body)
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(body), &result); err != nil {
+			t.Fatalf("format=%q: unmarshal: %v", fmt, err)
+		}
+		if _, ok := result["subject"]; !ok {
+			t.Errorf("format=%q: expected simplified read_email shape with 'subject'; got: %s", fmt, body)
+		}
+		if _, ok := result["raw"]; ok {
+			t.Errorf("format=%q: simplified shape must not include 'raw'; got: %s", fmt, body)
+		}
+	}
+}
+
 func TestGmailSendMessageDenied(t *testing.T) {
 	url, tok := setupGmail(t)
 

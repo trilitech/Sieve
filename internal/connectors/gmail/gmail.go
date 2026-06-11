@@ -282,6 +282,14 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 			ReadOnly: true,
 		},
 		{
+			Name:        "read_email_raw",
+			Description: "Read a single email by message ID, returning the byte-faithful RFC822 message (full headers, all MIME parts, attachments inline) base64url-encoded in `raw`. Response shape matches Google's users.messages.get?format=RAW. Use for archival pipelines that need .eml-grade fidelity; response bodies are large, so this is not suitable for context-window-bound interactive use — prefer read_email for that.",
+			Params: map[string]connector.ParamDef{
+				"message_id": {Type: "string", Description: "The ID of the message to read", Required: true},
+			},
+			ReadOnly: true,
+		},
+		{
 			Name:        "read_thread",
 			Description: "Read all messages in a thread",
 			Params: map[string]connector.ParamDef{
@@ -637,6 +645,13 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			return nil, err
 		}
 		return g.client.GetEmail(ctx, messageID)
+
+	case "read_email_raw":
+		messageID, err := requireStringParam(params, "message_id")
+		if err != nil {
+			return nil, err
+		}
+		return g.client.GetEmailRaw(ctx, messageID)
 
 	case "read_thread":
 		threadID, err := requireStringParam(params, "thread_id")
