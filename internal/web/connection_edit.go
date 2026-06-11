@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
@@ -53,6 +54,7 @@ type editFieldView struct {
 	Placeholder string
 	HelpText    string
 	Secret      bool
+	Required    bool
 
 	// Exactly one of these is populated, by Type.
 	StringValue   string // text / password / select / number / json
@@ -215,6 +217,7 @@ func fieldViewFromStored(f connector.Field, cfg map[string]any) editFieldView {
 		Placeholder: f.Placeholder,
 		HelpText:    f.HelpText,
 		Secret:      f.Secret,
+		Required:    f.Required,
 	}
 	switch f.Type {
 	case "checkbox":
@@ -268,7 +271,7 @@ func fieldViewFromStored(f connector.Field, cfg map[string]any) editFieldView {
 func joinStringSliceField(v any) string {
 	switch s := v.(type) {
 	case []string:
-		return joinLines(s)
+		return strings.Join(s, "\n")
 	case []any:
 		out := make([]string, 0, len(s))
 		for _, x := range s {
@@ -276,20 +279,9 @@ func joinStringSliceField(v any) string {
 				out = append(out, str)
 			}
 		}
-		return joinLines(out)
+		return strings.Join(out, "\n")
 	}
 	return ""
-}
-
-func joinLines(s []string) string {
-	if len(s) == 0 {
-		return ""
-	}
-	out := s[0]
-	for _, x := range s[1:] {
-		out += "\n" + x
-	}
-	return out
 }
 
 // renderEditError re-renders the edit page with the given error banner.

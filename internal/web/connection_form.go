@@ -25,14 +25,41 @@ const (
 	formModeEdit
 )
 
+// renderableFieldTypes lists the field Type values the generic
+// templates know how to render. Anything outside this set is filtered
+// out by fieldInMode in BOTH modes — adding a new type means extending
+// this set AND adding a branch in templates/connection_edit_field.html
+// (and the create-side rendering when a generic create surface lands).
+//
+// Symmetry across modes prevents the class of bug where a field
+// declared with an unknown type silently falls back to a plain text
+// input on one form and is rejected on the other.
+var renderableFieldTypes = map[string]bool{
+	"text":     true,
+	"password": true,
+	"checkbox": true,
+	"textarea": true,
+	"number":   true,
+	"json":     true,
+	// "oauth" deliberately excluded — handled by per-connector bespoke
+	// flows (Google) and not by the generic form.
+	// "select" deliberately excluded — first-class select rendering
+	// would require connector.Field to carry an Options []string list,
+	// which no shipping connector needs today. Add it together with
+	// the schema extension when a real use case appears.
+}
+
 // fieldInMode reports whether the field participates in the given form.
+// A field is filtered out if its Type isn't renderable by the generic
+// templates, regardless of mode. Within renderable types: create excludes
+// EditOnly fields; edit excludes non-Editable fields.
 func fieldInMode(f connector.Field, mode formMode) bool {
+	if !renderableFieldTypes[f.Type] {
+		return false
+	}
 	switch mode {
 	case formModeCreate:
-		// OAuth fields are handled by the connector's bespoke create
-		// flow (Google), not the generic form. EditOnly fields have no
-		// creation-time concept.
-		return !f.EditOnly && f.Type != "oauth"
+		return !f.EditOnly
 	case formModeEdit:
 		return f.Editable
 	}
@@ -150,6 +177,15 @@ func applyConnectorFormFields(meta connector.ConnectorMeta, mode formMode, r *ht
 			}
 			if f.Secret && raw == "" {
 				continue // secret empty submission = keep stored
+			}
+			// Required fields must remain non-empty after edit too — a
+			// previously-create-only field becoming Editable shouldn't
+			// also become "secretly clearable to an invalid empty
+			// value." Secrets are exempt because an empty submission on
+			// a Secret field is already interpreted as "keep stored"
+			// above; the stored value satisfies the requirement.
+			if f.Required && !f.Secret && val == "" {
+				return fmt.Sprintf("%s is required", f.Label)
 			}
 			cfg[f.Name] = val
 		}

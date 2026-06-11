@@ -265,6 +265,86 @@ func TestApply_NonEditableFieldsSkippedOnEdit(t *testing.T) {
 	}
 }
 
+// TestApply_EditEmptyRequiredNonSecretRejected pins the post-review
+// fix for #21: a Required, Editable, non-Secret field cannot be
+// cleared on edit. Without this guard, target_url and auth_header
+// (now Editable to fix the original "can't change auth_header" bug)
+// could be silently emptied and the connector would fail at first
+// agent call.
+func TestApply_EditEmptyRequiredNonSecretRejected(t *testing.T) {
+	meta := connector.ConnectorMeta{
+		SetupFields: []connector.Field{
+			{Name: "target_url", Type: "text", Required: true, Editable: true, Label: "Target URL"},
+		},
+	}
+	cfg := map[string]any{"target_url": "https://stored.example"}
+	values := url.Values{}
+	values.Set("target_url", "  ") // present + whitespace-only
+	msg := applyConnectorFormFields(meta, formModeEdit, formReq(t, values), cfg)
+	if msg == "" {
+		t.Fatal("expected error when clearing required field on edit")
+	}
+	if !strings.Contains(msg, "Target URL") {
+		t.Errorf("error should name the field's Label; got %q", msg)
+	}
+}
+
+// TestApply_EditEmptyRequiredSecretAllowed confirms the inverse: an
+// empty submission on a Secret field is the "keep stored" path even
+// when the field is Required. The stored value satisfies the
+// requirement; rejecting empty here would break credential-rotation
+// UX (operator edits other fields, leaves secret blank).
+func TestApply_EditEmptyRequiredSecretAllowed(t *testing.T) {
+	meta := connector.ConnectorMeta{
+		SetupFields: []connector.Field{
+			{Name: "auth_value", Type: "password", Required: true, Editable: true, Secret: true},
+		},
+	}
+	cfg := map[string]any{"auth_value": "sk-stored"}
+	values := url.Values{}
+	values.Set("auth_value", "")
+	if msg := applyConnectorFormFields(meta, formModeEdit, formReq(t, values), cfg); msg != "" {
+		t.Fatalf("required secret with empty submission should keep stored, not error; got: %s", msg)
+	}
+	if cfg["auth_value"] != "sk-stored" {
+		t.Errorf("stored secret should be preserved; got %q", cfg["auth_value"])
+	}
+}
+
+// TestFieldInMode_UnsupportedTypesFilteredInBothModes pins the
+// symmetric exclusion: any Type the generic template can't render is
+// dropped from both create and edit. Without this, a field declared
+// as "oauth" or "select" (which have no first-class rendering today)
+// would silently fall back to a plain text input on edit and produce
+// a malformed save.
+func TestFieldInMode_UnsupportedTypesFilteredInBothModes(t *testing.T) {
+	for _, ty := range []string{"oauth", "select", "color", "made_up"} {
+		f := connector.Field{Name: "x", Type: ty, Editable: true}
+		if fieldInMode(f, formModeCreate) {
+			t.Errorf("type %q should be filtered on create", ty)
+		}
+		if fieldInMode(f, formModeEdit) {
+			t.Errorf("type %q should be filtered on edit", ty)
+		}
+	}
+}
+
+// TestFieldInMode_RenderableTypesAllowed is the positive complement
+// to the filtering test — every type the partial knows how to render
+// participates in at least one form mode under sensible flags.
+func TestFieldInMode_RenderableTypesAllowed(t *testing.T) {
+	for _, ty := range []string{"text", "password", "checkbox", "textarea", "number", "json"} {
+		create := connector.Field{Name: "x", Type: ty}
+		if !fieldInMode(create, formModeCreate) {
+			t.Errorf("type %q (no flags) should participate on create", ty)
+		}
+		edit := connector.Field{Name: "x", Type: ty, Editable: true}
+		if !fieldInMode(edit, formModeEdit) {
+			t.Errorf("type %q (Editable) should participate on edit", ty)
+		}
+	}
+}
+
 // TestConnectorRequiresBespokeAdd documents which connector types are
 // intentionally excluded from the generic data-driven create path —
 // changes to this list are an architectural decision (the bespoke flow
