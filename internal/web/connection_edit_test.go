@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trilitech/Sieve/internal/connector"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
@@ -512,5 +514,174 @@ func TestAuthQueryParamPatternMatchesConnector(t *testing.T) {
 	want := httpproxy.AuthQueryParamPatternStr
 	if got != want {
 		t.Errorf("web authQueryParamPattern %q differs from httpproxy.AuthQueryParamPatternStr %q", got, want)
+	}
+}
+
+// TestEditSaveErrorPreservesOperatorInputs is the regression test for
+// the post-review fix: when validation rejects the form, the rendered
+// error page must reflect what the operator just typed, not what was
+// previously stored. The operator submits a valid auth_header change
+// alongside an invalid auth_query_param; only the latter should
+// cause the rejection, and the form they see on the re-render should
+// carry the new auth_header value so they don't have to re-type it.
+func TestEditSaveErrorPreservesOperatorInputs(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addHTTPProxyConnection(t, env, "h1")
+
+	form := url.Values{}
+	form.Set("target_url", "https://api.new-host.example") // changed from stored
+	form.Set("auth_header", "x-new-key")                   // changed from stored x-api-key
+	form.Set("auth_query_param", "bad value!!")            // invalid; this is what triggers the 400
+
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	resp, err := httpClientNoRedirect().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid auth_query_param, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// Form must reflect the OPERATOR'S typed values so they can fix
+	// the error without re-typing everything.
+	for _, want := range []string{
+		`value="https://api.new-host.example"`, // target_url they typed
+		`value="x-new-key"`,                    // auth_header they typed
+	} {
+		if !strings.Contains(bodyStr, want) {
+			t.Errorf("error page should preserve operator-typed value %q; not found in body", want)
+		}
+	}
+
+	// Form must NOT snap back to the stored values.
+	for _, stale := range []string{
+		`value="https://example.com"`, // stored target_url
+		`value="x-api-key"`,           // stored auth_header
+	} {
+		if strings.Contains(bodyStr, stale) {
+			t.Errorf("error page should not show stored value %q (would discard operator's edits)", stale)
+		}
+	}
+
+	// And of course nothing was actually saved.
+	conn, _ := env.Connections.GetWithConfig("h1")
+	if conn.Config["target_url"] != "https://example.com" {
+		t.Errorf("stored target_url should be unchanged on validation error; got %v", conn.Config["target_url"])
+	}
+	if conn.Config["auth_header"] != "x-api-key" {
+		t.Errorf("stored auth_header should be unchanged on validation error; got %v", conn.Config["auth_header"])
+	}
+}
+
+// TestEditViewFiltersUnrenderableTypes pins the symmetric filter:
+// connectionEditViewFromConfig must use fieldInMode (not a bare
+// f.Editable check), so a field whose Type the partial can't render
+// is dropped at the projection step too. Otherwise the view and the
+// parser would disagree on which fields participate — exactly the
+// drift this PR is meant to make impossible.
+//
+// The shipping connectors don't declare an Editable field of an
+// unrenderable type today (which is exactly the invariant the filter
+// keeps), so we synthesise one by registering a fake connector type
+// whose Meta() includes both renderable and unrenderable Editable
+// fields, then assert the view only carries the renderable one.
+func TestEditViewFiltersUnrenderableTypes(t *testing.T) {
+	env := testenv.New(t)
+
+	// Register a synthetic connector whose SetupFields include both a
+	// renderable (text) and an unrenderable (oauth, select) Editable
+	// field. The Factory is never invoked here — the view projection
+	// doesn't instantiate the connector — so a stub that errors is
+	// fine.
+	syntheticMeta := connector.ConnectorMeta{
+		Type:        "test_synth",
+		Name:        "Synthetic Test",
+		Description: "Test fixture; not a real connector.",
+		Category:    "Test",
+		SetupFields: []connector.Field{
+			{Name: "label", Type: "text", Editable: true, Label: "Label"},
+			{Name: "oauth_blob", Type: "oauth", Editable: true, Label: "Should be filtered"},
+			{Name: "picker", Type: "select", Editable: true, Label: "Also should be filtered"},
+		},
+	}
+	env.Registry.Register(syntheticMeta, func(map[string]any) (connector.Connector, error) {
+		return nil, fmt.Errorf("test_synth: not instantiable")
+	})
+
+	// Service.Add tolerates factory failure (it logs and continues so
+	// the OAuth flow can persist before the connection is live), so
+	// our error-returning factory above doesn't block the row from
+	// landing in the DB.
+	if err := env.Connections.Add("synth1", "test_synth", "Synth", map[string]any{"label": "stored-label"}); err != nil {
+		t.Fatalf("seed synthetic connection: %v", err)
+	}
+	conn, err := env.Connections.GetWithConfig("synth1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	srv := NewServer(
+		env.Tokens, env.Connections, env.Policies, env.Roles,
+		env.Registry, env.Approval, env.Audit,
+		"", env.Settings, nil,
+		env.Keyring, env.DB, "127.0.0.1:0",
+	)
+	t.Cleanup(srv.Close)
+
+	view := srv.connectionEditViewFromConfig(conn, conn.Config)
+	names := make(map[string]string) // name -> type
+	for _, f := range view.Fields {
+		if !renderableFieldTypes[f.Type] {
+			t.Errorf("editFieldView leaked unrenderable type %q (field %q)", f.Type, f.Name)
+		}
+		names[f.Name] = f.Type
+	}
+	if _, hasLabel := names["label"]; !hasLabel {
+		t.Errorf("renderable text field 'label' was dropped from view; got %v", names)
+	}
+	for _, dropped := range []string{"oauth_blob", "picker"} {
+		if _, leaked := names[dropped]; leaked {
+			t.Errorf("unrenderable field %q leaked into view (type %q)", dropped, names[dropped])
+		}
+	}
+}
+
+// TestHandleConnectionAdd_RejectsGithub closes a gap noted on PR #21:
+// connectorRequiresBespokeAdd returns true for github (it's installed
+// via /connections/github/pat or /connections/github/app/start), but
+// the previous fall-through in handleConnectionAdd would still create
+// an empty-config github row via the non-OAuth "save directly" branch.
+// Now /connections/add with connector_type=github returns 400 with a
+// message pointing operators at the github-specific routes.
+func TestHandleConnectionAdd_RejectsGithub(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+
+	form := url.Values{
+		"id":             {"sneaky-gh"},
+		"display_name":   {"Sneaky GitHub"},
+		"connector_type": {"github"},
+	}
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := httpClientNoRedirect().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on github via generic /add, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "/connections/github/pat") || !strings.Contains(bodyStr, "/connections/github/app/start") {
+		t.Errorf("rejection should point at github-specific routes; got %q", bodyStr)
+	}
+	if exists, _ := env.Connections.Exists("sneaky-gh"); exists {
+		t.Fatal("github connection must not be persisted via the generic route")
 	}
 }
