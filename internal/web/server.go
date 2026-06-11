@@ -560,6 +560,20 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GitHub is similar to Slack: credentials are installed via dedicated
+	// /connections/github/{pat,app/start,...} endpoints that validate
+	// against GitHub before persisting. Falling through to the empty-config
+	// save below would leave a row with no credentials — every operation
+	// would fail because parseConfig requires at least one credential.
+	if connectorType == "github" {
+		http.Error(w,
+			"GitHub connections must be added via the GitHub-specific install flow "+
+				"(POST /connections/github/pat or /connections/github/app/start). "+
+				"The generic add endpoint cannot validate GitHub credentials.",
+			http.StatusBadRequest)
+		return
+	}
+
 	// For OAuth connectors (gmail), don't save the connection yet. We start
 	// the OAuth flow first and only persist the connection in handleOAuthCallback
 	// after receiving valid credentials. This avoids orphaned connections that

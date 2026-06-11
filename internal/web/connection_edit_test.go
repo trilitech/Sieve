@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/trilitech/Sieve/internal/connector"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
@@ -582,18 +584,47 @@ func TestEditSaveErrorPreservesOperatorInputs(t *testing.T) {
 // is dropped at the projection step too. Otherwise the view and the
 // parser would disagree on which fields participate — exactly the
 // drift this PR is meant to make impossible.
+//
+// The shipping connectors don't declare an Editable field of an
+// unrenderable type today (which is exactly the invariant the filter
+// keeps), so we synthesise one by registering a fake connector type
+// whose Meta() includes both renderable and unrenderable Editable
+// fields, then assert the view only carries the renderable one.
 func TestEditViewFiltersUnrenderableTypes(t *testing.T) {
-	ts, env := newConnectionEditTestServer(t)
-	addHTTPProxyConnection(t, env, "h1")
-	conn, _ := env.Connections.GetWithConfig("h1")
+	env := testenv.New(t)
 
-	// Hand-craft a connector meta with an Editable field of an
-	// unrenderable type. The real http_proxy connector doesn't ship
-	// one of these — we install a synthetic registry entry just for
-	// this assertion.
-	_ = ts // env / conn are enough; we don't hit HTTP here
+	// Register a synthetic connector whose SetupFields include both a
+	// renderable (text) and an unrenderable (oauth, select) Editable
+	// field. The Factory is never invoked here — the view projection
+	// doesn't instantiate the connector — so a stub that errors is
+	// fine.
+	syntheticMeta := connector.ConnectorMeta{
+		Type:        "test_synth",
+		Name:        "Synthetic Test",
+		Description: "Test fixture; not a real connector.",
+		Category:    "Test",
+		SetupFields: []connector.Field{
+			{Name: "label", Type: "text", Editable: true, Label: "Label"},
+			{Name: "oauth_blob", Type: "oauth", Editable: true, Label: "Should be filtered"},
+			{Name: "picker", Type: "select", Editable: true, Label: "Also should be filtered"},
+		},
+	}
+	env.Registry.Register(syntheticMeta, func(map[string]any) (connector.Connector, error) {
+		return nil, fmt.Errorf("test_synth: not instantiable")
+	})
 
-	// Use the test environment's Server directly.
+	// Service.Add tolerates factory failure (it logs and continues so
+	// the OAuth flow can persist before the connection is live), so
+	// our error-returning factory above doesn't block the row from
+	// landing in the DB.
+	if err := env.Connections.Add("synth1", "test_synth", "Synth", map[string]any{"label": "stored-label"}); err != nil {
+		t.Fatalf("seed synthetic connection: %v", err)
+	}
+	conn, err := env.Connections.GetWithConfig("synth1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
 	srv := NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles,
 		env.Registry, env.Approval, env.Audit,
@@ -603,9 +634,54 @@ func TestEditViewFiltersUnrenderableTypes(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	view := srv.connectionEditViewFromConfig(conn, conn.Config)
+	names := make(map[string]string) // name -> type
 	for _, f := range view.Fields {
 		if !renderableFieldTypes[f.Type] {
 			t.Errorf("editFieldView leaked unrenderable type %q (field %q)", f.Type, f.Name)
 		}
+		names[f.Name] = f.Type
+	}
+	if _, hasLabel := names["label"]; !hasLabel {
+		t.Errorf("renderable text field 'label' was dropped from view; got %v", names)
+	}
+	for _, dropped := range []string{"oauth_blob", "picker"} {
+		if _, leaked := names[dropped]; leaked {
+			t.Errorf("unrenderable field %q leaked into view (type %q)", dropped, names[dropped])
+		}
+	}
+}
+
+// TestHandleConnectionAdd_RejectsGithub closes a gap noted on PR #21:
+// connectorRequiresBespokeAdd returns true for github (it's installed
+// via /connections/github/pat or /connections/github/app/start), but
+// the previous fall-through in handleConnectionAdd would still create
+// an empty-config github row via the non-OAuth "save directly" branch.
+// Now /connections/add with connector_type=github returns 400 with a
+// message pointing operators at the github-specific routes.
+func TestHandleConnectionAdd_RejectsGithub(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+
+	form := url.Values{
+		"id":             {"sneaky-gh"},
+		"display_name":   {"Sneaky GitHub"},
+		"connector_type": {"github"},
+	}
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := httpClientNoRedirect().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on github via generic /add, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "/connections/github/pat") || !strings.Contains(bodyStr, "/connections/github/app/start") {
+		t.Errorf("rejection should point at github-specific routes; got %q", bodyStr)
+	}
+	if exists, _ := env.Connections.Exists("sneaky-gh"); exists {
+		t.Fatal("github connection must not be persisted via the generic route")
 	}
 }
