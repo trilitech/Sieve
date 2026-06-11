@@ -152,7 +152,10 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	}
 
 	if msg := applyConnectorFormFields(meta, formModeEdit, r, cfg); msg != "" {
-		s.renderEditError(w, conn, msg)
+		// Render from cfg (the in-progress config carrying every
+		// field parsed successfully so far) so the operator's typed
+		// values are preserved in the form.
+		s.renderEditErrorWithConfig(w, conn, cfg, msg)
 		return
 	}
 
@@ -162,23 +165,45 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	// here gives a clearer banner that preserves the rest of the form.
 	if conn.ConnectorType == "http_proxy" {
 		if aqp, _ := cfg["auth_query_param"].(string); aqp != "" && !authQueryParamPattern.MatchString(aqp) {
-			s.renderEditError(w, conn,
+			s.renderEditErrorWithConfig(w, conn, cfg,
 				"auth_query_param must contain only letters, digits, _, -, or . (got "+aqp+")")
 			return
 		}
 	}
 
 	if err := s.connections.UpdateConfig(id, cfg); err != nil {
-		s.renderEditError(w, conn, "save failed: "+err.Error())
+		// Render from cfg so the operator's attempted values are
+		// preserved on the retry.
+		s.renderEditErrorWithConfig(w, conn, cfg, "save failed: "+err.Error())
 		return
 	}
 
 	http.Redirect(w, r, fmt.Sprintf("/connections/%s/edit?saved=1", id), http.StatusSeeOther)
 }
 
-// connectionEditViewFromConnection projects the stored config into the
-// template's expected shape, using the connector's declared field list.
+// connectionEditViewFromConnection is the success-path projection: it
+// renders the page using whatever config is currently stored on the
+// connection.
 func (s *Server) connectionEditViewFromConnection(conn *connections.Connection) *connectionEditData {
+	return s.connectionEditViewFromConfig(conn, conn.Config)
+}
+
+// connectionEditViewFromConfig projects an arbitrary config map into
+// the template's expected shape. The two callers separate cleanly:
+//
+//   - success path (GET): cfg == conn.Config
+//   - error  path (POST): cfg == the in-progress merge of stored config
+//     with whatever was successfully parsed from the form before the
+//     error. Using cfg here is what preserves the operator's typed
+//     values across a re-render, instead of snapping them back to the
+//     stored values.
+//
+// The filter uses fieldInMode rather than checking f.Editable directly
+// so a field whose Type isn't renderable by the generic template is
+// dropped here too. Asymmetric filtering between this projection and
+// applyConnectorFormFields used to allow empty/partial forms — the
+// symmetry makes both halves agree on which fields participate.
+func (s *Server) connectionEditViewFromConfig(conn *connections.Connection, cfg map[string]any) *connectionEditData {
 	d := &connectionEditData{
 		Active:        "connections",
 		ID:            conn.ID,
@@ -191,14 +216,14 @@ func (s *Server) connectionEditViewFromConnection(conn *connections.Connection) 
 		return d // empty Fields → "no editable settings"
 	}
 	for _, f := range meta.SetupFields {
-		if !f.Editable {
+		if !fieldInMode(f, formModeEdit) {
 			continue
 		}
-		d.Fields = append(d.Fields, fieldViewFromStored(f, conn.Config))
+		d.Fields = append(d.Fields, fieldViewFromStored(f, cfg))
 	}
 
 	if conn.ConnectorType == "http_proxy" {
-		authH, _ := conn.Config["auth_header"].(string)
+		authH, _ := cfg["auth_header"].(string)
 		d.HTTPProxyBaseline = &httpProxyBaselineView{
 			BaselineDenyKeys:     staticHTTPProxyBaselineKeys,
 			AuthHeaderConfigured: authH,
@@ -284,13 +309,26 @@ func joinStringSliceField(v any) string {
 	return ""
 }
 
-// renderEditError re-renders the edit page with the given error banner.
+// renderEditError re-renders the edit page using the stored config.
+// Use this only when the in-progress config isn't meaningful (e.g.,
+// unknown connector type, where there's nothing successfully parsed
+// to preserve).
+func (s *Server) renderEditError(w http.ResponseWriter, conn *connections.Connection, msg string) {
+	s.renderEditErrorWithConfig(w, conn, conn.Config, msg)
+}
+
+// renderEditErrorWithConfig re-renders the edit page using a specific
+// config map for projecting field values. Use this on validation /
+// save errors so the operator's typed values are preserved in the
+// form across the retry — rendering from conn.Config would snap them
+// back to the stored state and force re-entry.
+//
 // Sets Content-Type and the 400 status on the ResponseWriter directly
 // rather than calling s.render's helper, so we don't trip the
 // "superfluous WriteHeader" warning when render writes its own
 // content-type header.
-func (s *Server) renderEditError(w http.ResponseWriter, conn *connections.Connection, msg string) {
-	data := s.connectionEditViewFromConnection(conn)
+func (s *Server) renderEditErrorWithConfig(w http.ResponseWriter, conn *connections.Connection, cfg map[string]any, msg string) {
+	data := s.connectionEditViewFromConfig(conn, cfg)
 	data.Error = msg
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)

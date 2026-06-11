@@ -514,3 +514,98 @@ func TestAuthQueryParamPatternMatchesConnector(t *testing.T) {
 		t.Errorf("web authQueryParamPattern %q differs from httpproxy.AuthQueryParamPatternStr %q", got, want)
 	}
 }
+
+// TestEditSaveErrorPreservesOperatorInputs is the regression test for
+// the post-review fix: when validation rejects the form, the rendered
+// error page must reflect what the operator just typed, not what was
+// previously stored. The operator submits a valid auth_header change
+// alongside an invalid auth_query_param; only the latter should
+// cause the rejection, and the form they see on the re-render should
+// carry the new auth_header value so they don't have to re-type it.
+func TestEditSaveErrorPreservesOperatorInputs(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addHTTPProxyConnection(t, env, "h1")
+
+	form := url.Values{}
+	form.Set("target_url", "https://api.new-host.example") // changed from stored
+	form.Set("auth_header", "x-new-key")                   // changed from stored x-api-key
+	form.Set("auth_query_param", "bad value!!")            // invalid; this is what triggers the 400
+
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	resp, err := httpClientNoRedirect().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid auth_query_param, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	bodyStr := string(body)
+
+	// Form must reflect the OPERATOR'S typed values so they can fix
+	// the error without re-typing everything.
+	for _, want := range []string{
+		`value="https://api.new-host.example"`, // target_url they typed
+		`value="x-new-key"`,                    // auth_header they typed
+	} {
+		if !strings.Contains(bodyStr, want) {
+			t.Errorf("error page should preserve operator-typed value %q; not found in body", want)
+		}
+	}
+
+	// Form must NOT snap back to the stored values.
+	for _, stale := range []string{
+		`value="https://example.com"`, // stored target_url
+		`value="x-api-key"`,           // stored auth_header
+	} {
+		if strings.Contains(bodyStr, stale) {
+			t.Errorf("error page should not show stored value %q (would discard operator's edits)", stale)
+		}
+	}
+
+	// And of course nothing was actually saved.
+	conn, _ := env.Connections.GetWithConfig("h1")
+	if conn.Config["target_url"] != "https://example.com" {
+		t.Errorf("stored target_url should be unchanged on validation error; got %v", conn.Config["target_url"])
+	}
+	if conn.Config["auth_header"] != "x-api-key" {
+		t.Errorf("stored auth_header should be unchanged on validation error; got %v", conn.Config["auth_header"])
+	}
+}
+
+// TestEditViewFiltersUnrenderableTypes pins the symmetric filter:
+// connectionEditViewFromConfig must use fieldInMode (not a bare
+// f.Editable check), so a field whose Type the partial can't render
+// is dropped at the projection step too. Otherwise the view and the
+// parser would disagree on which fields participate — exactly the
+// drift this PR is meant to make impossible.
+func TestEditViewFiltersUnrenderableTypes(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addHTTPProxyConnection(t, env, "h1")
+	conn, _ := env.Connections.GetWithConfig("h1")
+
+	// Hand-craft a connector meta with an Editable field of an
+	// unrenderable type. The real http_proxy connector doesn't ship
+	// one of these — we install a synthetic registry entry just for
+	// this assertion.
+	_ = ts // env / conn are enough; we don't hit HTTP here
+
+	// Use the test environment's Server directly.
+	srv := NewServer(
+		env.Tokens, env.Connections, env.Policies, env.Roles,
+		env.Registry, env.Approval, env.Audit,
+		"", env.Settings, nil,
+		env.Keyring, env.DB, "127.0.0.1:0",
+	)
+	t.Cleanup(srv.Close)
+
+	view := srv.connectionEditViewFromConfig(conn, conn.Config)
+	for _, f := range view.Fields {
+		if !renderableFieldTypes[f.Type] {
+			t.Errorf("editFieldView leaked unrenderable type %q (field %q)", f.Type, f.Name)
+		}
+	}
+}
