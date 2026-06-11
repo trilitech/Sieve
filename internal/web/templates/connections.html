@@ -839,10 +839,21 @@
   {{/*
     Single delegated submit handler for forms that carry data-confirm.
     Replaces per-form onsubmit="return confirm(...)" inline event-handler
-    attributes, which require script-src 'unsafe-inline' even with CSP
-    nonces and are harder to migrate to a stricter CSP later. The
-    confirmation message lives in the data-confirm attribute, which Go's
-    html/template contextually escapes — no JS-string injection surface.
+    attributes.
+
+    CSP note: this is still an inline <script> block and DOES require a
+    CSP allowance (a nonce, a hash, or 'unsafe-inline') to execute under
+    a strict policy — Sieve doesn't ship CSP yet, tracked in #17. The
+    win over per-form onsubmit is migration ergonomics: an inline
+    <script> can be CSP-nonced trivially in a single edit, whereas
+    on*-attribute handlers require either 'unsafe-hashes' (with hashing
+    each attribute value) or rewriting every form to data-* + a
+    delegated handler. Doing the rewrite once now makes the eventual
+    CSP work a one-line nonce attribute on this script tag.
+
+    The confirmation message lives in the data-confirm attribute, which
+    Go's html/template contextually escapes — no JS-string injection
+    surface even if a connection ID ever contains a quote.
   */}}
   <script>
     document.addEventListener("submit", function (e) {
