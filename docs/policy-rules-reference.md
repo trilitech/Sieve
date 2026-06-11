@@ -134,7 +134,9 @@ An empty or null `match` block matches everything -- use this for catch-all rule
 | Subject contains | `subject_contains` | array of string | Case-insensitive substring | Match if subject contains any of these strings |
 | Labels | `labels` | array of string | Case-insensitive exact | Match if the email has at least one of these labels |
 
-**Gmail operations:** `list_emails`, `read_email`, `read_thread`, `create_draft`, `update_draft`, `send_email`, `send_draft`, `reply`, `add_label`, `remove_label`, `archive`, `list_labels`, `get_attachment`
+**Gmail operations:** `list_emails`, `read_email`, `read_email_raw`, `read_thread`, `create_draft`, `update_draft`, `send_email`, `send_draft`, `reply`, `add_label`, `remove_label`, `archive`, `list_labels`, `get_attachment`
+
+`read_email_raw` returns the byte-faithful RFC822 message (full headers, all MIME parts, attachments inline) base64url-encoded — Google's `format=RAW` shape. Distinct from `read_email` (parsed body, attachment metadata only) so archival roles can be granted one and not the other.
 
 **Example -- read-only with label filtering:**
 

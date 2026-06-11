@@ -623,12 +623,12 @@ func TestE2E_MockOperationsCount(t *testing.T) {
 		}
 	}
 
-	// Verify: 13 Gmail + 5 Drive + 5 Calendar + 5 People + 4 Sheets + 4 Docs = 36
-	if len(ops) != 36 {
-		t.Fatalf("expected 36 total operations, got %d", len(ops))
+	// Verify: 14 Gmail + 5 Drive + 5 Calendar + 5 People + 4 Sheets + 4 Docs = 37
+	if len(ops) != 37 {
+		t.Fatalf("expected 37 total operations, got %d", len(ops))
 	}
-	if gmailCount != 13 {
-		t.Fatalf("expected 13 Gmail operations, got %d", gmailCount)
+	if gmailCount != 14 {
+		t.Fatalf("expected 14 Gmail operations, got %d", gmailCount)
 	}
 	if driveCount != 5 {
 		t.Fatalf("expected 5 Drive operations, got %d", driveCount)
@@ -654,7 +654,7 @@ func TestE2E_MockOperationsCount(t *testing.T) {
 
 	expectedOps := []string{
 		// Gmail
-		"list_emails", "read_email", "read_thread", "create_draft", "update_draft",
+		"list_emails", "read_email", "read_email_raw", "read_thread", "create_draft", "update_draft",
 		"send_email", "send_draft", "reply", "add_label", "remove_label",
 		"archive", "list_labels", "get_attachment",
 		// Drive
@@ -688,7 +688,7 @@ func TestE2E_MockOperationsReadOnlyFlags(t *testing.T) {
 	ops := env.Mock.Operations()
 
 	readOnlyOps := map[string]bool{
-		"list_emails": true, "read_email": true, "read_thread": true,
+		"list_emails": true, "read_email": true, "read_email_raw": true, "read_thread": true,
 		"list_labels": true, "get_attachment": true,
 		"drive.list_files": true, "drive.get_file": true, "drive.download_file": true,
 		"calendar.list_events": true, "calendar.get_event": true,

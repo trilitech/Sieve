@@ -139,6 +139,82 @@ func TestListEmails_ReturnsStubsOnly(t *testing.T) {
 	}
 }
 
+// TestGetEmailRaw_PassesRawFormatAndReturnsGoogleShape verifies that
+// GetEmailRaw requests format=raw from Gmail and returns the `raw` field
+// verbatim along with the camelCase Google-shaped envelope (id, threadId,
+// labelIds, internalDate). The byte-for-byte fidelity of `raw` matters for
+// archival pipelines that need to reconstruct .eml on disk.
+func TestGetEmailRaw_PassesRawFormatAndReturnsGoogleShape(t *testing.T) {
+	var fetchedFormat string
+	const rawPayload = "RnJvbTogYWxpY2VAZXhhbXBsZS5jb20NCk1lc3NhZ2UtSUQ6IDxhYmNAeD4NCg0KaGk="
+	client, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		fetchedFormat = r.URL.Query().Get("format")
+		json.NewEncoder(w).Encode(&gmailapi.Message{
+			Id:           "msg-raw",
+			ThreadId:     "thr-raw",
+			LabelIds:     []string{"INBOX", "UNREAD"},
+			Snippet:      "hi",
+			HistoryId:    424242,
+			InternalDate: 1735689600000,
+			SizeEstimate: 1024,
+			Raw:          rawPayload,
+		})
+	})
+
+	got, err := client.GetEmailRaw(context.Background(), "msg-raw")
+	if err != nil {
+		t.Fatalf("GetEmailRaw: %v", err)
+	}
+	if fetchedFormat != "raw" {
+		t.Errorf("Gmail format = %q, want raw", fetchedFormat)
+	}
+	if got.Raw != rawPayload {
+		t.Errorf("Raw = %q, want %q (must round-trip unmodified)", got.Raw, rawPayload)
+	}
+	if got.ID != "msg-raw" || got.ThreadID != "thr-raw" {
+		t.Errorf("ID/ThreadID = %q/%q", got.ID, got.ThreadID)
+	}
+	if got.InternalDate != 1735689600000 {
+		t.Errorf("InternalDate = %d", got.InternalDate)
+	}
+	if len(got.LabelIDs) != 2 || got.LabelIDs[0] != "INBOX" || got.LabelIDs[1] != "UNREAD" {
+		t.Errorf("LabelIDs = %v", got.LabelIDs)
+	}
+
+	// JSON-marshalled shape must use Google's camelCase field names so a
+	// REST consumer written against the Gmail API sees the same wire format.
+	blob, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	wire := string(blob)
+	for _, key := range []string{`"id":`, `"threadId":`, `"labelIds":`, `"internalDate":`, `"raw":`} {
+		if !strings.Contains(wire, key) {
+			t.Errorf("Marshal output missing %s, got: %s", key, wire)
+		}
+	}
+	for _, snake := range []string{`"thread_id":`, `"label_ids":`, `"internal_date":`} {
+		if strings.Contains(wire, snake) {
+			t.Errorf("Marshal output should not contain snake_case key %s; got: %s", snake, wire)
+		}
+	}
+
+	// Google's REST schema declares internalDate and historyId as
+	// "string (int64/uint64 format)" — i.e., they must be JSON strings on
+	// the wire. Pin this so a future refactor that drops the `,string` tag
+	// regresses loudly.
+	if !strings.Contains(wire, `"internalDate":"1735689600000"`) {
+		t.Errorf("internalDate must be wire-encoded as a JSON string; got: %s", wire)
+	}
+	if !strings.Contains(wire, `"historyId":"424242"`) {
+		t.Errorf("historyId must be wire-encoded as a JSON string; got: %s", wire)
+	}
+	// sizeEstimate, by contrast, is documented as plain integer.
+	if !strings.Contains(wire, `"sizeEstimate":1024`) || strings.Contains(wire, `"sizeEstimate":"1024"`) {
+		t.Errorf("sizeEstimate must be wire-encoded as a JSON number; got: %s", wire)
+	}
+}
+
 // TestGetEmail_ReturnsFullBody verifies read_email still fetches the full
 // payload, including the parsed plain-text body.
 func TestGetEmail_ReturnsFullBody(t *testing.T) {

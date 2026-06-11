@@ -44,6 +44,9 @@ func New(connType string) *Mock {
 			{Name: "read_email", Description: "Read an email", ReadOnly: true, Params: map[string]connector.ParamDef{
 				"message_id": {Type: "string", Required: true},
 			}},
+			{Name: "read_email_raw", Description: "Read an email, byte-faithful RFC822 in `raw`", ReadOnly: true, Params: map[string]connector.ParamDef{
+				"message_id": {Type: "string", Required: true},
+			}},
 			{Name: "read_thread", Description: "Read all messages in a thread", ReadOnly: true, Params: map[string]connector.ParamDef{
 				"thread_id": {Type: "string", Required: true},
 			}},
@@ -294,6 +297,19 @@ func (m *Mock) Execute(_ context.Context, op string, params map[string]any) (any
 			"id": params["message_id"], "thread_id": "t1", "from": "sender@test.com",
 			"to": []string{"me@test.com"}, "subject": "Test Email",
 			"body": "Hello world", "labels": []string{"INBOX"},
+		}, nil
+	case "read_email_raw":
+		// Mirror the real Gmail wire format: internalDate is a JSON string
+		// per Google's "string (int64 format)" spec, not a bare number. The
+		// REST-level test (router_test.go::TestGmailGetMessage_FormatRaw)
+		// asserts the string shape end-to-end so a future regression in the
+		// connector's serialization tags is caught here.
+		return map[string]any{
+			"id":           params["message_id"],
+			"threadId":     "t1",
+			"labelIds":     []string{"INBOX"},
+			"internalDate": "1735689600000",
+			"raw":          "RnJvbTogYWxpY2VAZXhhbXBsZS5jb20NCk1lc3NhZ2UtSUQ6IDxhYmNAeD4NCg0KaGk=",
 		}, nil
 	case "read_thread":
 		return map[string]any{
