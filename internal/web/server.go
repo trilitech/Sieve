@@ -1,27 +1,23 @@
 // Package web implements the Sieve admin web UI, served on a separate port
 // from the API/MCP server. This separation is intentional: the web UI is for
 // human operators only and must not be accessible to AI agents.
-//
 // Key security patterns:
-//
-//   - rejectIfAgentToken: approval endpoints check for Sieve bearer tokens in
-//     the Authorization header. If found, the request is rejected. This prevents
-//     an agent from self-approving its own pending operations by calling the
-//     web UI endpoints directly. The web UI port (19816) should ideally not be
-//     exposed to agents at all, but this check provides defense-in-depth.
-//
-//   - OAuth flow with pendingOAuth: When adding a Google account connection, the
-//     connection is NOT saved to the database until OAuth completes successfully.
-//     The pendingOAuth map holds the connection metadata (ID, type, display name)
-//     keyed by a random state parameter. After Google redirects back with a
-//     valid code, we exchange it for tokens, verify the email address, and only
-//     THEN persist the connection. This prevents orphaned connections with
-//     no credentials. The state parameter has a 10-minute expiry to limit the
-//     window for CSRF-style attacks.
-//
-//   - State parameter: The OAuth state ties the callback to a specific
-//     pending connection. It's a 16-byte random hex string, checked and consumed
-//     atomically in handleOAuthCallback. This prevents both CSRF and replay attacks.
+// - rejectIfAgentToken: approval endpoints check for Sieve bearer tokens in
+// the Authorization header. If found, the request is rejected. This prevents
+// an agent from self-approving its own pending operations by calling the
+// web UI endpoints directly. The web UI port (19816) should ideally not be
+// exposed to agents at all, but this check provides defense-in-depth.
+// - OAuth flow with pendingOAuth: When adding a Google account connection, the
+// connection is NOT saved to the database until OAuth completes successfully.
+// The pendingOAuth map holds the connection metadata (ID, type, display name)
+// keyed by a random state parameter. After Google redirects back with a
+// valid code, we exchange it for tokens, verify the email address, and only
+// THEN persist the connection. This prevents orphaned connections with
+// no credentials. The state parameter has a 10-minute expiry to limit the
+// window for CSRF-style attacks.
+// - State parameter: The OAuth state ties the callback to a specific
+// pending connection. It's a 16-byte random hex string, checked and consumed
+// atomically in handleOAuthCallback. This prevents both CSRF and replay attacks.
 package web
 
 import (
@@ -34,6 +30,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -47,8 +44,10 @@ import (
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/httpguard"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/ratelimit"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/scriptgen"
@@ -64,6 +63,27 @@ import (
 
 //go:embed templates/*
 var templateFS embed.FS
+
+// llmModelsHealthClient is the shared *http.Client used by the
+// admin /api/models health check, which fetches /v1/models from an
+// operator-configured LLM provider target_url. The target_url is an
+// attacker-influenceable field — without httpguard, pointing it at
+// 169.254.169.254 would let an admin-side feature exfiltrate cloud
+// IMDS credentials. Loopback is allowed (matches the LLM evaluator's
+// rationale: Ollama dev installs are on localhost); AbsoluteDeny still
+// blocks IMDS.
+var llmModelsHealthClient = httpguard.Client(httpguard.ClientOptions{
+	Allowlist: mustParseCIDRs([]string{"127.0.0.0/8", "::1/128"}),
+	Timeout:   10 * time.Second,
+})
+
+func mustParseCIDRs(cidrs []string) []netip.Prefix {
+	p, err := httpguard.ParseCIDRs(cidrs)
+	if err != nil {
+		panic(fmt.Sprintf("web: bad allowlist CIDR: %v", err))
+	}
+	return p
+}
 
 // Server is the web UI server for the Sieve admin interface.
 type Server struct {
@@ -97,13 +117,19 @@ type Server struct {
 	stopCleanup     chan struct{} // closed by Close() to stop the cleanup goroutine
 	stopCleanupOnce sync.Once     // ensures Close() is safe under concurrent calls
 
-	// Operator + session services for the admin-authentication path
-	// (spec 001-fix-security-vulns US7). Populated by SetAuth; nil
-	// when running in tests/dev that don't need the auth gate. When
-	// non-nil, requireOperatorSession middleware enforces session +
-	// CSRF on every wrapped endpoint.
+	// Operator + session services for the admin-authentication path.
+	// Populated by SetAuth; nil when running in tests/dev that don't
+	// need the auth gate. When non-nil, requireOperatorSession middleware
+	// enforces session + CSRF on every wrapped endpoint.
 	operatorSvc *operator.Service
 	sessionMgr  *session.Manager
+
+	// loginLimiter throttles POST /login and POST /setup per client IP.
+	// Without it, argon2's ~150-300 ms cost is the only brake on an
+	// online credential guess — not nearly enough to stop a determined
+	// attacker. Populated by SetLoginRateLimiter; when nil, /login and
+	// /setup are not throttled (tests, dev).
+	loginLimiter *ratelimit.Limiter
 }
 
 // funcMap returns the template function map used across all templates.
@@ -113,10 +139,10 @@ func funcMap() template.FuncMap {
 		// values destined for <script type="application/json"> blocks.
 		// Returns a plain string -- template.JS was the legacy "this is
 		// already-safe JavaScript" marker, which is the wrong shape for
-		// serialized user-controlled data (Shannon INJ-VULN-06; spec
-		// 001-fix-security-vulns US5 / FR-019..FR-021). Callers MUST
+		// serialized user-controlled data ( spec
+		// ). Callers MUST
 		// embed the result inside <script type="application/json" id="...">
-		// and read it via JSON.parse on .textContent.
+		// and read it via JSON.parse on.textContent.
 		"json": func(v any) string {
 			b, err := json.MarshalIndent(v, "", "  ")
 			if err != nil {
@@ -227,9 +253,8 @@ func funcMap() template.FuncMap {
 }
 
 // NewServer creates a new web UI server. It starts a background goroutine for
-// OAuth cleanup; callers MUST call (*Server).Close() when the server is no
+// OAuth cleanup; callers MUST call (*Server).Close when the server is no
 // longer needed (e.g. via defer or t.Cleanup) to stop the goroutine.
-//
 // keyring, db, and webAddr are required by the passphrase-rotation handler
 // (POST /settings/rotate-passphrase). keyring drives the actual rotation;
 // db is the SQL handle threaded into Keyring.Rotate; webAddr is the
@@ -291,17 +316,24 @@ func NewServer(
 }
 
 // SetAuth wires the operator + session services that drive the
-// admin-authentication path (spec 001-fix-security-vulns US7).
+// admin-authentication path.
 // Call this after NewServer to enable login / logout / setup
 // handlers and the requireOperatorSession middleware. When nil
 // values are passed (or SetAuth is never called) the auth surface
 // is disabled — existing dev/test flows that don't yet seed an
 // operator stay functional.
-//
 // Production wiring lives in cmd/sieve/main.go.
 func (s *Server) SetAuth(op *operator.Service, sess *session.Manager) {
 	s.operatorSvc = op
 	s.sessionMgr = sess
+}
+
+// SetLoginRateLimiter wires the per-IP rate limiter that gates
+// POST /login and POST /setup. Pass nil to disable throttling
+// (default; tests and dev only). The agent listener has its own
+// rate limiter wired separately in cmd/sieve/main.go.
+func (s *Server) SetLoginRateLimiter(rl *ratelimit.Limiter) {
+	s.loginLimiter = rl
 }
 
 // Handler returns the HTTP handler with all routes registered.
@@ -309,7 +341,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Dashboard redirect
-	// --- Operator authentication (spec 001-fix-security-vulns US7) ---
+	// --- Operator authentication (
 	// These routes are intentionally public: login itself can't require
 	// a session, and setup is one-shot for fresh installs. The follow-up
 	// commit wraps every OTHER admin route with requireOperatorSession.
@@ -391,10 +423,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /docs/category/{id}", s.handleDocsCategory)
 	mux.HandleFunc("GET /docs/{name}", s.handleDocs)
 
-	// Wrap the admin mux with: (1) the operator-session gate (US7 /
-	// FR-028..FR-029), which exempts public auth pages and OAuth
-	// callbacks; (2) the sensitive-response header writer (US11 /
-	// FR-044..FR-045) so every admin response carries Cache-Control:
+	// Wrap the admin mux with: (1) the operator-session gate ( /
+	// ), which exempts public auth pages and OAuth
+	// callbacks; (2) the sensitive-response header writer ( /
+	// ) so every admin response carries Cache-Control:
 	// no-store etc. Header wrapping is outermost so 401/403/redirect
 	// responses also get the headers.
 	return noCacheAllAdmin(s.adminAuthWrapper(mux))
@@ -403,8 +435,8 @@ func (s *Server) Handler() http.Handler {
 // authExemptPaths is the set of admin paths that bypass the
 // requireOperatorSession middleware. Login + setup are bootstrap;
 // OAuth callbacks identify the operator via the OAuth state parameter
-// instead of a Sieve session. Spec 001-fix-security-vulns US7
-// (FR-028..FR-029 exemption set).
+// instead of a Sieve session.
+// ( exemption set).
 var authExemptPaths = map[string]bool{
 	"/login":  true,
 	"/setup":  true,
@@ -603,19 +635,25 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 // pendingOAuth holds info for a connection being added via OAuth.
-//
 // IsReauth distinguishes a fresh-add flow (insert a new connection record on
 // success) from a re-authentication of an existing connection (update the
 // existing record's config and clear needs_reauth). The handler picks one or
 // the other based on this flag — keeping it explicit avoids accidentally
 // overwriting an existing connection during a normal Add, or duplicating one
 // during a Re-auth.
+// OperatorSessionHash binds the OAuth state to the operator session that
+// initiated /start. The callback (which is in authExemptPaths because the
+// upstream provider doesn't carry our cookie back) re-derives the hash
+// from the cookie presented by the browser and refuses the callback if it
+// differs. Closes a state-confusion attack where someone who can reach
+// /start (pre-auth attacker) races a legitimate operator's callback.
 type pendingOAuth struct {
-	ID            string
-	ConnectorType string
-	DisplayName   string
-	CreatedAt     time.Time
-	IsReauth      bool
+	ID                  string
+	ConnectorType       string
+	DisplayName         string
+	CreatedAt           time.Time
+	IsReauth            bool
+	OperatorSessionHash string // hex(sha256(cookie value)); empty when no session was active
 }
 
 func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
@@ -707,7 +745,13 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 		state := hex.EncodeToString(stateBytes)
 
 		s.oauthMu.Lock()
-		s.oauthPending[state] = pendingOAuth{ID: id, ConnectorType: connectorType, DisplayName: displayName, CreatedAt: time.Now()}
+		s.oauthPending[state] = pendingOAuth{
+			ID:                  id,
+			ConnectorType:       connectorType,
+			DisplayName:         displayName,
+			CreatedAt:           time.Now(),
+			OperatorSessionHash: operatorSessionHash(r),
+		}
 		s.oauthMu.Unlock()
 
 		url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
@@ -738,7 +782,6 @@ func (s *Server) handleConnectionDelete(w http.ResponseWriter, r *http.Request) 
 // token, even if the user's account already grants this app). On callback,
 // we'll UpdateConfig on the existing record (which atomically clears
 // needs_reauth) instead of inserting a new one.
-//
 // Limited to Google connections today; GitHub PAT/App connections have their
 // own setup flow and would need a separate re-auth surface if their tokens
 // expire.
@@ -769,11 +812,12 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 
 	s.oauthMu.Lock()
 	s.oauthPending[state] = pendingOAuth{
-		ID:            id,
-		ConnectorType: conn.ConnectorType,
-		DisplayName:   conn.DisplayName,
-		CreatedAt:     time.Now(),
-		IsReauth:      true,
+		ID:                  id,
+		ConnectorType:       conn.ConnectorType,
+		DisplayName:         conn.DisplayName,
+		CreatedAt:           time.Now(),
+		IsReauth:            true,
+		OperatorSessionHash: operatorSessionHash(r),
 	}
 	s.oauthMu.Unlock()
 
@@ -830,11 +874,10 @@ func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) 
 
 // publicBaseURL returns the externally-visible base URL Sieve uses to
 // construct OAuth callback / redirect / setup / manifest URLs. Reads from
-// settings.PublicBaseURL() — never from inbound Host / X-Forwarded-Host /
+// settings.PublicBaseURL — never from inbound Host / X-Forwarded-Host /
 // X-Forwarded-Proto headers, which an attacker could forge to redirect
-// an OAuth flow to an attacker-controlled callback (Shannon AUTH-VULN-06,
-// spec 001-fix-security-vulns US3 / FR-010..FR-012).
-//
+// an OAuth flow to an attacker-controlled callback (
+// ).
 // The *http.Request argument is intentionally accepted (and ignored) so
 // every call site reads with awareness of the forged-header threat — the
 // signature carries the reminder that r.Host MUST NOT be used here.
@@ -869,7 +912,7 @@ func (s *Server) googleOAuthConfig(r *http.Request) (*oauth2.Config, error) {
 	}
 
 	// Single callback URL — connection ID is carried in the state parameter.
-	// Derived from settings.public_base_url (spec 001-fix-security-vulns US3);
+	// Derived from settings.public_base_url (
 	// MUST NOT be built from r.Host because an attacker reaching the admin
 	// listener could forge the Host header and redirect the OAuth callback
 	// to an attacker-controlled server.
@@ -906,6 +949,17 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		http.Error(w, "invalid or expired state — try adding the connection again", http.StatusBadRequest)
 		return
+	}
+
+	// State-confusion guard: the callback must come back through the same
+	// operator session that initiated /start. Without this check, anyone
+	// who can reach /start can pre-mint a state and claim the resulting
+	// connection record by racing a legitimate operator's callback.
+	if pending.OperatorSessionHash != "" {
+		if !operatorSessionHashesEqual(pending.OperatorSessionHash, operatorSessionHash(r)) {
+			http.Error(w, "OAuth callback rejected: session mismatch — restart the connection flow from the same browser session", http.StatusForbidden)
+			return
+		}
 	}
 
 	// Per-connector dispatch. Slack lands in slackOAuthExchange (web/slack.go);
@@ -995,13 +1049,11 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 // is for the same Google account the connection was originally bound to, or
 // a descriptive error if it isn't. Comparison is case-insensitive (Google
 // addresses are case-insensitive in the local part too in practice).
-//
 // The check exists because the re-auth flow uses oauth2.ApprovalForce — the
 // operator is shown the Google account chooser and could pick a different
 // one. Without this guard, an honest mistake silently rebinds the connection
 // to a different mailbox while the display_name and bindings keep pointing
 // at the old identity.
-//
 // If the existing config has no email at all (a state we don't currently
 // produce, but might in tests or after a future schema change), allow the
 // update — there's nothing to compare against.
@@ -1019,7 +1071,7 @@ func matchesReauthIdentity(existing *connections.Connection, newEmail string) er
 	return nil
 }
 
-// oauthPendingCleanupLoop runs until Close() is called, deleting oauthPending
+// oauthPendingCleanupLoop runs until Close is called, deleting oauthPending
 // entries older than 10 minutes every 5 minutes.
 func (s *Server) oauthPendingCleanupLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -1147,7 +1199,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Audit producer (US9 / FR-037). Plaintext token redacted by
+	// Audit producer. Plaintext token redacted by
 	// audit.RedactSensitive via the LogOperator helper. Failures don't
 	// block the user-visible response — best-effort persistence.
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "token.create", result.Token.ID,
@@ -1398,14 +1450,14 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
 		return
 	}
-	// Script-command allowlist enforcement (US4): rejects top-level
+	// Script-command allowlist enforcement : rejects top-level
 	// script policies and nested rules[].script actions whose command
 	// field is not on the operator-configured allowlist.
 	if msg := validatePolicyCommandAllowlist(policyType, policyConfig); msg != "" {
 		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
 		return
 	}
-	// Numeric-ceiling lint (US6 / FR-022..FR-024b): warn-once on the
+	// Numeric-ceiling lint : warn-once on the
 	// deny + ceiling + non-deny-default composition. On create there's
 	// no prior sticky ack, so any fire requires acknowledge_lint=true.
 	if warn := policy.DenyCeilingLint(policyType, policyConfig); warn != nil {
@@ -1444,8 +1496,7 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 
 // writeLintWarningResponse returns the structured lint warning to the
 // caller. JSON for fetch-style callers (admin JS); fallback text/html
-// 400 page for the form submission path. Spec 001-fix-security-vulns
-// US6 / FR-023.
+// 400 page for the form submission path.
 func writeLintWarningResponse(w http.ResponseWriter, warn *policy.LintWarning) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
@@ -1487,12 +1538,11 @@ func (s *Server) handlePolicyEdit(w http.ResponseWriter, r *http.Request) {
 // inferPolicyScope guesses a policy's connector scope from the shape of its
 // rules. Returns "" when nothing distinctive is found (caller defaults to
 // "gmail" for backwards compatibility with the legacy default).
-//
 // Signals checked, in order of specificity:
-//   - rule.match.method or rule.match.path  → http_proxy
-//   - match.operations contains "proxy_request" → http_proxy
-//   - rule.match.providers or LLM-only fields → llm
-//   - match.operations contains a Drive/Calendar/etc op name → that scope
+// - rule.match.method or rule.match.path → http_proxy
+// - match.operations contains "proxy_request" → http_proxy
+// - rule.match.providers or LLM-only fields → llm
+// - match.operations contains a Drive/Calendar/etc op name → that scope
 func inferPolicyScope(cfg map[string]any) string {
 	rules, _ := cfg["rules"].([]any)
 	for _, ri := range rules {
@@ -1575,13 +1625,13 @@ func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
 		return
 	}
-	// Script-command allowlist enforcement (US4) — applies on UPDATE so
+	// Script-command allowlist enforcement — applies on UPDATE so
 	// an existing benign policy cannot be flipped to bash/sh/perl.
 	if msg := validatePolicyCommandAllowlist(policyType, policyConfig); msg != "" {
 		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
 		return
 	}
-	// Numeric-ceiling lint with sticky ack (US6 / FR-024a). If the
+	// Numeric-ceiling lint with sticky ack. If the
 	// existing policy already has an ack whose fingerprint matches the
 	// current shape, the warning is silenced. Otherwise the operator
 	// must re-acknowledge.
@@ -1606,12 +1656,12 @@ func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.update", id,
 		map[string]any{"name": name, "policy_type": policyType}, "success")
-	// Sticky-ack maintenance (US6 / FR-024a). Three cases:
-	//   - Lint fired AND no prior matching sticky ack → operator just
-	//     supplied acknowledge_lint=true; persist a fresh ack row.
-	//   - Lint fired AND prior matching sticky ack → keep the row.
-	//   - Lint did NOT fire → composition was removed; clear the ack
-	//     so a future re-introduction re-warns.
+	// Sticky-ack maintenance. Three cases:
+	// - Lint fired AND no prior matching sticky ack → operator just
+	// supplied acknowledge_lint=true; persist a fresh ack row.
+	// - Lint fired AND prior matching sticky ack → keep the row.
+	// - Lint did NOT fire → composition was removed; clear the ack
+	// so a future re-introduction re-warns.
 	if warn != nil {
 		ack := map[string]any{
 			warn.Rule: map[string]any{
@@ -1630,15 +1680,20 @@ func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 // validatePolicyCommandAllowlist enforces the script-command allowlist at
-// policy CREATE/UPDATE (spec 001-fix-security-vulns US4 / FR-013..FR-018a).
-//
-// The allowlist applies in two places per FR-013/FR-015:
-//   1. Top-level script-type policy_config (policy_type == "script").
-//   2. Nested script actions inside a rules-type policy
-//      (rules[i].action == "script" with rules[i].script.command).
-//
+// policy CREATE/UPDATE.
+// The allowlist applies in three places:
+// 1. Top-level script-type policy_config (policy_type == "script").
+// 2. Nested script actions inside a rules-type policy
+// (rules[i].action == "script" with rules[i].script.command).
+// 3. Post-execution response filters that exec a script command —
+// global response_filters[].script_command AND rule-scoped
+// rules[i].response_filters[].script_command. These run AFTER the
+// operation, so a disallowed script command silently failing the
+// filter would leak the un-redacted response to the agent. The
+// validator catches this at save time; the runtime fails closed
+// (see policy.ApplyResponseFilters / ResponseFilterError).
 // The package-level allowlist (policy.CurrentCommandAllowlist) is wired at
-// startup from settings.CommandAllowlist(); when unset the bundled-Python
+// startup from settings.CommandAllowlist; when unset the bundled-Python
 // interpreter is the only permitted value. Returns a non-empty error string
 // when validation fails — caller surfaces it as HTTP 400.
 func validatePolicyCommandAllowlist(policyType string, config map[string]any) string {
@@ -1648,9 +1703,13 @@ func validatePolicyCommandAllowlist(policyType string, config map[string]any) st
 		if err := policy.ValidateCommand(cmd, allow); err != nil {
 			return fmt.Sprintf("script policy: %v", err)
 		}
+		// A script policy may still emit ResponseFilter values via its
+		// decision (the Python script controls that at runtime, not at
+		// save time). Nothing to validate statically here.
 		return ""
 	}
-	// Rules-type policy: walk rules[] for action=script entries.
+	// Rules-type policy: walk rules[] for action=script entries AND for
+	// rule-scoped response_filters[].script_command.
 	rules, _ := config["rules"].([]any)
 	for i, ri := range rules {
 		rm, ok := ri.(map[string]any)
@@ -1658,16 +1717,48 @@ func validatePolicyCommandAllowlist(policyType string, config map[string]any) st
 			continue
 		}
 		action, _ := rm["action"].(string)
-		if action != "script" {
-			continue
+		if action == "script" {
+			if sm, ok := rm["script"].(map[string]any); ok {
+				cmd, _ := sm["command"].(string)
+				if err := policy.ValidateCommand(cmd, allow); err != nil {
+					return fmt.Sprintf("rule %d (script action): %v", i+1, err)
+				}
+			}
 		}
-		sm, ok := rm["script"].(map[string]any)
+		if msg := validateResponseFilterCommands(rm["response_filters"], allow, fmt.Sprintf("rule %d", i+1)); msg != "" {
+			return msg
+		}
+	}
+	// Global (rules-config-level) response_filters[].
+	if msg := validateResponseFilterCommands(config["response_filters"], allow, "global"); msg != "" {
+		return msg
+	}
+	return ""
+}
+
+// validateResponseFilterCommands walks a response_filters[] list and runs
+// the script_command of each entry through policy.ValidateCommand. Returns
+// an empty string on success; otherwise an operator-facing message naming
+// the offending filter. `where` is a label ("global" or "rule N") used in
+// that message.
+func validateResponseFilterCommands(filtersAny any, allow []string, where string) string {
+	filters, ok := filtersAny.([]any)
+	if !ok {
+		return ""
+	}
+	for j, fi := range filters {
+		fm, ok := fi.(map[string]any)
 		if !ok {
 			continue
 		}
-		cmd, _ := sm["command"].(string)
+		cmd, _ := fm["script_command"].(string)
+		path, _ := fm["script_path"].(string)
+		if cmd == "" && path == "" {
+			// Pure regex/exclude filter — no command to validate.
+			continue
+		}
 		if err := policy.ValidateCommand(cmd, allow); err != nil {
-			return fmt.Sprintf("rule %d (script action): %v", i+1, err)
+			return fmt.Sprintf("%s response_filters[%d] (script_command): %v", where, j+1, err)
 		}
 	}
 	return ""
@@ -1741,13 +1832,13 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "approvals", data)
 }
 
-// The historical rejectIfAgentToken helper (spec FR-034 / US8) has been
+// The historical rejectIfAgentToken helper (spec / ) has been
 // removed. The requireOperatorSession middleware in auth.go is its
 // strict superset: a request without a valid operator-session cookie is
 // rejected (401 for browsers / 403 when the request carries a Sieve
 // bearer token — see isAgentTokenRequest), regardless of whether the
 // individual handler used to invoke rejectIfAgentToken. The middleware
-// runs from Server.Handler() via adminAuthWrapper and gates every admin
+// runs from Server.Handler via adminAuthWrapper and gates every admin
 // endpoint that isn't in authExemptPaths/authExemptPrefixes.
 
 func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
@@ -1948,7 +2039,7 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	// public_base_url is optional (empty = use loopback default). Validate
 	// the supplied value parses as a URL with http/https scheme so an
 	// operator can't accidentally persist garbage that would later be
-	// embedded into an OAuth manifest. Spec 001-fix-security-vulns US3.
+	// embedded into an OAuth manifest.
 	if v := strings.TrimSpace(r.FormValue("public_base_url")); v != "" {
 		if u, err := url.Parse(v); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			http.Error(w, "public_base_url must be a URL like https://sieve.example.com (http/https only, non-empty host)", http.StatusBadRequest)
@@ -1960,8 +2051,8 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		pairs[settings.KeyPublicBaseURL] = ""
 	}
 
-	// TLS cert/key paths (FR-048..FR-050). Each pair is both-or-neither —
-	// validated at startup by tlsPair.enabled(), but the form-save here
+	// TLS cert/key paths. Each pair is both-or-neither —
+	// validated at startup by tlsPair.enabled, but the form-save here
 	// only persists the strings.
 	for _, key := range []string{
 		settings.KeyAdminTLSCertPath, settings.KeyAdminTLSKeyPath,
@@ -2070,8 +2161,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := llmModelsHealthClient.Do(req)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"models": []any{}, "error": err.Error()})
@@ -2165,11 +2255,11 @@ func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Filename validation (spec 001-fix-security-vulns US7 / FR-046,
-	// FR-047): single-segment safe filename only. No path separators,
+	// Filename validation (
+	// ): single-segment safe filename only. No path separators,
 	// no ".." segments, no leading "." (hidden files), no empty name.
 	// The pre-fix code accepted the operator's filename after a loose
-	// allowlist filter; Shannon INJ-VULN-04 traced an arbitrary-file-
+	// allowlist filter; traced an arbitrary-file-
 	// write path through it that would have worked under a writable
 	// policies/ mount.
 	if msg := validateScriptFilename(req.Filename); msg != "" {
@@ -2201,7 +2291,7 @@ func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateScriptFilename enforces single-segment safe-filename
-// semantics for /api/save-script (FR-046, FR-047). Returns the empty
+// semantics for /api/save-script. Returns the empty
 // string when the name is acceptable, or a human-readable reason
 // otherwise. Caller surfaces the reason in the 400 response body.
 func validateScriptFilename(name string) string {
@@ -2228,7 +2318,7 @@ func validateScriptFilename(name string) string {
 	return ""
 }
 
-// listDocSlugs returns the slugs of every .md file in docs/, in any order.
+// listDocSlugs returns the slugs of every.md file in docs/, in any order.
 // Used as the filesystem input to BuildIndex.
 func listDocSlugs() ([]string, error) {
 	entries, err := os.ReadDir("docs")
@@ -2274,7 +2364,7 @@ func (s *Server) buildDocsIndex() (DocNavIndex, error) {
 	if err == nil {
 		// Plain string — embedded into <script type="application/json">
 		// in docs.html and consumed via JSON.parse(textContent) (spec
-		// 001-fix-security-vulns US5 / FR-019). corpus is already
+		// ). corpus is already
 		// json.Marshal output; the consumer template applies the same
 		// </ and U+2028/U+2029 escaping as the `json` FuncMap helper
 		// via the docs template's inline encoder, since the corpus

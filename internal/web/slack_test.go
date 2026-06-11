@@ -2,7 +2,6 @@ package web
 
 // Tests for the Slack admin-side handlers: OAuth start, OAuth callback,
 // direct bot-token entry, and reauth.
-//
 // Internal package so the package-level slackOAuthEndpointOverride
 // testing seam is reachable. Stands up a real Server backed by testenv
 // (in-memory DB + keyring) and a small httptest.Server playing the
@@ -209,7 +208,7 @@ func TestHandleSlackToken_RejectsAgentToken(t *testing.T) {
 		"bot_token":    {"xoxb-real"},
 	}
 	// Deliberately NO session cookie — the agent's bearer token must
-	// surface 403 (FR-036) so a confused agent client gets a clear
+	// surface 403 so a confused agent client gets a clear
 	// "wrong port" signal rather than a 401 / redirect.
 	req := httptest.NewRequest(http.MethodPost, "/connections/slack/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -301,8 +300,13 @@ func TestHandleOAuthCallback_SlackHappyPath(t *testing.T) {
 		t.Fatal("no state in start redirect")
 	}
 
-	// Hit the callback with a fake code.
+	// Hit the callback with a fake code. The callback must carry the
+	// same operator session cookie the /start request used — the
+	// pendingOAuth session-binding check rejects mismatches.
 	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=fake-code&state="+state, nil)
+	if c := env.SessionCookie(); c != nil {
+		cbReq.AddCookie(c)
+	}
 	cbRec := httptest.NewRecorder()
 	handler.ServeHTTP(cbRec, cbReq)
 	if cbRec.Code != http.StatusSeeOther {
@@ -382,7 +386,6 @@ func TestConnectionsPage_SlackCard_OAuthEnabled(t *testing.T) {
 // env vars), the card replaces the install button with an in-UI
 // configure form. The bot-token paste form remains available as a
 // parallel install path.
-//
 // Critically: the configure form must POST to
 // /connections/slack/oauth/configure (the new in-UI setup endpoint),
 // NOT instruct the operator to set env vars and restart. Earlier
@@ -643,7 +646,7 @@ func TestPoliciesPage_SlackScope(t *testing.T) {
 			t.Errorf("slack scope rule builder unexpectedly contains gmail op %q", gmail)
 		}
 	}
-	// JS scope variable must reflect the URL scope so submit() maps to engine fields.
+	// JS scope variable must reflect the URL scope so submit maps to engine fields.
 	if !strings.Contains(body, `var SCOPE = "slack"`) {
 		t.Errorf("expected JS SCOPE to be set to \"slack\"")
 	}

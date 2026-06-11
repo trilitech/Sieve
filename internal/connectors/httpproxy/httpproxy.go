@@ -1,25 +1,20 @@
 // Package httpproxy implements a generic HTTP proxy connector for Sieve.
-//
 // This is the universal connector: it forwards HTTP requests to any API,
 // substituting the agent's Sieve token for real credentials. The agent
 // never sees the real API key. You can revoke the Sieve token instantly
 // without rotating the underlying credential.
-//
 // The proxy is transparent — it doesn't parse or modify request/response
 // bodies. It just handles auth substitution and forwarding. This means it
 // works with ANY HTTP API (Anthropic, OpenAI, Gemini, Stripe, Twilio, etc.)
 // without provider-specific code.
-//
 // Connection config:
-//
-//	{
-//	  "target_url": "https://api.anthropic.com",
-//	  "auth_header": "x-api-key",
-//	  "auth_value": "sk-ant-api03-...",
-//	  "allowed_paths": ["/v1/messages", "/v1/models"],  // optional whitelist
-//	  "extra_headers": {"anthropic-version": "2023-06-01"}  // optional
-//	}
-//
+//{
+//"target_url": "https://api.anthropic.com",
+//"auth_header": "x-api-key",
+//"auth_value": "sk-ant-api03-...",
+//"allowed_paths": ["/v1/messages", "/v1/models"], // optional whitelist
+//"extra_headers": {"anthropic-version": "2023-06-01"} // optional
+//}
 // The agent accesses this via: GET/POST http://localhost:19817/proxy/{connection}/{path}
 // Sieve strips the Sieve bearer token, injects the real auth, forwards to target.
 package httpproxy
@@ -51,7 +46,6 @@ var ErrHeaderDenied = errors.New("http_proxy: header denied")
 // The Connector interface returns `any`, so the API router type-asserts
 // on *ExecuteResult to read AuthQueryOverridden — the flag never appears
 // in the JSON sent back to the agent (json:"-").
-//
 // Fields with JSON tags marshal to the same `{status, status_text,
 // headers, body}` shape the curated API has always returned.
 type ExecuteResult struct {
@@ -71,9 +65,8 @@ type ExecuteResult struct {
 // deniedHeaderKeys is the static set of header keys the connector
 // refuses to accept from the agent. Keys are stored lowercased.
 // In addition to this set, isDeniedHeader rejects:
-//   - any header key starting with "x-forwarded-" (prefix match), and
-//   - the connection's configured auth_header (case-insensitive).
-//
+// - any header key starting with "x-forwarded-" (prefix match), and
+// - the connection's configured auth_header (case-insensitive).
 // The set covers credential-bearing keys (Authorization, Cookie),
 // routing keys (Host, X-Forwarded-*), and the RFC 7230 hop-by-hop set.
 // It is intentionally not operator-configurable; per-connection
@@ -256,7 +249,7 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		}
 	}
 
-	// Outbound SSRF guard (spec 001-fix-security-vulns US2): the original
+	// Outbound SSRF guard (
 	// http.Client refused to follow redirects but did NOT validate the
 	// target IP at dial time. httpguard.Client adds scheme + IP-range
 	// validation in DialContext (including DNS-rebinding protection) while
@@ -303,16 +296,13 @@ func (p *ProxyConnector) Type() string { return "http_proxy" }
 // values (regardless of count or case). Returns true when an override
 // fired — i.e. the agent's URL contained the configured param name with
 // one or more values that were dropped in favour of Sieve's auth_value.
-//
 // Case-insensitive: ?APPID=evil for an auth_query_param of "appid" is
 // dropped and signalled as an override. Most upstreams treat query
 // parameters case-sensitively (so APPID would be ignored), but some
 // normalise — without this sweep an agent could smuggle a value alongside
 // Sieve's via case variation.
-//
 // The agent's other query parameters are preserved unchanged. URL
-// encoding (RFC 3986) is handled by url.Values.Encode().
-//
+// encoding (RFC 3986) is handled by url.Values.Encode.
 // When authQueryParam is empty, the helper is a no-op and returns false
 // — this is the backwards-compatibility guarantee for connections that
 // pre-date this feature (no auth_query_param field in their config).
@@ -339,7 +329,6 @@ func (p *ProxyConnector) injectAuthQueryParam(u *url.URL) bool {
 // this to auto-attach the filter to every http_proxy decision so the agent
 // never sees the literal credential, even on 4xx/5xx responses where some
 // upstreams echo Authorization back.
-//
 // The filter uses regexp.QuoteMeta so any regex-special characters in the
 // configured auth_value (dots in keys, plus signs from base64, etc.) match
 // literally rather than as regex.
@@ -453,7 +442,14 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 		scrubFilter := policy.ResponseFilter{
 			RedactPatterns: []string{regexp.QuoteMeta(p.authValue)},
 		}
-		scrubbed, _ := policy.ApplyResponseFilters(respBody, []policy.ResponseFilter{scrubFilter})
+		// Regex-only scrub — no script command, so ApplyResponseFilters
+		// cannot return ResponseFilterError here. A construction error from
+		// a future script-based scrub would propagate as a fatal Execute
+		// error, since returning the raw response would leak the auth value.
+		scrubbed, _, err := policy.ApplyResponseFilters(respBody, []policy.ResponseFilter{scrubFilter})
+		if err != nil {
+			return nil, fmt.Errorf("http_proxy: scrub filter failed: %w", err)
+		}
 		respBody = scrubbed
 	}
 
@@ -483,7 +479,6 @@ func (p *ProxyConnector) Validate(ctx context.Context) error {
 
 // validateProxyPath canonicalizes and validates a proxy path to prevent
 // path-traversal attacks including double-encoded sequences like %252e%252e%252f.
-//
 // It iteratively percent-decodes the path (up to maxUnescapePasses times) until
 // it stabilizes, then rejects any remaining dangerous percent-encoded sequences
 // and checks for ".." segments. The cleaned path is returned on success.
@@ -512,7 +507,7 @@ func validateProxyPath(proxyPath string) (string, error) {
 	}
 
 	// Reject literal backslashes: %5c decodes to '\', and some upstreams treat
-	// '\' as a path separator (IIS, .NET, Windows file servers). Normalising to
+	// '\' as a path separator (IIS,.NET, Windows file servers). Normalising to
 	// '/' would silently change the path semantics, so we reject outright.
 	if strings.Contains(decoded, "\\") {
 		return "", fmt.Errorf("path contains backslash")
@@ -535,7 +530,7 @@ func validateProxyPath(proxyPath string) (string, error) {
 }
 
 // maxFilteredBodySize is the maximum number of bytes buffered when response
-// filters are active.  Responses larger than this are rejected to prevent OOM.
+// filters are active. Responses larger than this are rejected to prevent OOM.
 const maxFilteredBodySize = 32 * 1024 * 1024 // 32 MiB
 
 // headersInvalidatedByFiltering lists response headers that must be removed
@@ -552,10 +547,8 @@ var headersInvalidatedByFiltering = map[string]bool{
 // ProxyHTTP handles a raw HTTP request by forwarding it to the target,
 // substituting auth credentials. Path restrictions are enforced by the
 // policy engine before this method is called.
-//
 // When filters is non-empty, the response body is captured and run through
 // policy.ApplyResponseFilters before being written to the client.
-//
 // Returns the filter-summary string (the second return value of
 // ApplyResponseFilters; empty when no filters were applied or when the
 // streaming fast-path was taken), a bool indicating whether the
@@ -665,7 +658,14 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 		return "", false, fmt.Errorf("response exceeds %d byte filter limit", maxFilteredBodySize)
 	}
 
-	respBody, filterSummary := policy.ApplyResponseFilters(respBody, filters)
+	respBody, filterSummary, filterErr := policy.ApplyResponseFilters(respBody, filters)
+	if filterErr != nil {
+		// A response filter failed to construct or run — surface as a 502
+		// rather than return the un-redacted body. The caller's audit log
+		// records this branch via the returned error.
+		http.Error(w, "response filter failed", http.StatusBadGateway)
+		return "", false, fmt.Errorf("apply response filters: %w", filterErr)
+	}
 
 	// Copy response headers, skipping headers that are no longer valid after
 	// the body has been modified (Content-Length is re-added below).

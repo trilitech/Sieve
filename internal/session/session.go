@@ -24,6 +24,12 @@ const CookieName = "sieve_session"
 // can override via the session.idle_timeout_minutes key.
 const DefaultIdleTimeout = 8 * time.Hour
 
+// DefaultAbsoluteTimeout is the upper bound a session can live for,
+// regardless of activity. A session refreshed every 7h forever, or a
+// stolen cookie pinged from a script, must still terminate eventually.
+// 24h is the documented cap; the operator can re-authenticate.
+const DefaultAbsoluteTimeout = 24 * time.Hour
+
 // sessionIDLen is the byte length of the opaque cookie value, base64url-
 // encoded (no padding) — 32 bytes → 43 chars in the cookie, 64-char
 // SHA-256 hex stored in the DB.
@@ -59,23 +65,38 @@ type Session struct {
 	IdleTimeoutDur time.Duration
 }
 
-// Manager owns the session storage and lifecycle. Spec
-// 001-fix-security-vulns FR-033a..FR-033c.
+// Manager owns the session storage and lifecycle.
 type Manager struct {
-	db          *database.DB
-	idleTimeout time.Duration
+	db              *database.DB
+	idleTimeout     time.Duration
+	absoluteTimeout time.Duration
 
 	// now is injected for tests; production code uses time.Now.
 	now func() time.Time
 }
 
 // NewManager constructs a session manager. Pass time.Duration(0) for
-// the default idle timeout (8h).
+// the default idle timeout (8h); the absolute timeout uses DefaultAbsoluteTimeout.
 func NewManager(db *database.DB, idleTimeout time.Duration) *Manager {
 	if idleTimeout <= 0 {
 		idleTimeout = DefaultIdleTimeout
 	}
-	return &Manager{db: db, idleTimeout: idleTimeout, now: time.Now}
+	return &Manager{
+		db:              db,
+		idleTimeout:     idleTimeout,
+		absoluteTimeout: DefaultAbsoluteTimeout,
+		now:             time.Now,
+	}
+}
+
+// SetAbsoluteTimeout overrides the absolute (creation-anchored) expiry
+// cap. Used by tests to validate the cap; production wiring sticks with
+// DefaultAbsoluteTimeout.
+func (m *Manager) SetAbsoluteTimeout(d time.Duration) {
+	if d <= 0 {
+		d = DefaultAbsoluteTimeout
+	}
+	m.absoluteTimeout = d
 }
 
 // Issue creates a new session row. Returns the Session struct populated
@@ -126,10 +147,10 @@ func (m *Manager) Issue(ip, userAgent string) (*Session, error) {
 }
 
 // Lookup hashes the supplied cookie value and looks up the row. Returns:
-//   - ErrNoSession when no row matches.
-//   - ErrExpired   when the row exists but is past its sliding expiry.
-//     The row is deleted as part of this call.
-//   - a populated Session (Plaintext empty) and no error otherwise.
+// - ErrNoSession when no row matches.
+// - ErrExpired when the row exists but is past its sliding expiry.
+// The row is deleted as part of this call.
+// - a populated Session (Plaintext empty) and no error otherwise.
 // Bumps LastSeenAt + ExpiresAt on success (sliding window).
 func (m *Manager) Lookup(cookieValue string) (*Session, error) {
 	if cookieValue == "" {
@@ -154,13 +175,27 @@ func (m *Manager) Lookup(cookieValue string) (*Session, error) {
 
 	now := m.now().UTC()
 	if !now.Before(s.ExpiresAt) {
-		// Sweep this row; caller treats this as a 401.
+		// Sliding window has elapsed. Sweep this row; caller treats this as a 401.
+		_, _ = m.db.Exec(`DELETE FROM operator_session WHERE id = ?`, idHash)
+		return nil, ErrExpired
+	}
+	// Absolute cap: a session refreshed indefinitely must still terminate.
+	// A stolen cookie pinged on a timer survives sliding-window expiry but
+	// cannot outrun the creation-anchored cap.
+	if m.absoluteTimeout > 0 && !now.Before(s.CreatedAt.Add(m.absoluteTimeout)) {
 		_, _ = m.db.Exec(`DELETE FROM operator_session WHERE id = ?`, idHash)
 		return nil, ErrExpired
 	}
 
-	// Bump sliding expiry.
+	// Bump sliding expiry. Clamp to the absolute cap so a session approaching
+	// its absolute deadline doesn't appear to renew past it.
 	newExpires := now.Add(m.idleTimeout)
+	if m.absoluteTimeout > 0 {
+		absoluteDeadline := s.CreatedAt.Add(m.absoluteTimeout)
+		if newExpires.After(absoluteDeadline) {
+			newExpires = absoluteDeadline
+		}
+	}
 	_, err := m.db.Exec(`UPDATE operator_session
 		SET last_seen_at = ?, expires_at = ?
 		WHERE id = ?`,
@@ -203,7 +238,7 @@ func (m *Manager) SweepExpired() (deleted int, err error) {
 }
 
 // DeleteAll removes every session row. Called on credential rotation
-// (FR-032a) so live sessions cannot survive a credential change.
+// so live sessions cannot survive a credential change.
 func (m *Manager) DeleteAll() error {
 	_, err := m.db.Exec(`DELETE FROM operator_session`)
 	if err != nil {

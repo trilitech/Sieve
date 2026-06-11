@@ -9,38 +9,43 @@ import (
 	"testing"
 )
 
-// Spec 001-fix-security-vulns US5 (Shannon INJ-VULN-06): the json template
 // helper used to return template.JS — Go's "this is already-safe JavaScript"
 // marker — even though its argument is request-body / DB-column data. That
 // pattern is fragile: single quotes pass through unescaped today, and any
 // future change to json.MarshalIndent (e.g., SetEscapeHTML(false)) would
 // make </script> injection live immediately.
-//
 // The remediation: the json helper now returns a plain string with
 // aggressive HTML/JS-context escaping; templates wrap it in
 // <script type="application/json"> and read it via JSON.parse on
-// .textContent. template.JS is reserved for static, code-author-written
+// textContent. template.JS is reserved for static, code-author-written
 // JavaScript only.
 
-// TestNoTemplateJSAroundDynamicData fails if any internal/web/*.go file
-// still wraps a dynamic value in template.JS(). Static, literal-string
-// template.JS wrappers (none today; reserved for code-author snippets)
-// would be marked with an explicit `// xss-safe:` annotation.
+// TestNoTemplateJSAroundDynamicData fails if any.go file under the web
+// package (including future subpackages) wraps a dynamic value in
+// template.JS. Static, literal-string template.JS wrappers (none today;
+// reserved for code-author snippets) must be marked with an explicit
+// `// xss-safe:` annotation.
+// The walk-the-tree shape is deliberate: a glob of internal/web/*.go
+// only catches the current flat layout; if the package grows subpackages
+// (already true for cmd/sieve/, plausibly for templates/ helpers) the
+// regression slipping in there would go undetected.
 func TestNoTemplateJSAroundDynamicData(t *testing.T) {
 	wrapRE := regexp.MustCompile(`template\.JS\(`)
 	literalRE := regexp.MustCompile(`template\.JS\("[^"]*"\)`) // string literal arg only
 
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		raw, err := os.ReadFile(f)
+	err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			t.Fatalf("read %s: %v", f, err)
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		raw, rerr := os.ReadFile(path)
+		if rerr != nil {
+			t.Fatalf("read %s: %v", path, rerr)
 		}
 		scanner := bufio.NewScanner(strings.NewReader(string(raw)))
 		scanner.Buffer(make([]byte, 1<<20), 1<<20)
@@ -58,16 +63,17 @@ func TestNoTemplateJSAroundDynamicData(t *testing.T) {
 				continue
 			}
 			t.Errorf("%s:%d: template.JS() wraps a non-literal value (use plain string + <script type=\"application/json\">); line: %s",
-				f, lineNo, strings.TrimSpace(line))
+				path, lineNo, strings.TrimSpace(line))
 		}
-		if err := scanner.Err(); err != nil {
-			t.Fatalf("scan %s: %v", f, err)
-		}
+		return scanner.Err()
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
 	}
 }
 
 // TestJSONHelperEscapesScriptTerminator confirms the json template helper
-// emits the documented Shannon payload safely. Even if a policy_config
+// emits the </script>-in-payload case safely. Even if a policy_config
 // contains </script>, the rendered output must not let the HTML parser
 // terminate the surrounding <script type="application/json"> block.
 func TestJSONHelperEscapesScriptTerminator(t *testing.T) {

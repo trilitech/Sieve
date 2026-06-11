@@ -17,7 +17,7 @@ import (
 
 // Defaults chosen per research.md §1: Argon2id with time=3, memory=64 MiB,
 // parallelism=2, salt=16 bytes, key=32 bytes. Lands a verification at
-// ~150–300 ms on commodity hardware — under the FR-040 / SC-012 budgets
+// ~150–300 ms on commodity hardware — under the / SC-012 budgets
 // while keeping the offline-attack cost prohibitive.
 const (
 	DefaultArgon2Time        uint32 = 3
@@ -26,7 +26,7 @@ const (
 	DefaultArgon2SaltLen            = 16
 	DefaultArgon2KeyLen      uint32 = 32
 
-	// MaxDisplayName is the spec FR-030a bound on the audit-identity label.
+	// MaxDisplayName is the spec bound on the audit-identity label.
 	MaxDisplayName = 64
 )
 
@@ -41,8 +41,15 @@ var ErrNoCredential = errors.New("operator: no credential configured")
 // the success path (Argon2id runs in both branches).
 var ErrInvalidCredential = errors.New("operator: invalid credential")
 
+// SessionTerminator is the seam that lets Rotate invalidate every active
+// admin session after a credential change. Implemented by
+// session.Manager.DeleteAll; kept as an interface here so the operator
+// package doesn't import session (and so tests can stub a no-op).
+type SessionTerminator interface {
+	DeleteAll() error
+}
+
 // Service stores and verifies the single shared admin credential.
-// Spec 001-fix-security-vulns FR-030..FR-032a.
 type Service struct {
 	db *database.DB
 
@@ -52,11 +59,15 @@ type Service struct {
 	Parallelism uint8
 	SaltLen     int
 	KeyLen      uint32
+
+	// sessions, when non-nil, is invoked by Rotate after a successful
+	// credential update to invalidate every active operator_session row.
+	sessions SessionTerminator
 }
 
 // NewService constructs an operator.Service backed by the supplied DB.
 // The schema table operator_credential is expected to exist (created by
-// the 2026-05-22 migration).
+// the security-hardening migration).
 func NewService(db *database.DB) *Service {
 	return &Service{
 		db:          db,
@@ -66,6 +77,13 @@ func NewService(db *database.DB) *Service {
 		SaltLen:     DefaultArgon2SaltLen,
 		KeyLen:      DefaultArgon2KeyLen,
 	}
+}
+
+// SetSessionTerminator wires the session-invalidation callback used by
+// Rotate. Pass nil to disable (tests). Production wiring lives in
+// cmd/sieve/main.go and supplies the live *session.Manager.
+func (s *Service) SetSessionTerminator(st SessionTerminator) {
+	s.sessions = st
 }
 
 // Exists reports whether a credential has been set up.
@@ -157,10 +175,12 @@ func (s *Service) Verify(credential string) (displayName string, err error) {
 // "keep current"; at least one MUST be non-empty. Caller is expected to
 // have already verified the operator's right to rotate (i.e., the request
 // arrived via an authenticated session).
-//
-// Per FR-032a, rotation invalidates active sessions — that's the caller's
-// responsibility (delete operator_session rows). This method only updates
-// the credential row.
+// On a successful credential change, every active operator session is
+// invalidated via the SessionTerminator wired by SetSessionTerminator.
+// (Before that hook landed, callers had to remember to call DeleteAll
+// themselves — easy to forget when adding a new rotate endpoint.)
+// Display-name-only changes do NOT invalidate sessions: the operator's
+// identity is unchanged, only their label.
 func (s *Service) Rotate(newCredential, newDisplayName string) error {
 	if newCredential == "" && newDisplayName == "" {
 		return errors.New("operator: nothing to rotate")
@@ -201,6 +221,13 @@ func (s *Service) Rotate(newCredential, newDisplayName string) error {
 	q := "UPDATE operator_credential SET " + strings.Join(updates, ", ") + " WHERE id = ?"
 	if _, err := s.db.Exec(q, args...); err != nil {
 		return fmt.Errorf("operator: update: %w", err)
+	}
+	// Invalidate every live session when the credential itself changed.
+	// Display-name-only updates keep sessions alive.
+	if newCredential != "" && s.sessions != nil {
+		if err := s.sessions.DeleteAll(); err != nil {
+			return fmt.Errorf("operator: invalidate sessions: %w", err)
+		}
 	}
 	return nil
 }

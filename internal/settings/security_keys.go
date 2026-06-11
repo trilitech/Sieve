@@ -4,23 +4,25 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/trilitech/Sieve/internal/policy"
 )
 
-// Setting keys introduced by spec 001-fix-security-vulns. See
-// specs/001-fix-security-vulns/data-model.md § settings — new keys.
+// Setting keys for the security-hardening surface (operator credential,
+// session lifetime, rate limit, TLS, command allowlist, public base URL).
 const (
 	// KeyPublicBaseURL is the URL Sieve treats as its own externally-visible
 	// base when constructing OAuth callback/redirect/manifest URLs. Replaces
-	// the historical r.Host-derived construction (Shannon AUTH-VULN-06).
+	// the historical r.Host-derived construction.
 	KeyPublicBaseURL = "public_base_url"
 
 	// KeyCommandAllowlist is a newline-separated list of absolute interpreter
 	// paths a script-type policy is permitted to invoke. Default is the
-	// bundled Python venv shipped by the Sieve image. Shannon INJ-VULN-01..03.
+	// bundled Python venv shipped by the Sieve image.
 	KeyCommandAllowlist = "command_allowlist"
 
 	// KeyAdminTLSCertPath / KeyAdminTLSKeyPath enable TLS on the admin
-	// listener (port 19816) when both are set. Shannon AUTH-VULN-01.
+	// listener (port 19816) when both are set.
 	KeyAdminTLSCertPath = "admin.tls_cert_path"
 	KeyAdminTLSKeyPath  = "admin.tls_key_path"
 
@@ -34,27 +36,38 @@ const (
 	KeySessionIdleTimeoutMinutes = "session.idle_timeout_minutes"
 
 	// KeyRateLimitWindowSeconds / KeyRateLimitFailuresPerWindow tune the
-	// per-IP token-bucket on the auth paths. Defaults 60 and 10.
-	KeyRateLimitWindowSeconds    = "ratelimit.window_seconds"
+	// per-IP token-bucket on the auth paths.
+	// Semantics: the bucket has `failures_per_window` capacity, and one token
+	// refills every `window_seconds / failures_per_window` seconds. So with
+	// the defaults (window=60, failures=10) a single client may burst 10
+	// attempts back-to-back, then sustains 1 attempt every 6 seconds — i.e.
+	// 10 per minute at steady state. After the burst, a 30-second window
+	// admits ~5 attempts; a 60-second window admits ~10. Operators tuning
+	// `window` aggressively (e.g. window=30, failures=10) should know the
+	// steady-state rate is failures/window per second, NOT failures/minute.
+	KeyRateLimitWindowSeconds     = "ratelimit.window_seconds"
 	KeyRateLimitFailuresPerWindow = "ratelimit.failures_per_window"
 )
 
-// Defaults used when a setting is unset. Documented in data-model.md.
+// Defaults used when a setting is unset.
+// The command-interpreter default is intentionally aliased to
+// policy.DefaultCommand so the bundled-Python path lives in exactly one
+// place: change the Dockerfile, change policy.DefaultCommand, and this
+// fallback follows.
 const (
 	defaultPublicBaseURL          = "http://127.0.0.1:19816"
-	defaultCommandInterpreter     = "/opt/sieve-py/bin/python3"
 	defaultSessionIdleMinutes     = 480
 	defaultRateLimitWindowSeconds = 60
 	defaultRateLimitFailures      = 10
 )
 
+var defaultCommandInterpreter = policy.DefaultCommand
+
 // PublicBaseURL returns the configured externally-visible base URL for OAuth
 // flows. Defaults to the documented production localhost binding.
-//
 // The host portion is NEVER derived from inbound request headers — operators
 // who run Sieve behind a reverse proxy must set this explicitly so that a
 // forged Host header cannot redirect OAuth callbacks to an attacker
-// (Shannon AUTH-VULN-06, FR-010..FR-012).
 func (s *Service) PublicBaseURL() string {
 	v, _ := s.Get(KeyPublicBaseURL)
 	if v == "" {
@@ -66,8 +79,6 @@ func (s *Service) PublicBaseURL() string {
 // CommandAllowlist returns the absolute interpreter paths a script-type
 // policy's command field may take. The list is newline-separated in the
 // stored value and trimmed; the default is the bundled Python venv.
-//
-// Shannon INJ-VULN-01/02/03, FR-013..FR-018.
 func (s *Service) CommandAllowlist() []string {
 	v, _ := s.Get(KeyCommandAllowlist)
 	if strings.TrimSpace(v) == "" {

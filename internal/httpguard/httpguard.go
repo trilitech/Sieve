@@ -63,22 +63,24 @@ var AbsoluteDeny = []netip.Prefix{
 
 // DefaultDeny is the default-deny set (overridable per-connection via
 // ClientOptions.Allowlist). Loopback, RFC1918 private, link-local, multicast,
-// and unspecified ranges — IPv4 and IPv6.
+// reserved, and unspecified ranges — IPv4 and IPv6.
 var DefaultDeny = []netip.Prefix{
 	// IPv4
 	netip.MustParsePrefix("127.0.0.0/8"),    // loopback
 	netip.MustParsePrefix("10.0.0.0/8"),     // RFC1918
 	netip.MustParsePrefix("172.16.0.0/12"),  // RFC1918
 	netip.MustParsePrefix("192.168.0.0/16"), // RFC1918
+	netip.MustParsePrefix("100.64.0.0/10"),  // RFC6598 carrier-grade NAT (AWS VPC peering, homelab routers)
 	netip.MustParsePrefix("169.254.0.0/16"), // link-local (covers IMDS, but AbsoluteDeny still catches that absolutely)
 	netip.MustParsePrefix("224.0.0.0/4"),    // multicast
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved (includes 255.255.255.255 broadcast)
 	netip.MustParsePrefix("0.0.0.0/8"),      // unspecified / "this network"
 	// IPv6
-	netip.MustParsePrefix("::1/128"),    // loopback
-	netip.MustParsePrefix("fc00::/7"),   // unique-local
-	netip.MustParsePrefix("fe80::/10"),  // link-local
-	netip.MustParsePrefix("ff00::/8"),   // multicast
-	netip.MustParsePrefix("::/128"),     // unspecified
+	netip.MustParsePrefix("::1/128"),   // loopback
+	netip.MustParsePrefix("fc00::/7"),  // unique-local
+	netip.MustParsePrefix("fe80::/10"), // link-local
+	netip.MustParsePrefix("ff00::/8"),  // multicast
+	netip.MustParsePrefix("::/128"),    // unspecified
 }
 
 // DefaultRedirectCap is the redirect-chain cap when ClientOptions.RedirectCap
@@ -153,6 +155,16 @@ func Client(opts ClientOptions) *http.Client {
 	allowlist := append([]netip.Prefix(nil), opts.Allowlist...)
 	logRefusal := opts.LogRefusal
 
+	// Per-phase timeouts. The Client-wide Timeout is a total budget — without
+	// these, a slow-loris peer (TCP open, no TLS handshake, no headers) can
+	// hold the dial open for the entire Timeout window. Set bounds on each
+	// phase so misbehaving upstreams fail fast even when the total budget is
+	// large (e.g. httpproxy's 5-minute streaming Timeout).
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
 	transport := &http.Transport{
 		// Re-resolve immediately before connect and pin the dial to the
 		// validated IP. Closes the TOCTOU window between a registration-time
@@ -170,7 +182,7 @@ func Client(opts ClientOptions) *http.Client {
 					}
 					return nil, err
 				}
-				return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 			}
 			ips, err := resolveIPs(ctx, host)
 			if err != nil {
@@ -178,7 +190,7 @@ func Client(opts ClientOptions) *http.Client {
 			}
 			for _, ip := range ips {
 				if err := validateIP(ip, allowlist); err == nil {
-					return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+					return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 				}
 			}
 			refusal := fmt.Errorf("%w: %s -> %v", ErrPrivateRangeDenied, host, ips)
@@ -187,12 +199,16 @@ func Client(opts ClientOptions) *http.Client {
 			}
 			return nil, refusal
 		},
-		// Disable per-host connection pooling so two consecutive requests
-		// (e.g., registration + first agent request) cannot share a dial that
-		// was validated under different allowlist context. Cost is small in
-		// practice (one extra handshake per request series).
-		DisableKeepAlives: false,
-		ForceAttemptHTTP2: true,
+		// Keep-alives are deliberately ON; per-host pooling reuses an
+		// already-validated dial so we don't pay TLS-handshake latency on
+		// every request. The DialContext above pins each new connection to
+		// a freshly-resolved IP, so rebinding cannot creep in via the pool.
+		DisableKeepAlives:     false,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
 
 	if opts.DisableRedirects {
@@ -222,7 +238,7 @@ func Client(opts ClientOptions) *http.Client {
 				}
 				return err
 			}
-			// Cross-origin credential strip (FR-009): if the redirect target's
+			// Cross-origin credential strip : if the redirect target's
 			// origin differs from the original request's, drop Authorization
 			// and Cookie before the redirected request fires.
 			if len(via) > 0 && !sameOrigin(via[0].URL, req.URL) {

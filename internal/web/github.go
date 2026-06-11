@@ -30,15 +30,22 @@ var githubHTTPClient = github.NewHardenedClient()
 // setup_url callback (installation complete). A single pending entry spans
 // both redirects because we need the App's private key from step 1 to
 // call /app/installations/{id} in step 2.
+// OperatorSessionHash binds the pending entry to the operator session that
+// initiated /start. Both callback legs are in authExemptPaths (they receive
+// the GitHub redirect, not a logged-in admin click), so without this binding
+// anyone who can reach /start could pre-mint a state and race a legitimate
+// operator's two-leg callback flow.
 type pendingGitHubApp struct {
 	ID          string
 	DisplayName string
 	CreatedAt   time.Time
 
 	// Populated after the redirect_url callback exchanges the code.
-	AppID          int64
-	Slug           string
-	PrivateKeyPEM  string
+	AppID         int64
+	Slug          string
+	PrivateKeyPEM string
+
+	OperatorSessionHash string
 }
 
 const pendingGitHubAppTTL = 15 * time.Minute // longer than OAuth because two redirects
@@ -106,6 +113,23 @@ func (g *gitHubAppState) has(state string, now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// sessionHash returns the OperatorSessionHash recorded on the pending
+// entry for state, or "" if the state is unknown or expired. Used by the
+// callback handlers to verify the session that initiated /start is the
+// same one returning through the GitHub redirect.
+func (g *gitHubAppState) sessionHash(state string, now time.Time) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	p, ok := g.pending[state]
+	if !ok {
+		return ""
+	}
+	if now.Sub(p.CreatedAt) > pendingGitHubAppTTL {
+		return ""
+	}
+	return p.OperatorSessionHash
 }
 
 func (g *gitHubAppState) sweep(now time.Time) {
@@ -203,16 +227,17 @@ func (s *Server) handleGitHubAppStart(w http.ResponseWriter, r *http.Request) {
 	state := hex.EncodeToString(stateBytes)
 
 	s.githubApp.put(state, pendingGitHubApp{
-		ID:          id,
-		DisplayName: displayName,
-		CreatedAt:   time.Now(),
+		ID:                  id,
+		DisplayName:         displayName,
+		CreatedAt:           time.Now(),
+		OperatorSessionHash: operatorSessionHash(r),
 	})
 
 	// Manifest URLs are derived from the operator-configured public base URL,
 	// never from r.Host / X-Forwarded-Host / X-Forwarded-Proto — GitHub
 	// registers the callback URLs at App creation time, so its own redirect-
-	// URI allowlist cannot protect Sieve here. Forged-Host injection of the
-	// manifest is the AUTH-VULN-06 attack (Shannon assessment).
+	// URI allowlist cannot protect Sieve here. A forged Host header would
+	// otherwise let an attacker steer the App's redirect target at install.
 	base := s.publicBaseURL(r)
 	redirectURL := base + "/connections/github/app/created"
 	setupURL := base + "/connections/github/app/installed"
@@ -291,6 +316,15 @@ func (s *Server) handleGitHubAppCreated(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}
+	// State-confusion guard: the callback must come back through the same
+	// operator session that initiated /start. See server.go's
+	// handleOAuthCallback for the matching check on the Slack/Google paths.
+	if want := s.githubApp.sessionHash(state, time.Now()); want != "" {
+		if !operatorSessionHashesEqual(want, operatorSessionHash(r)) {
+			http.Error(w, "callback rejected: session mismatch — restart the GitHub App flow from the same browser session", http.StatusForbidden)
+			return
+		}
+	}
 
 	// Exchange the code: POST https://api.github.com/app-manifests/{code}/conversions
 	// This endpoint is unauthenticated; the code itself is the credential.
@@ -332,7 +366,7 @@ func (s *Server) handleGitHubAppCreated(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Persist App credentials into the pending entry. update() also extends
+	// Persist App credentials into the pending entry. update also extends
 	// CreatedAt so the install callback has a fresh TTL window.
 	if ok := s.githubApp.update(state, func(p *pendingGitHubApp) {
 		p.AppID = out.ID
@@ -374,6 +408,15 @@ func (s *Server) handleGitHubAppInstalled(w http.ResponseWriter, r *http.Request
 	if p.AppID == 0 || p.PrivateKeyPEM == "" {
 		http.Error(w, "pending install is missing App credentials — restart the flow", http.StatusBadRequest)
 		return
+	}
+	// State-confusion guard: same browser session as /start. The pending
+	// entry is already consumed at this point — a mismatch means we throw
+	// the credentials away rather than persist them.
+	if p.OperatorSessionHash != "" {
+		if !operatorSessionHashesEqual(p.OperatorSessionHash, operatorSessionHash(r)) {
+			http.Error(w, "callback rejected: session mismatch — restart the GitHub App flow from the same browser session", http.StatusForbidden)
+			return
+		}
 	}
 
 	// Query the installation to discover its scope (account login + type).

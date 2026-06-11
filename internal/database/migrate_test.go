@@ -8,9 +8,8 @@ import (
 )
 
 // TestSecurityFixesMigration asserts that the 2026-05-22 security-fixes
-// migration (spec 001-fix-security-vulns, FR-001 through FR-050) has been
+// migration (
 // applied to a freshly-created database. Spec anchor: data-model.md.
-//
 // Pre-fix: this test fails because the new tables and columns don't exist.
 // Post-fix: this test passes against any database opened by database.New.
 func TestSecurityFixesMigration(t *testing.T) {
@@ -64,10 +63,16 @@ func TestSecurityFixesMigration(t *testing.T) {
 		}
 	})
 
-	t.Run("connections gains outbound_allowlist", func(t *testing.T) {
+	t.Run("connections does NOT carry outbound_allowlist column", func(t *testing.T) {
+		// The per-connection SSRF allowlist lives inside the envelope-
+		// encrypted config blob, NOT in a plaintext column. The earlier
+		// draft of this migration added a dead `outbound_allowlist` column
+		// that no production code read or wrote — its presence misled
+		// operators into thinking direct-SQL tweaks were taking effect.
+		// The migration now drops it; a fresh database never had it.
 		cols := tableColumns(t, db, "connections")
-		if _, ok := cols["outbound_allowlist"]; !ok {
-			t.Errorf("connections.outbound_allowlist missing")
+		if _, ok := cols["outbound_allowlist"]; ok {
+			t.Errorf("connections.outbound_allowlist should not be present (lives in encrypted config blob)")
 		}
 	})
 
@@ -101,23 +106,6 @@ func TestSecurityFixesMigration(t *testing.T) {
 		}
 		if ack != "{}" {
 			t.Errorf("lint_ack default = %q, want %q", ack, "{}")
-		}
-	})
-
-	t.Run("outbound_allowlist defaults to empty JSON array", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO connections
-			(id, connector_type, display_name, config_ciphertext, config_nonce, dek_wrapped, dek_nonce, enc_version)
-			VALUES ('al-default', 'mock', 'Allowlist Default', X'00', X'00', X'00', X'00', 1)`)
-		if err != nil {
-			t.Fatalf("insert connection: %v", err)
-		}
-		var al string
-		err = db.QueryRow(`SELECT outbound_allowlist FROM connections WHERE id = 'al-default'`).Scan(&al)
-		if err != nil {
-			t.Fatalf("select outbound_allowlist: %v", err)
-		}
-		if al != "[]" {
-			t.Errorf("outbound_allowlist default = %q, want %q", al, "[]")
 		}
 	})
 

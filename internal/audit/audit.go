@@ -23,7 +23,7 @@ type Entry struct {
 	ResponseSummary string    `json:"response_summary,omitempty"`
 	DurationMs      int64     `json:"duration_ms"`
 
-	// Spec 001-fix-security-vulns US9 (FR-037..FR-039): every admin
+	// ): every admin
 	// mutation produces a row identifying the operator. Agent rows
 	// keep actor_kind="agent" + empty OperatorDisplayName; operator
 	// rows set actor_kind="operator" and populate the display name
@@ -136,7 +136,6 @@ func (l *Logger) LogTx(tx *sql.Tx, req *LogRequest) error {
 // RotationAuditor adapts a Logger to the secrets.RotationAuditor interface
 // so that secrets.Keyring.Rotate can write its audit row inside the
 // rotation transaction without internal/secrets importing internal/audit.
-//
 // The surface ("ui" or "cli") is recorded on every successful rotation row
 // so audit consumers can distinguish operator-initiated UI rotations from
 // scripted CLI rotations.
@@ -189,11 +188,11 @@ func (l *Logger) LogRotationLockout(surface string, threshold int) error {
 	})
 }
 
-// LogOperator is a convenience wrapper around Log() for admin
+// LogOperator is a convenience wrapper around Log for admin
 // mutations: pre-fills actor_kind="operator", redacts sensitive
 // keys from params via RedactSensitive, and tolerates an empty
 // connection ID (entity-level audit rows aren't tied to a
-// connection). Spec 001-fix-security-vulns US9 / FR-037..FR-039.
+// connection)...
 func (l *Logger) LogOperator(operatorDisplayName, operation, entityID string, params map[string]any, outcome string) error {
 	if params != nil {
 		params = RedactSensitive(params)
@@ -211,7 +210,7 @@ func (l *Logger) LogOperator(operatorDisplayName, operation, entityID string, pa
 }
 
 // sensitiveKeys is the set of param keys whose values are stripped
-// before being written to the audit log (FR-039). Plaintext bearer
+// before being written to the audit log. Plaintext bearer
 // tokens, OAuth secrets, installation keys, and the like never reach
 // the audit row.
 var sensitiveKeys = map[string]struct{}{

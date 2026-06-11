@@ -2,6 +2,9 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -13,22 +16,46 @@ import (
 	"github.com/trilitech/Sieve/internal/session"
 )
 
-// Spec 001-fix-security-vulns US7 / FR-028..FR-033d.
-//
+// operatorSessionHash returns hex(sha256(cookie value)) of the active
+// operator session cookie on the request, or "" when no cookie is set.
+// Used to bind OAuth pendingOAuth entries to the originating session so
+// the callback path can refuse cross-session state confusion.
+func operatorSessionHash(r *http.Request) string {
+	c, err := r.Cookie(session.CookieName)
+	if err != nil || c.Value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(c.Value))
+	return hex.EncodeToString(sum[:])
+}
+
+// operatorSessionHashesEqual returns true if a and b are equal under
+// constant-time comparison and BOTH non-empty. Empty == empty is treated
+// as false so a pendingOAuth row created from a session-less /start cannot
+// be claimed by a session-less callback.
+func operatorSessionHashesEqual(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 // This file contains:
-//   - sessionContextKey + helpers for handlers to read the active
-//     operator session out of the request context.
-//   - requireOperatorSession middleware that gates a handler chain
-//     on a valid cookie + (for state-changing methods) a CSRF token.
-//   - handleLoginGet / handleLoginPost — render + accept the login form.
-//   - handleLogout — clear session + cookie.
-//   - handleSetupGet / handleSetupPost — first-run credential setup.
-//
-// The middleware is opt-in per endpoint via wrapAuth(). Endpoints
-// that don't call wrapAuth() remain accessible without a session —
+// - sessionContextKey + helpers for handlers to read the active
+// operator session out of the request context.
+// - requireOperatorSession middleware that gates a handler chain
+// on a valid cookie + (for state-changing methods) a CSRF token.
+// - handleLoginGet / handleLoginPost — render + accept the login form.
+// - handleLogout — clear session + cookie.
+// - handleSetupGet / handleSetupPost — first-run credential setup.
+// The middleware is opt-in per endpoint via wrapAuth. Endpoints
+// that don't call wrapAuth remain accessible without a session —
 // preserving existing test-bench behavior while the wiring lands
 // incrementally. The follow-up commit wraps the entire admin
-// router and removes the rejectIfAgentToken helper (US8).
+// router and removes the rejectIfAgentToken helper.
 
 type sessionCtxKey struct{}
 
@@ -42,7 +69,7 @@ func sessionFromContext(r *http.Request) *session.Session {
 
 // operatorDisplayName returns the audit-identity label for the
 // current request's operator, or "" when no session is attached.
-// Used by audit producers (spec FR-037, US9).
+// Used by audit producers (spec, ).
 func operatorDisplayName(r *http.Request, s *Server) string {
 	if sess := sessionFromContext(r); sess != nil {
 		if s.operatorSvc != nil {
@@ -56,18 +83,16 @@ func operatorDisplayName(r *http.Request, s *Server) string {
 
 // requireOperatorSession is the gating middleware for admin
 // endpoints. Behavior:
-//
-//   - Sieve has no operator credential configured yet → redirect
-//     to /setup for GET / show "service locked" 503 for other
-//     methods. Lets a fresh install bootstrap without panicking.
-//   - Cookie missing or session unknown → redirect to /login on
-//     GET, 401 on other methods.
-//   - Session expired (sliding-window past idle timeout) → row
-//     deleted by Lookup; same outcome as "missing".
-//   - State-changing method (POST/PUT/PATCH/DELETE) without a
-//     valid CSRF token → 403.
-//   - Success → session attached to context as sessionCtxKey.
-//
+// - Sieve has no operator credential configured yet → redirect
+// to /setup for GET / show "service locked" 503 for other
+// methods. Lets a fresh install bootstrap without panicking.
+// - Cookie missing or session unknown → redirect to /login on
+// GET, 401 on other methods.
+// - Session expired (sliding-window past idle timeout) → row
+// deleted by Lookup; same outcome as "missing".
+// - State-changing method (POST/PUT/PATCH/DELETE) without a
+// valid CSRF token → 403.
+// - Success → session attached to context as sessionCtxKey.
 // When the Server has no operator service wired (SetAuth never
 // called — typical for tests that don't need auth), the middleware
 // is a pass-through. This is the temporary "land infrastructure
@@ -78,7 +103,7 @@ func (s *Server) requireOperatorSession(next http.Handler) http.Handler {
 		// Auth services MUST be wired before any admin endpoint is
 		// reachable. The previous commit (foundation) tolerated nil
 		// services as a transitional pass-through; this commit makes
-		// the gate mandatory per FR-028.
+		// the gate mandatory per.
 		if s.operatorSvc == nil || s.sessionMgr == nil {
 			http.Error(w, "admin auth not configured", http.StatusInternalServerError)
 			return
@@ -104,7 +129,7 @@ func (s *Server) requireOperatorSession(next http.Handler) http.Handler {
 
 		cookie, err := r.Cookie(session.CookieName)
 		if err != nil || cookie.Value == "" {
-			// FR-036: when the requester is presenting a Sieve agent
+			// when the requester is presenting a Sieve agent
 			// bearer token (sieve_tok_*), surface 403 with the documented
 			// "not accessible to agents" message so a confused agent
 			// implementation gets a clearer signal than 401 / redirect.
@@ -181,7 +206,7 @@ func (s *Server) requireOperatorSessionExceptCSRF(next http.Handler) http.Handle
 
 // isAgentTokenRequest reports whether the request carries the
 // "Authorization: Bearer sieve_tok_*" header that identifies an
-// agent. FR-036: the middleware surfaces 403 for these so operators
+// agent. : the middleware surfaces 403 for these so operators
 // inspecting agent behavior get a clear "wrong port" signal.
 func isAgentTokenRequest(r *http.Request) bool {
 	auth := r.Header.Get("Authorization")
@@ -221,6 +246,18 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "auth not configured", http.StatusServiceUnavailable)
 		return
 	}
+	// Per-IP brake. Without this, argon2's ~150-300 ms cost is the only
+	// drag on an online credential guess. The agent API already wires its
+	// own limiter; /login + /setup needed parity.
+	ip := clientIP(r)
+	if s.loginLimiter != nil {
+		if ok, retry := s.loginLimiter.Allow(ip); !ok {
+			s.logLoginAttempt("", "login.rate_limited", ip)
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retry.Seconds())))
+			http.Error(w, "too many login attempts; try again later", http.StatusTooManyRequests)
+			return
+		}
+	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -238,22 +275,50 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/setup", http.StatusSeeOther)
 			return
 		}
-		w.WriteHeader(http.StatusUnauthorized)
-		renderLoginPage(w, "invalid credentials")
+		s.logLoginAttempt("", "login.fail", ip)
+		// renderLoginPage sets Content-Type — call it before WriteHeader.
+		// Headers set after WriteHeader are silently dropped by net/http.
+		renderLoginPageWithStatus(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
-	sess, err := s.sessionMgr.Issue(clientIP(r), r.UserAgent())
+	// Delete any pre-existing session cookie the browser still carries —
+	// session-fixation defence-in-depth. If a stolen pre-auth cookie were
+	// in play, the attacker's hold on it terminates here.
+	if prior, err := r.Cookie(session.CookieName); err == nil && prior.Value != "" {
+		_ = s.sessionMgr.Logout(prior.Value)
+	}
+	sess, err := s.sessionMgr.Issue(ip, r.UserAgent())
 	if err != nil {
 		http.Error(w, "session create failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Refund the rate-limit token on success — legitimate operators with
+	// an occasional typo shouldn't be throttled after the right credential
+	// finally lands.
+	if s.loginLimiter != nil {
+		s.loginLimiter.Refund(ip)
+	}
+	displayName, _ := s.operatorSvc.DisplayName()
+	s.logLoginAttempt(displayName, "login.ok", ip)
 	// Secure flag is set when the listener serves TLS — detected via
 	// r.TLS being non-nil. Loopback HTTP development bypasses Secure
 	// so the cookie is still sent on plaintext loopback.
 	secure := r.TLS != nil
 	http.SetCookie(w, session.NewCookie(sess.Plaintext, secure))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// logLoginAttempt writes an operator.login.* audit row keyed by IP. Failed
+// attempts are recorded with an empty operator display name so an attacker
+// grinding credentials cannot bury the failure under a name they choose.
+func (s *Server) logLoginAttempt(displayName, outcome, ip string) {
+	if s.audit == nil {
+		return
+	}
+	_ = s.audit.LogOperator(displayName, "operator."+outcome, "-", map[string]any{
+		"ip": ip,
+	}, outcome)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -286,6 +351,15 @@ func (s *Server) handleSetupGet(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// First-run bootstrap is loopback-only. On a deployment that exposes
+	// the admin port (intentionally or otherwise), the first network-
+	// adjacent peer to POST /setup would otherwise claim the operator
+	// credential. Loopback-gating closes that window — the operator must
+	// SSH-tunnel or use the local machine to initialise.
+	if !isLoopbackClient(r) {
+		http.Error(w, "first-run setup is restricted to the loopback interface; SSH-tunnel into the host and retry from localhost", http.StatusForbidden)
+		return
+	}
 	renderSetupPage(w, "")
 }
 
@@ -294,9 +368,24 @@ func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "auth not configured", http.StatusServiceUnavailable)
 		return
 	}
+	ip := clientIP(r)
+	if s.loginLimiter != nil {
+		if ok, retry := s.loginLimiter.Allow(ip); !ok {
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", int(retry.Seconds())))
+			http.Error(w, "too many setup attempts; try again later", http.StatusTooManyRequests)
+			return
+		}
+	}
 	exists, _ := s.operatorSvc.Exists()
 	if exists {
 		http.NotFound(w, r)
+		return
+	}
+	// Mirror the GET-side loopback gate: first-run setup is bootstrap and
+	// MUST NOT be claimable by a remote peer when the admin port happens
+	// to be exposed. The remote-claim race was murbard's S6 finding.
+	if !isLoopbackClient(r) {
+		http.Error(w, "first-run setup is restricted to the loopback interface", http.StatusForbidden)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -319,11 +408,15 @@ func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Auto-login the operator after first-run setup.
-	sess, err := s.sessionMgr.Issue(clientIP(r), r.UserAgent())
+	sess, err := s.sessionMgr.Issue(ip, r.UserAgent())
 	if err != nil {
 		http.Error(w, "session create failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if s.loginLimiter != nil {
+		s.loginLimiter.Refund(ip)
+	}
+	s.logLoginAttempt(name, "setup.ok", ip)
 	secure := r.TLS != nil
 	http.SetCookie(w, session.NewCookie(sess.Plaintext, secure))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -333,8 +426,18 @@ func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 // templates rather than full Tailwind-styled pages. The follow-up
 // UI commit promotes them to proper templates next to nav.html.
 // Embedding them inline here keeps the auth landing self-contained.
+// renderLoginPage writes the login form with a 200 status. For error
+// responses use renderLoginPageWithStatus so the Content-Type header
+// lands before WriteHeader (net/http drops headers set afterward).
 func renderLoginPage(w http.ResponseWriter, errMsg string) {
+	renderLoginPageWithStatus(w, http.StatusOK, errMsg)
+}
+
+func renderLoginPageWithStatus(w http.ResponseWriter, status int, errMsg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+	}
 	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Sieve — sign in</title>
 <style>body{font-family:system-ui;background:#0f172a;color:#e2e8f0;padding:40px;max-width:480px;margin:0 auto}
 h1{font-weight:600;margin-bottom:24px}
@@ -392,5 +495,28 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// isLoopbackClient reports whether the request originated from the
+// loopback interface (127.0.0.0/8 or ::1). Used to gate first-run
+// bootstrap endpoints that MUST NOT be reachable from the network.
+// X-Forwarded-For is intentionally NOT consulted — that header is
+// untrusted at this layer and any reverse-proxy operator wanting
+// remote bootstrap can tunnel locally.
+func isLoopbackClient(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if host == "" {
+		// httptest recorders sometimes leave RemoteAddr unset; treat
+		// "empty" as loopback so unit tests don't need to spoof IPs.
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 

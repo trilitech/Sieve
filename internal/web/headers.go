@@ -4,8 +4,6 @@ import "net/http"
 
 // WriteSensitive sets the cache-prevention header set required on every
 // response that may carry a credential, secret, or one-time-use value.
-// Spec 001-fix-security-vulns US11 / FR-044..FR-045.
-//
 // Belt-and-suspenders: the header set covers HTTP/1.1 (Cache-Control),
 // HTTP/1.0 (Pragma, Expires), and pins Vary on Authorization so any
 // future shared cache that ignores Cache-Control at least segregates
@@ -19,17 +17,43 @@ func WriteSensitive(w http.ResponseWriter) {
 	h.Set("Vary", "Authorization")
 }
 
-// noCacheAllAdmin wraps an http.Handler and writes the sensitive-header
-// set on every response. The admin UI is the human surface; we treat
-// every response there as potentially containing a credential / audit
-// record / token list value the operator does not want cached by an
-// intermediate proxy. The cost is four extra response headers per request,
-// which is negligible compared to the alternative of an operator missing
-// a per-handler header call (Shannon AUTH-VULN-10 was exactly that case
-// on /tokens/create).
+// writeSecurityHeaders sets the static security-headers that apply to
+// every admin response. Defense-in-depth against a future XSS regression
+// or a clickjack pivot: even if a script-injection sink slips back in,
+// the CSP refuses to execute inline / cross-origin script; X-Frame-Options
+// refuses to frame; nosniff refuses MIME-confusion; no-referrer refuses
+// to leak in-page URLs to third parties.
+// CSP uses 'unsafe-inline' for script-src because admin templates carry
+// per-page inline <script> blocks today. Moving those to nonces or
+// external files is a larger lift; the inline opener is documented here so
+// the next pass can tighten it. The other directives are already strict.
+func writeSecurityHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Security-Policy",
+		"default-src 'self'; "+
+			"script-src 'self' 'unsafe-inline'; "+
+			"style-src 'self' 'unsafe-inline'; "+
+			"img-src 'self' data:; "+
+			"object-src 'none'; "+
+			"frame-ancestors 'none'; "+
+			"base-uri 'none'; "+
+			"form-action 'self'")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Referrer-Policy", "no-referrer")
+}
+
+// noCacheAllAdmin wraps an http.Handler and writes both the cache-prevention
+// and static security headers on every response. The admin UI is the human
+// surface; we treat every response there as potentially containing a
+// credential / audit record / token list value the operator does not want
+// cached by an intermediate proxy. The cost is a handful of extra response
+// headers per request, negligible compared to the alternative of an
+// operator missing a per-handler header call.
 func noCacheAllAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteSensitive(w)
+		writeSecurityHeaders(w)
 		next.ServeHTTP(w, r)
 	})
 }

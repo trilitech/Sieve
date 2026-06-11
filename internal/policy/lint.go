@@ -8,27 +8,34 @@ import (
 	"sort"
 )
 
-// Spec 001-fix-security-vulns US6 (was AUTHZ-VULN-10): the numeric
-// match fields max_tokens / max_count / max_vms / max_temperature are
-// CEILINGS — a rule fires when the request value is at-or-below the
-// configured value. The evaluator implements this correctly. The
+// Numeric match fields max_tokens / max_count / max_vms / max_temperature /
+// max_cost are CEILINGS — a rule fires when the request value is at-or-below
+// the configured value. The evaluator implements this correctly. The
 // operator footgun is composition: writing
-//   {action: deny, match: {max_tokens: 500}}, default_action: allow
+// {action: deny, match: {max_tokens: 500}}, default_action: allow
 // reads like "deny anything over 500" but means "deny anything <= 500,
 // fall through for > 500" — the inverse of intent.
-//
 // DenyCeilingLint flags that composition so the save flow can surface
 // a warning + the safer composition + require explicit acknowledgement.
-// FR-022..FR-024b. The acknowledgement is sticky per policy via a
-// fingerprint of the offending shape (FR-024a) — re-fires only when
-// the deny rules / ceiling values / default action change.
+// The acknowledgement is sticky per policy via a fingerprint of the
+// offending shape — re-fires only when the deny rules / ceiling values /
+// default action change.
 
 // LintRuleName identifies the deny-ceiling lint in stored acks.
 const LintRuleName = "deny_ceiling_v1"
 
 // ceilingFields names the numeric match fields that exhibit the
-// ceiling-not-threshold semantics described above.
-var ceilingFields = []string{"max_tokens", "max_count", "max_vms", "max_temperature"}
+// ceiling-not-threshold semantics described above. Every entry here MUST
+// have an "if value > limit { return false }" check in rules.go's
+// matchRule — otherwise the lint warns about a composition the evaluator
+// doesn't even recognise.
+var ceilingFields = []string{
+	"max_tokens",
+	"max_count",
+	"max_vms",
+	"max_temperature",
+	"max_cost",
+}
 
 // LintOffender describes a single offending rule found by the lint.
 type LintOffender struct {
@@ -142,15 +149,15 @@ func lintNestedConfig(config map[string]any) *LintWarning {
 }
 
 // fingerprintRulesConfig returns a canonical SHA-256 of the shape that
-// drives FR-024a's sticky-acknowledgement semantics. Two policies that
+// drives 's sticky-acknowledgement semantics. Two policies that
 // differ only in cosmetic ways (name, comments, unrelated rules) produce
 // the SAME fingerprint, so a re-save with no real change doesn't re-warn.
 // Two policies that change the deny rules / ceiling values / default
 // action produce a DIFFERENT fingerprint, so the warning re-fires.
 func fingerprintRulesConfig(rules []any, defAction string) string {
 	// Project each rule to just the fields that influence the lint:
-	//   - action (only "deny" matters here, but kept for clarity)
-	//   - the ceiling match fields and their values
+	// - action (only "deny" matters here, but kept for clarity)
+	// - the ceiling match fields and their values
 	type denyShape struct {
 		Action  string         `json:"action"`
 		Ceiling map[string]any `json:"ceiling"`

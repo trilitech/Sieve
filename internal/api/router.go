@@ -1,14 +1,11 @@
 // Package api implements the REST API for Sieve, providing two interfaces:
-//
-//  1. The Sieve-native API (/api/v1/...) for generic connector operations and
-//     approval status polling.
-//
-//  2. A Gmail-compatible API (/gmail/v1/...) that mirrors Google's Gmail REST
-//     API surface. This allows existing Gmail client libraries and tools to
-//     work against Sieve with minimal changes — they just point at a different
-//     base URL. Requests are translated to Sieve connector operations and go
-//     through the same auth + policy pipeline.
-//
+// 1. The Sieve-native API (/api/v1/...) for generic connector operations and
+// approval status polling.
+// 2. A Gmail-compatible API (/gmail/v1/...) that mirrors Google's Gmail REST
+// API surface. This allows existing Gmail client libraries and tools to
+// work against Sieve with minimal changes — they just point at a different
+// base URL. Requests are translated to Sieve connector operations and go
+// through the same auth + policy pipeline.
 // All routes pass through authMiddleware, which validates the bearer token and
 // injects the token object into the request context. The token determines which
 // connections and policy apply to the request.
@@ -55,7 +52,7 @@ type Router struct {
 	approval    *approval.Queue
 	audit       *audit.Logger
 	// limiter throttles bearer-token validation failures per source IP.
-	// Spec 001-fix-security-vulns US10 / FR-040..FR-043. Defaults: 10
+	// Defaults: 10
 	// tokens, 1 refill / 6s = 10 failures per 60s window.
 	limiter *ratelimit.Limiter
 }
@@ -122,8 +119,7 @@ func (rt *Router) Handler() http.Handler {
 	// proxies don't cache agent-API responses (which can carry entity
 	// data tied to a specific bearer token). The cache headers wrap
 	// authMiddleware so 401 responses also carry them — caches MUST NOT
-	// retain failed auth attempts. Spec 001-fix-security-vulns US11 /
-	// FR-045.
+	// retain failed auth attempts.
 	return noCacheMiddleware(rt.authMiddleware(mux))
 }
 
@@ -144,9 +140,8 @@ func noCacheMiddleware(next http.Handler) http.Handler {
 
 // authMiddleware extracts and validates the Bearer token from the Authorization
 // header, storing it in the request context. Returns 401 if missing or invalid.
-//
-// Per-IP token-bucket throttling (spec 001-fix-security-vulns US10 /
-// FR-040..FR-043) wraps the validation path: failed auth attempts deplete
+// Per-IP token-bucket throttling (
+// ) wraps the validation path: failed auth attempts deplete
 // the bucket; success refunds. When the bucket is empty, HTTP 429 with
 // Retry-After is returned instead of 401.
 func (rt *Router) authMiddleware(next http.Handler) http.Handler {
@@ -282,7 +277,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	// Pre-flight: if the connection is already flagged needs_reauth, fail
 	// fast with a structured response so the agent's wrapper can surface the
 	// re-auth URL to its human. Saves us building the connector and running
-	// policy only to fail at Token() inside Execute.
+	// policy only to fail at Token inside Execute.
 	if c, err := rt.connections.Get(connID); err == nil && c.Status == connections.StatusReauthRequired {
 		writeReauthError(w, connID, c.ReauthReason)
 		return
@@ -395,7 +390,14 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		resultJSON, _ := json.Marshal(result)
 		var reason string
 		if len(decision.Filters) > 0 {
-			resultJSON, reason = policy.ApplyResponseFilters(resultJSON, decision.Filters)
+			filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
+			if ferr != nil {
+				rt.logAudit(tok, connID, operation, params, "response_filter_failed", ferr.Error(), time.Since(start).Milliseconds())
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("response filter failed: %v", ferr))
+				return
+			}
+			resultJSON = filtered
+			reason = summary
 		}
 		rt.logAudit(tok, connID, operation, params, policyResult, reason, time.Since(start).Milliseconds())
 		w.Header().Set("Content-Type", "application/json")
@@ -494,7 +496,14 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		resultJSON, _ := json.Marshal(result)
 		var approvedReason string
 		if len(decision.Filters) > 0 {
-			resultJSON, approvedReason = policy.ApplyResponseFilters(resultJSON, decision.Filters)
+			filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
+			if ferr != nil {
+				rt.logAudit(tok, connID, operation, params, "response_filter_failed", ferr.Error(), time.Since(start).Milliseconds())
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("response filter failed: %v", ferr))
+				return
+			}
+			resultJSON = filtered
+			approvedReason = summary
 		}
 		rt.logAudit(tok, connID, operation, params, policyResult, approvedReason, time.Since(start).Milliseconds())
 		w.Header().Set("Content-Type", "application/json")
@@ -521,9 +530,8 @@ func (rt *Router) getEvaluator(role *roles.Role, connID string) (policy.Evaluato
 // alias and path from the URL, validates the token has access, and delegates
 // to the ProxyHTTP method on the http_proxy connector. The agent's Sieve token
 // is swapped for the real API credential transparently.
-//
 // URL format: /proxy/{connection}/{path...}
-// Example:    /proxy/anthropic/v1/messages
+// Example: /proxy/anthropic/v1/messages
 func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 	tok := tokenFromContext(r)
 	if tok == nil {
@@ -677,9 +685,9 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Audit identifier precedence:
-	//   1. http_proxy.auth_query_overridden (override is an attempted exploit)
-	//   2. http_proxy.auth_value_scrubbed   (routine defensive event)
-	//   3. proxied                          (vanilla success)
+	// 1. http_proxy.auth_query_overridden (override is an attempted exploit)
+	// 2. http_proxy.auth_value_scrubbed (routine defensive event)
+	// 3. proxied (vanilla success)
 	policyResult := "proxied"
 	if queryOverridden {
 		policyResult = "http_proxy.auth_query_overridden"
@@ -746,18 +754,16 @@ func writeStructuredError(w http.ResponseWriter, status int, code, message strin
 
 // writeConnectionError centralizes connection-state response mapping.
 // Sentinel priority:
-//   - secrets.ErrKeyringNotLoaded         → 503 "service locked"
-//   - secrets.ErrKeyringRotating          → 503 + Retry-After so retry-aware
-//     agent SDKs back off cleanly during the brief rotation window
-//   - connections.ErrReauthRequired       → 403 reauth_required envelope
-//     (delegates to writeReauthError so the byte shape is identical to
-//     the post-flight path)
-//   - connections.ErrConnectionDisabled   → 403 {"error":"disabled",...}
-//
+// - secrets.ErrKeyringNotLoaded → 503 "service locked"
+// - secrets.ErrKeyringRotating → 503 + Retry-After so retry-aware
+// agent SDKs back off cleanly during the brief rotation window
+// - connections.ErrReauthRequired → 403 reauth_required envelope
+// (delegates to writeReauthError so the byte shape is identical to
+// the post-flight path)
+// - connections.ErrConnectionDisabled → 403 {"error":"disabled",...}
 // Otherwise falls through to the caller-supplied default. Routed through
 // one helper so every credential-touching endpoint produces identical
 // bodies.
-//
 // rt is needed so the helper can look up the connection's reauth_reason
 // when emitting the reauth_required envelope. connID is the connection
 // the caller was attempting to address; both threads through to the
@@ -787,14 +793,12 @@ func (rt *Router) writeConnectionError(w http.ResponseWriter, defaultStatus int,
 
 // writeOperationNotEnabledError emits HTTP 501 with the canonical
 // operation_not_enabled envelope:
-//
-//	{
-//	  "error":         "operation_not_enabled",
-//	  "connection_id": "<connection-id>",
-//	  "operation":     "<operation-name>",
-//	  "message":       "<reason text from the connector>"
-//	}
-//
+//{
+//"error": "operation_not_enabled",
+//"connection_id": "<connection-id>",
+//"operation": "<operation-name>",
+//"message": "<reason text from the connector>"
+//}
 // reason is the connector-supplied detail (the err string with the
 // sentinel prefix stripped). Distinct from 403 (reauth) and 503
 // (service locked) — agent SDKs should NOT retry.
@@ -810,7 +814,7 @@ func writeOperationNotEnabledError(w http.ResponseWriter, connID, operation, rea
 }
 
 // stripSentinelPrefix removes the wrapped sentinel error's leading
-// "<sentinel-text>: " prefix from err.Error() so the response body
+// "<sentinel-text>: " prefix from err.Error so the response body
 // carries only the connector-supplied reason. If the format isn't a
 // wrap, returns the full error string.
 func stripSentinelPrefix(err error, sentinel error) string {
@@ -827,7 +831,6 @@ func stripSentinelPrefix(err error, sentinel error) string {
 // Used both pre-flight (status='reauth_required' detected before Execute)
 // and post-flight (Execute returned ErrNeedsReauth, which means the status
 // was just transitioned).
-//
 // HTTP 403 + the canonical reauth_required envelope. The legacy 503/
 // connection_reauth_required response was retired so 503 stays reserved
 // for genuinely transient conditions (notably keyring-not-loaded
@@ -1041,7 +1044,14 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 	resultJSON, _ := json.Marshal(result)
 	var reason string
 	if len(decision.Filters) > 0 {
-		resultJSON, reason = policy.ApplyResponseFilters(resultJSON, decision.Filters)
+		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
+		if ferr != nil {
+			rt.logAudit(tok, connID, operation, params, "response_filter_failed", ferr.Error(), time.Since(start).Milliseconds())
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("response filter failed: %v", ferr))
+			return
+		}
+		resultJSON = filtered
+		reason = summary
 	}
 
 	rt.logAudit(tok, connID, operation, params, "allow", reason, time.Since(start).Milliseconds())

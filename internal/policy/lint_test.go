@@ -4,7 +4,6 @@ import (
 	"testing"
 )
 
-// Spec 001-fix-security-vulns US6 (Shannon AUTHZ-VULN-10): deny rules
 // with numeric-ceiling match fields combined with a non-deny default
 // action are an operator footgun; the lint flags them.
 
@@ -28,7 +27,11 @@ func TestDenyCeilingLint_FiresOnMaxTokensCeiling(t *testing.T) {
 }
 
 func TestDenyCeilingLint_FiresOnEachCeilingField(t *testing.T) {
-	for _, field := range []string{"max_tokens", "max_count", "max_vms", "max_temperature"} {
+	// Every numeric-ceiling match field defined in rules.go's matchRule
+	// must appear here. max_cost was missed in the first cut and slipped
+	// through as the same footgun under a different name — keep this
+	// list in sync with ceilingFields.
+	for _, field := range []string{"max_tokens", "max_count", "max_vms", "max_temperature", "max_cost"} {
 		t.Run(field, func(t *testing.T) {
 			cfg := map[string]any{
 				"default_action": "allow",
@@ -40,6 +43,25 @@ func TestDenyCeilingLint_FiresOnEachCeilingField(t *testing.T) {
 				t.Errorf("expected fire on %s", field)
 			}
 		})
+	}
+}
+
+func TestDenyCeilingLint_FiresOnMaxCostCeiling(t *testing.T) {
+	// Direct regression for the deny+max_cost+default=allow trap. An
+	// operator writing this composition intends "deny anything over $1.00"
+	// but actually gets "deny calls ≤ $1.00, allow the $1000 call".
+	cfg := map[string]any{
+		"default_action": "allow",
+		"rules": []any{
+			map[string]any{"action": "deny", "match": map[string]any{"max_cost": 1.00}},
+		},
+	}
+	w := DenyCeilingLint("rules", cfg)
+	if w == nil {
+		t.Fatal("lint should fire on deny+max_cost+default=allow")
+	}
+	if len(w.Offending) != 1 || w.Offending[0].MatchField != "max_cost" {
+		t.Errorf("offending = %v, want one entry for max_cost", w.Offending)
 	}
 }
 

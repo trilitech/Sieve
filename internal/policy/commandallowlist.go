@@ -4,14 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
 // Package-level command allowlist. The web server's startup wires the
 // operator-configured value via SetCommandAllowlist after reading
-// settings.CommandAllowlist(); the rules engine and script evaluator
+// settings.CommandAllowlist; the rules engine and script evaluator
 // pick it up implicitly through CurrentCommandAllowlist.
-//
 // Using a package var avoids cascading signature changes through
 // CreateEvaluator/NewScriptEvaluator/NewRulesEvaluator (each of which
 // has multiple call sites in production code and tests). The trade-off
@@ -24,6 +24,10 @@ var (
 
 // SetCommandAllowlist replaces the package-level command allowlist.
 // Pass nil or an empty slice to revert to the bundled-Python default.
+// Entries that don't contain a path separator are dropped — a bare
+// "python3" would resolve via PATH at exec time, which depends on the
+// runtime environment of the script process and effectively bypasses
+// the allowlist. Absolute paths only.
 func SetCommandAllowlist(list []string) {
 	cmdAllowlistMu.Lock()
 	defer cmdAllowlistMu.Unlock()
@@ -31,7 +35,25 @@ func SetCommandAllowlist(list []string) {
 		cmdAllowlist = nil
 		return
 	}
-	cmdAllowlist = append([]string(nil), list...)
+	cleaned := make([]string, 0, len(list))
+	for _, entry := range list {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		// Reject bare PATH-relative entries. `filepath.IsAbs` catches both
+		// Unix /foo/bar and Windows C:\foo\bar so future cross-platform
+		// builds don't silently relax this check.
+		if !filepath.IsAbs(entry) {
+			continue
+		}
+		cleaned = append(cleaned, entry)
+	}
+	if len(cleaned) == 0 {
+		cmdAllowlist = nil
+		return
+	}
+	cmdAllowlist = cleaned
 }
 
 // CurrentCommandAllowlist returns a copy of the active allowlist. Empty
@@ -49,20 +71,15 @@ func CurrentCommandAllowlist() []string {
 // ErrCommandNotAllowed is returned when a script-policy's command field
 // (top-level or nested inside a rules-engine script action) names an
 // interpreter that the operator-configured allowlist does not permit.
-//
-// Shannon INJ-VULN-01/02/03 traced an RCE chain through this field: the
-// raw value was passed to exec.CommandContext with no validation, so a
-// policy author could escape the bundled Python venv and shell out to
-// /bin/sh, /usr/bin/perl, etc. Allowlist enforcement closes that path.
-//
-// Spec anchor: 001-fix-security-vulns US4 / FR-013..FR-018a.
+// Without the check, the raw value flows to exec.CommandContext, letting
+// a policy author shell out to any binary on the host. Allowlist
+// enforcement keeps script policies inside the bundled-Python sandbox.
 var ErrCommandNotAllowed = errors.New("command not in allowlist")
 
 // ValidateCommand returns nil if cmd resolves (after symlink resolution
 // and Clean) to an entry in the allowlist. Empty allowlists fall back to
 // the canonical default (the bundled Python interpreter that ships with
 // the Sieve Docker image).
-//
 // The comparison resolves symlinks via filepath.EvalSymlinks so an
 // operator who tries `command: /tmp/bash-evil` where /tmp/bash-evil ->
 // /bin/bash still fails the check (the resolved path is /bin/bash,

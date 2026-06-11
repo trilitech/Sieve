@@ -12,7 +12,6 @@ import (
 	"github.com/trilitech/Sieve/internal/session"
 )
 
-// Spec 001-fix-security-vulns US7 / FR-033a..FR-033c, FR-032a.
 
 func newTestManager(t *testing.T, idle time.Duration) *session.Manager {
 	t.Helper()
@@ -107,6 +106,29 @@ func TestLookup_ExpiredRowDeleted(t *testing.T) {
 	_, err = m.Lookup(s.Plaintext)
 	if !errors.Is(err, session.ErrNoSession) {
 		t.Errorf("after expiry sweep got %v, want ErrNoSession", err)
+	}
+}
+
+func TestLookup_AbsoluteCapTerminatesRefreshedSession(t *testing.T) {
+	// A session that gets pinged on a short cadence (sliding window stays
+	// fresh) MUST still expire at the absolute cap. Otherwise a stolen
+	// cookie + refresh-on-timer lives forever.
+	m := newTestManager(t, 10*time.Second) // idle: plenty of headroom
+	m.SetAbsoluteTimeout(50 * time.Millisecond)
+	s, _ := m.Issue("ip", "ua")
+
+	// First Lookup well inside the absolute window: succeeds and bumps idle.
+	time.Sleep(10 * time.Millisecond)
+	if _, err := m.Lookup(s.Plaintext); err != nil {
+		t.Fatalf("Lookup inside absolute window: %v", err)
+	}
+
+	// Sleep past the absolute cap. Idle window is still way in the future,
+	// so without the absolute cap this would happily refresh forever.
+	time.Sleep(60 * time.Millisecond)
+	_, err := m.Lookup(s.Plaintext)
+	if !errors.Is(err, session.ErrExpired) {
+		t.Fatalf("past absolute cap: got %v, want ErrExpired", err)
 	}
 }
 

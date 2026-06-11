@@ -1,21 +1,17 @@
 package web
 
 // Per-connector handlers for Slack admin flows. Three entry points:
-//
-//   - POST /connections/slack/oauth/start — admin clicks "Install via OAuth"
-//     in the connection picker. Generates state, stashes the pending
-//     connection in oauthPending (10-minute TTL), redirects to Slack.
-//     The shared /oauth/callback dispatches back to slackOAuthExchange
-//     based on pending.ConnectorType (see server.go).
-//
-//   - POST /connections/slack/token — admin pastes a pre-existing bot
-//     token. Validates against Slack auth.test before persisting.
-//
-//   - POST /connections/slack/{id}/reauth — admin clicks "Re-install"
-//     on a reauth_required row to clear the status by completing a
-//     fresh OAuth flow. Reuses the same pendingOAuth machinery so the
-//     callback path is shared.
-//
+// - POST /connections/slack/oauth/start — admin clicks "Install via OAuth"
+// in the connection picker. Generates state, stashes the pending
+// connection in oauthPending (10-minute TTL), redirects to Slack.
+// The shared /oauth/callback dispatches back to slackOAuthExchange
+// based on pending.ConnectorType (see server.go).
+// - POST /connections/slack/token — admin pastes a pre-existing bot
+// token. Validates against Slack auth.test before persisting.
+// - POST /connections/slack/{id}/reauth — admin clicks "Re-install"
+// on a reauth_required row to clear the status by completing a
+// fresh OAuth flow. Reuses the same pendingOAuth machinery so the
+// callback path is shared.
 // All three are gated by the requireOperatorSession middleware — agents
 // must never reach admin-side connection mutation paths.
 
@@ -35,8 +31,22 @@ import (
 
 	"github.com/trilitech/Sieve/internal/connections"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
+	"github.com/trilitech/Sieve/internal/httpguard"
 	"github.com/trilitech/Sieve/internal/secrets"
 )
+
+// slackOAuthHTTPClient is the shared *http.Client used for direct calls
+// to slack.com (auth.test, oauth.v2.access) from the admin-side OAuth
+// flow. Routed through httpguard so a DNS-rebinding attacker can't pivot
+// these requests at internal IPs — the same protection the Slack
+// connector already enjoys for runtime API calls.
+// Loopback is allowed so the test suite (and any operator using a local
+// Slack-mock for development) can route through this client. AbsoluteDeny
+// still blocks cloud-metadata IPs; RFC1918 / CGNAT remain default-deny.
+var slackOAuthHTTPClient = httpguard.Client(httpguard.ClientOptions{
+	Allowlist: mustParseCIDRs([]string{"127.0.0.0/8", "::1/128"}),
+	Timeout:   15 * time.Second,
+})
 
 // Slack OAuth endpoints. Constants here so the test suite can swap
 // them out via slackOAuthEndpointOverride below.
@@ -70,7 +80,6 @@ func slackEndpoint(production string) string {
 // SLACK_CLIENT_ID / SLACK_CLIENT_SECRET environment variables when no
 // row is stored — that fallback path is for 12-factor / automated
 // deployments only.
-//
 // Returns (clientID, clientSecret). Either may be empty if no source
 // has the value; the OAuth UI hides the install button when the
 // credentials are missing. Returns secrets.ErrKeyringNotLoaded as the
@@ -158,10 +167,11 @@ func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, dis
 
 	s.oauthMu.Lock()
 	s.oauthPending[state] = pendingOAuth{
-		ID:            id,
-		ConnectorType: "slack",
-		DisplayName:   displayName,
-		CreatedAt:     time.Now(),
+		ID:                  id,
+		ConnectorType:       "slack",
+		DisplayName:         displayName,
+		CreatedAt:           time.Now(),
+		OperatorSessionHash: operatorSessionHash(r),
 	}
 	s.oauthMu.Unlock()
 
@@ -173,7 +183,7 @@ func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, dis
 	// matches the one used at install time, so this value is also the value
 	// passed to slackOAuthExchange. Forging Host would let an attacker
 	// register a Slack install whose token-exchange callback hits their
-	// own server. Spec 001-fix-security-vulns US3 / FR-010..FR-012.
+	// own server...
 	q.Set("redirect_uri", s.publicBaseURL(r)+"/oauth/callback")
 	q.Set("state", state)
 	target := slackEndpoint(slackAuthorizeURL) + "?" + q.Encode()
@@ -293,7 +303,7 @@ func slackAuthTest(ctx context.Context, token string) (teamID, teamName, botUser
 		return "", "", "", fmt.Errorf("build auth.test request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := slackOAuthHTTPClient.Do(req)
 	if err != nil {
 		return "", "", "", fmt.Errorf("auth.test http: %w", err)
 	}
@@ -320,7 +330,6 @@ func slackAuthTest(ctx context.Context, token string) (teamID, teamName, botUser
 // env vars and restart Sieve. Mirrors how the LLM provider cards
 // let admins paste API keys directly. After save, the connections
 // page reloads with the OAuth Install button enabled.
-//
 // This endpoint is admin-only (requireOperatorSession). Credentials are
 // envelope-encrypted under the keyring KEK and stored as a reserved
 // `_oauth_app:slack` row in the connections table.
@@ -405,11 +414,10 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 // install. Called from handleOAuthCallback once the dispatcher has
 // confirmed pending.ConnectorType == "slack". Returns the connection
 // config that handleOAuthCallback then persists via Add or UpdateConfig.
-//
 // `baseURL` is the public base URL Sieve uses to construct the redirect_uri
 // — supplied by completeSlackOAuth via publicBaseURL so it matches what was
 // sent to Slack at install time (Slack validates equality). MUST NOT be
-// derived from r.Host (spec 001-fix-security-vulns US3).
+// derived from r.Host (
 func (s *Server) slackOAuthExchange(ctx context.Context, baseURL, code string) (map[string]any, error) {
 	clientID, clientSecret, err := s.slackOAuthCreds()
 	if err != nil {
@@ -429,7 +437,7 @@ func (s *Server) slackOAuthExchange(ctx context.Context, baseURL, code string) (
 		return nil, fmt.Errorf("build oauth.v2.access: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := slackOAuthHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("oauth.v2.access http: %w", err)
 	}

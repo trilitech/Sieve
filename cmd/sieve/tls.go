@@ -1,13 +1,14 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 )
 
-// Spec 001-fix-security-vulns US12 / FR-048..FR-050: optional TLS on
+// optional TLS on
 // the admin and agent listeners. Both-or-neither per listener; HSTS
 // header on every TLS response; default deployment (no cert/key set)
 // stays plaintext-on-loopback unchanged.
@@ -84,6 +85,16 @@ func serveListener(srv *http.Server, p tlsPair) error {
 	}
 	if err := p.validate(); err != nil {
 		return err
+	}
+	// Pin the negotiated minimum to TLS 1.2 explicitly. Today's Go default
+	// is TLS 1.2 on the server side anyway, but pinning here means a future
+	// stdlib relaxation, or any library that embeds this server, can't
+	// negotiate a weaker protocol without our consent.
+	if srv.TLSConfig == nil {
+		srv.TLSConfig = &tls.Config{}
+	}
+	if srv.TLSConfig.MinVersion < tls.VersionTLS12 {
+		srv.TLSConfig.MinVersion = tls.VersionTLS12
 	}
 	srv.Handler = hstsMiddleware(srv.Handler)
 	return srv.ListenAndServeTLS(p.CertPath, p.KeyPath)
