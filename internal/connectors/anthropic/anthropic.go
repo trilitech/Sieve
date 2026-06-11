@@ -110,21 +110,44 @@ func (a *Connector) Type() string { return ConnectorType }
 // Operations returns the catalog of operations this connector exposes.
 func (a *Connector) Operations() []connector.OperationDef { return operations }
 
-// Validate confirms the API key works by calling /v1/messages/count_tokens
-// with a minimal payload. count_tokens is the cheapest verifiable endpoint
-// — it doesn't bill against the model's request quota and returns a
-// structured response we can sanity-check.
+// validateModel is the model name Validate uses to probe the API. Picked
+// because count_tokens with haiku is the cheapest call that exercises
+// the auth + transport path. If a specific account or gateway has this
+// model disabled, the probe will return a non-401 4xx — Validate treats
+// that as success (see comment below) rather than blocking the
+// connection from being saved.
+const validateModel = "claude-haiku-4-5"
+
+// Validate confirms the API key is accepted by the upstream by calling
+// /v1/messages/count_tokens.
+//
+// The semantics are deliberately narrow: Validate returns an error ONLY
+// when the upstream rejects the API key (ErrNeedsReauth). Any other
+// outcome — model not enabled on the operator's account, gateway
+// allow-list rejection, a transient 5xx, a network blip — leaves
+// Validate succeeding. Two reasons:
+//
+//   1. Failing Validate prevents the connection from being saved at
+//      all. Refusing to save because the operator's gateway disabled
+//      claude-haiku-4-5 would be a UX regression with no security
+//      benefit; the operator can switch to a working model at runtime.
+//
+//   2. The thing Validate is actually checking is whether the API key
+//      is live. A non-401 upstream response (structured or otherwise)
+//      means the key was accepted far enough for the upstream to give
+//      us a specific answer, which is sufficient evidence.
+//
+// Transport errors fall through to "OK" too — they'd repeat on first
+// agent call, and refusing to save during a transient outage is bad
+// UX. The operator will see the real error in the audit log on first
+// use.
 func (a *Connector) Validate(ctx context.Context) error {
-	payload := map[string]any{
-		"model":    "claude-haiku-4-5",
+	_, err := a.doRequest(ctx, "POST", "/v1/messages/count_tokens", map[string]any{
+		"model":    validateModel,
 		"messages": []map[string]any{{"role": "user", "content": "ping"}},
-	}
-	resp, err := a.doRequest(ctx, "POST", "/v1/messages/count_tokens", payload)
-	if err != nil {
+	})
+	if errors.Is(err, connector.ErrNeedsReauth) {
 		return err
-	}
-	if _, ok := resp["input_tokens"]; !ok {
-		return fmt.Errorf("anthropic: validate: response missing input_tokens, got %v", resp)
 	}
 	return nil
 }
@@ -181,8 +204,12 @@ func (a *Connector) doRequest(ctx context.Context, method, path string, body any
 	// responses from proxy frontends are often plain text ("502 Bad
 	// Gateway") and we still need to surface those — especially 401,
 	// which must map to ErrNeedsReauth regardless of body shape.
+	//
+	// json.Unmarshal of the literal `null` into a map succeeds with
+	// out == nil; treat that as "no structured body" because returning
+	// a nil map on 2xx would silently confuse downstream callers.
 	var out map[string]any
-	jsonOK := json.Unmarshal(respBytes, &out) == nil
+	jsonOK := json.Unmarshal(respBytes, &out) == nil && out != nil
 
 	if resp.StatusCode/100 != 2 {
 		var errType, errMsg string
@@ -199,34 +226,72 @@ func (a *Connector) doRequest(ctx context.Context, method, path string, body any
 		// drift (e.g. a proxy frontend returning 403 with an
 		// authentication_error envelope).
 		if resp.StatusCode == http.StatusUnauthorized || errType == "authentication_error" {
-			if errType == "" && errMsg == "" {
-				// No structured body; surface a clean message without
-				// empty ": :" placeholders.
-				return nil, fmt.Errorf("anthropic: %s %s: status %d: %w",
-					method, path, resp.StatusCode, connector.ErrNeedsReauth)
-			}
-			return nil, fmt.Errorf("anthropic: %s %s: %d %s: %s: %w",
-				method, path, resp.StatusCode, errType, errMsg, connector.ErrNeedsReauth)
+			return formatUpstreamError(method, path, resp.StatusCode, errType, errMsg, connector.ErrNeedsReauth)
 		}
-		if errType != "" {
-			return nil, fmt.Errorf("anthropic: %s %s: %d %s: %s",
-				method, path, resp.StatusCode, errType, errMsg)
-		}
-		return nil, fmt.Errorf("anthropic: %s %s: status %d, body: %s",
-			method, path, resp.StatusCode, truncate(respBytes, 256))
+		return formatUpstreamError(method, path, resp.StatusCode, errType, errMsg, nil, respBytes)
 	}
 
 	// 2xx without a parseable body shouldn't happen against the real
 	// Anthropic API, but a proxy frontend (or a future content-type
 	// negotiation gone wrong) could produce it. Fail loudly rather
 	// than returning nil out, which downstream callers would
-	// nil-dereference.
+	// nil-dereference. (Includes the JSON-literal-null case, which
+	// json.Unmarshal "successfully" decodes to a nil map.)
 	if !jsonOK {
-		return nil, fmt.Errorf("anthropic: %s %s: 2xx response was not valid JSON; body: %s",
+		return nil, fmt.Errorf("anthropic: %s %s: 2xx response was not a valid JSON object; body: %s",
 			method, path, truncate(respBytes, 256))
 	}
 
 	return out, nil
+}
+
+// formatUpstreamError renders a clean error message regardless of
+// which combination of envelope fields the upstream populated. The
+// four shapes we observe in the wild:
+//
+//   - errType + errMsg both set         → "<status> <type>: <message>"
+//   - errType set, errMsg empty         → "<status> <type>"
+//   - errType empty, errMsg set         → "<status>: <message>"
+//   - both empty (plain text / null)    → "status <code>" (+ body excerpt
+//                                          if no wrap target)
+//
+// Without this consolidation we'd get dangling ": " or ": :"
+// substrings in audit rows and agent-visible error responses.
+//
+// The trailing body excerpt is included only when there's no envelope
+// AND no wrap target (i.e. plain 5xx). Reauth path always wraps
+// ErrNeedsReauth and omits the excerpt.
+func formatUpstreamError(method, path string, status int, errType, errMsg string, wrap error, body ...[]byte) (map[string]any, error) {
+	var typeAndMsg string
+	switch {
+	case errType != "" && errMsg != "":
+		typeAndMsg = errType + ": " + errMsg
+	case errType != "":
+		typeAndMsg = errType
+	case errMsg != "":
+		typeAndMsg = errMsg
+	}
+
+	if wrap != nil {
+		if typeAndMsg == "" {
+			return nil, fmt.Errorf("anthropic: %s %s: status %d: %w",
+				method, path, status, wrap)
+		}
+		return nil, fmt.Errorf("anthropic: %s %s: %d %s: %w",
+			method, path, status, typeAndMsg, wrap)
+	}
+
+	if typeAndMsg != "" {
+		return nil, fmt.Errorf("anthropic: %s %s: %d %s",
+			method, path, status, typeAndMsg)
+	}
+	// No envelope, no wrap target — include the body excerpt so
+	// audit + agent see something actionable.
+	if len(body) > 0 && len(body[0]) > 0 {
+		return nil, fmt.Errorf("anthropic: %s %s: status %d, body: %s",
+			method, path, status, truncate(body[0], 256))
+	}
+	return nil, fmt.Errorf("anthropic: %s %s: status %d", method, path, status)
 }
 
 // truncate caps a byte slice for inclusion in error strings so we don't

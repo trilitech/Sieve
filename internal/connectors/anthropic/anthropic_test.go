@@ -287,19 +287,54 @@ func TestValidate_ProbesCountTokens(t *testing.T) {
 	}
 }
 
-// TestValidate_FailsOnMissingInputTokens guards against a server that
-// 200s with an empty body or wrong shape — Sieve should treat that as
-// an unhealthy connection, not a healthy one.
-func TestValidate_FailsOnMissingInputTokens(t *testing.T) {
-	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
+// TestValidate_FailsOnlyOnReauth pins the narrowed contract: Validate
+// only refuses to save the connection when the upstream rejects the
+// key. A non-401 4xx (e.g., model_not_found on a gateway that
+// restricts which Anthropic models the operator can call) means the
+// key was accepted far enough to elicit a structured rejection —
+// that's evidence enough that Validate should succeed.
+//
+// Three scenarios cover the contract:
+//   - 401 / authentication_error → Validate fails
+//   - 4xx with model_not_found    → Validate succeeds (key works)
+//   - 5xx                         → Validate succeeds (can't tell;
+//                                   error will repeat on first agent call)
+func TestValidate_FailsOnlyOnReauth(t *testing.T) {
+	t.Run("401 fails", func(t *testing.T) {
+		conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`))
+		})
+		err := conn.Validate(context.Background())
+		if !errors.Is(err, connector.ErrNeedsReauth) {
+			t.Errorf("401 → want ErrNeedsReauth, got %v", err)
+		}
 	})
 
-	err := conn.Validate(context.Background())
-	if err == nil {
-		t.Fatal("Validate should fail when response lacks input_tokens")
-	}
+	t.Run("model_not_found succeeds", func(t *testing.T) {
+		conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"not_found_error","message":"model not enabled for this account"}}`))
+		})
+		err := conn.Validate(context.Background())
+		if err != nil {
+			t.Errorf("model_not_found should leave Validate succeeding (key works); got %v", err)
+		}
+	})
+
+	t.Run("5xx succeeds", func(t *testing.T) {
+		conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"api_error","message":"overloaded"}}`))
+		})
+		err := conn.Validate(context.Background())
+		if err != nil {
+			t.Errorf("transient 5xx should not block save; got %v", err)
+		}
+	})
 }
 
 // TestOperations_CatalogShape catches accidental rename / removal of
@@ -662,5 +697,84 @@ func TestParseConfig_RejectsWrongPrefixWithoutEchoingKey(t *testing.T) {
 		strings.Contains(err.Error(), bogus[:7]) ||
 		strings.Contains(err.Error(), bogus[:5]) {
 		t.Errorf("error must not echo any portion of the supplied key; got %q", err.Error())
+	}
+}
+
+// TestDoRequest_NullJSON2xxFailsLoudly catches the json.Unmarshal-of-
+// literal-null edge case: json decodes `null` into a map by setting it
+// to nil, which used to "successfully" propagate as a nil response.
+// Downstream callers would nil-deref. We now treat null as no
+// structured body and fail with a clear message.
+func TestDoRequest_NullJSON2xxFailsLoudly(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`null`))
+	})
+	_, err := conn.Execute(context.Background(), "messages_count_tokens", map[string]any{
+		"model":    "claude-sonnet-4-5",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error on JSON null 2xx response")
+	}
+	if !strings.Contains(err.Error(), "not a valid JSON object") {
+		t.Errorf("error should explain the bad shape; got %v", err)
+	}
+}
+
+// TestDoRequest_ErrorEnvelopeTypeOnlyNoDanglingColon covers the
+// envelope with type but no message. The previous formatter rendered
+// "<status> <type>: " with a dangling colon-space; the new
+// formatUpstreamError emits "<status> <type>" with no trailing
+// punctuation.
+func TestDoRequest_ErrorEnvelopeTypeOnlyNoDanglingColon(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error"}}`))
+	})
+	_, err := conn.Execute(context.Background(), "messages_count_tokens", map[string]any{
+		"model":    "claude-sonnet-4-5",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "invalid_request_error") {
+		t.Errorf("error should preserve type; got %q", msg)
+	}
+	// Reject any of the dangling-separator shapes the formatter
+	// could regress to.
+	for _, bad := range []string{": :", ": ,", ": \n", "invalid_request_error: "} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("error contains dangling separator %q; full: %q", bad, msg)
+		}
+	}
+	// And specifically — the message must NOT end on "type:" with
+	// trailing whitespace where errMsg would have been.
+	if strings.HasSuffix(msg, ": ") {
+		t.Errorf("error ends with trailing \": \"; got %q", msg)
+	}
+}
+
+// TestDoRequest_ReauthErrorEnvelopeTypeOnly covers the same shape on
+// the auth path: 401 with a type but no message must still wrap
+// ErrNeedsReauth with no dangling ": :" pattern.
+func TestDoRequest_ReauthErrorEnvelopeTypeOnly(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"authentication_error"}}`))
+	})
+	_, err := conn.Execute(context.Background(), "messages_count_tokens", map[string]any{
+		"model":    "claude-sonnet-4-5",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	})
+	if !errors.Is(err, connector.ErrNeedsReauth) {
+		t.Fatalf("expected ErrNeedsReauth; got %v", err)
+	}
+	if strings.Contains(err.Error(), ": :") {
+		t.Errorf("must not contain \": :\"; got %q", err.Error())
 	}
 }
