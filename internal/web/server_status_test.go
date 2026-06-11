@@ -2,9 +2,8 @@ package web_test
 
 // Tests for the /connections/{id}/disable and /connections/{id}/enable
 // endpoints (status surfacing) and the rejectIfAgentToken protection.
-//
 // External package so we don't touch the private Server type beyond the
-// public NewServer + Handler() surfaces an admin would actually use.
+// public NewServer + Handler surfaces an admin would actually use.
 
 import (
 	"net/http"
@@ -61,7 +60,7 @@ func TestServer_DisableConnection_RejectsAgentToken(t *testing.T) {
 
 	// Deliberately NO operator session cookie — the request carries
 	// an agent bearer header which the middleware surfaces as 403
-	// (FR-036) rather than redirecting to /login.
+	// rather than redirecting to /login.
 	req := httptest.NewRequest(http.MethodPost, "/connections/c1/disable", nil)
 	req.Header.Set("Authorization", "Bearer sieve_tok_pretend")
 	rec := httptest.NewRecorder()

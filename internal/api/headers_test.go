@@ -9,7 +9,6 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// Spec 001-fix-security-vulns US11 / FR-045: every agent-API response
 // MUST carry the documented cache-prevention header set so an
 // intermediate proxy cannot store agent-visible entity data and serve
 // it back to a different (or invalid) bearer token.

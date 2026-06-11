@@ -13,7 +13,7 @@ import (
 	"github.com/trilitech/Sieve/internal/tokens"
 )
 
-// Spec 001-fix-security-vulns US10 (FR-040..FR-043): per-IP token-bucket
+// ): per-IP token-bucket
 // throttling on the bearer-token validation path. Failed auth depletes
 // the bucket; success refunds. 429 + Retry-After on refusal.
 
@@ -27,10 +27,10 @@ func newRateLimitTestServer(t *testing.T, cap int, refill time.Duration) (*httpt
 	return ts, env, rt
 }
 
-// TestRateLimit_BurstOfInvalidTokensTriggers429 — the documented Shannon
-// attack pattern: spray invalid bearer tokens at the agent API. Pre-fix
-// the server accepted ~925 attempts/second with no throttling. Now the
-// 11th invalid attempt within the window returns 429.
+// TestRateLimit_BurstOfInvalidTokensTriggers429 — spray invalid bearer
+// tokens at the agent API. Before the per-IP limiter landed the server
+// accepted ~925 attempts/second with no throttling. Now the 11th
+// invalid attempt within the window returns 429.
 func TestRateLimit_BurstOfInvalidTokensTriggers429(t *testing.T) {
 	ts, _, _ := newRateLimitTestServer(t, 5, time.Minute)
 

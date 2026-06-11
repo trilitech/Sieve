@@ -38,8 +38,7 @@ type client struct {
 // newClient builds a client from the validated Config plus the
 // optional `_base_url` and `_on_terminal_auth` injections. Returns
 // an error if the config has no usable bearer token.
-//
-// Outbound SSRF guard (spec 001-fix-security-vulns US2): replaces the
+// Outbound SSRF guard (
 // previous http.DefaultClient — which had no timeout and followed
 // default redirects with no destination check. httpguard.Client
 // enforces scheme + IP-range deny rules on every dial and redirect.
@@ -69,7 +68,6 @@ func newClient(cfg *Config, baseURL string, onTerminalAuth func(), allowlist []n
 // post issues a Slack Web API call. The Slack docs accept either form-
 // encoded or JSON bodies; we use form encoding because it matches the
 // mock server's parsing path and is what every Slack curl example uses.
-//
 // On a terminal-auth response, post fires onTerminalAuth (best-effort)
 // before returning the structured error. Callers see the same error
 // shape regardless — the side effect is the status transition.

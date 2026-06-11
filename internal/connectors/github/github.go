@@ -1,5 +1,4 @@
 // Package github implements a Sieve connector for the GitHub REST API.
-//
 // A single GitHub connection holds one or more credentials (fine-grained PATs
 // and/or App installation entries), each scoped to a user or org. Each request
 // is routed through extractOwner -> pickCredential to select the appropriate

@@ -10,7 +10,6 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// Spec 001-fix-security-vulns Phase 2 / T009-T010: testenv must let
 // tests seed an operator and attach an admin session cookie + CSRF
 // token to outgoing requests with one helper call. Without these,
 // every test that exercises the (future) authenticated admin surface
@@ -24,7 +23,7 @@ func TestNew_ExposesOperatorAndSession(t *testing.T) {
 	if env.Session == nil {
 		t.Fatal("Env.Session must be populated by New()")
 	}
-	// No credential yet; Exists() should report false.
+	// No credential yet; Exists should report false.
 	exists, err := env.Operator.Exists()
 	if err != nil {
 		t.Fatal(err)
@@ -112,8 +111,8 @@ func TestCSRFToken_EmptyBeforeSetup(t *testing.T) {
 	}
 }
 
-// TestCSRFTokenVerifies — the token returned by env.CSRFToken() must
-// actually verify against the session that env.SessionCookie() points
+// TestCSRFTokenVerifies — the token returned by env.CSRFToken must
+// actually verify against the session that env.SessionCookie points
 // at. Otherwise tests would seed a session but the middleware would
 // reject every state-changing call.
 func TestCSRFTokenVerifies(t *testing.T) {

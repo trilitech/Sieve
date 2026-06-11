@@ -17,10 +17,9 @@ import (
 // of the CLI flow without needing a TTY for the prompt step. The runRotate
 // function itself is deliberately thin — it wires Acquire + Rotate + exit
 // codes — so the load-bearing assertions live here:
-//
-//   - count returned matches the number of credential rows on disk
-//   - one keyring.rotate audit row is written with surface="cli"
-//   - the new passphrase loads on a fresh keyring; the old does not
+// - count returned matches the number of credential rows on disk
+// - one keyring.rotate audit row is written with surface="cli"
+// - the new passphrase loads on a fresh keyring; the old does not
 func TestRotateCLI_Success(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "rotate.db")
@@ -135,12 +134,11 @@ func contains(haystack, needle string) bool {
 // TestResetKeyring_DeletesCredentialsAndPreservesEverythingElse exercises
 // the load-bearing transactional behavior of runResetKeyring without
 // driving the TTY confirmation. After the reset:
-//
-//   - the connections table MUST be empty
-//   - the crypto_meta row MUST be gone (Load returns ErrCryptoMetaMissing)
-//   - the audit_log table MUST contain a "keyring.reset" row whose
-//     params record the deleted-connections count
-//   - policies MUST still be present (proves preservation)
+// - the connections table MUST be empty
+// - the crypto_meta row MUST be gone (Load returns ErrCryptoMetaMissing)
+// - the audit_log table MUST contain a "keyring.reset" row whose
+// params record the deleted-connections count
+// - policies MUST still be present (proves preservation)
 func TestResetKeyring_DeletesCredentialsAndPreservesEverythingElse(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "reset.db")
@@ -266,10 +264,9 @@ func TestResetKeyring_DeletesCredentialsAndPreservesEverythingElse(t *testing.T)
 // any source where the operator cannot interactively type RESET),
 // runResetKeyring exits with resetExitAborted and does NOT touch the
 // database.
-//
 // This is deterministic regardless of how `go test` is invoked: we
 // override os.Stdin with a regular file, which os.Stat reports without
-// the ModeCharDevice bit, so stdinIsTerminal() reliably returns false.
+// the ModeCharDevice bit, so stdinIsTerminal reliably returns false.
 func TestResetKeyring_AbortsWithoutDestruction(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "reset.db")
@@ -287,7 +284,7 @@ func TestResetKeyring_AbortsWithoutDestruction(t *testing.T) {
 	}
 	db.Close()
 
-	// Replace os.Stdin with a regular file so stdinIsTerminal() is
+	// Replace os.Stdin with a regular file so stdinIsTerminal is
 	// deterministically false. (A regular file's mode never carries
 	// os.ModeCharDevice.)
 	stdinFile, err := os.Open(filepath.Join(dir, "stdin-substitute.txt"))

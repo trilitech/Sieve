@@ -2,11 +2,9 @@
 // connector tests. It implements only the endpoints the curated Slack
 // operation set exercises plus oauth.v2.access for OAuth-callback
 // tests.
-//
 // The mock is intentionally minimal: enough to drive happy-path and
 // terminal-auth-failure code paths in the Slack connector and admin
 // UI. It is NOT a faithful Slack simulator.
-//
 // Pattern mirrors internal/testing/mockconnector — same shape, but
 // instead of implementing the connector.Connector interface it stands
 // up an http.Handler that the Slack connector's HTTP client points at
@@ -57,7 +55,7 @@ type Call struct {
 }
 
 // New returns a Server with default seed data. The caller is
-// responsible for srv.Close() — usually `t.Cleanup(s.Close)`.
+// responsible for srv.Close — usually `t.Cleanup(s.Close)`.
 func New() *Server {
 	s := &Server{}
 	s.channels = defaultChannels()

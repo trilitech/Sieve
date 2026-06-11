@@ -9,23 +9,20 @@ import (
 	"testing"
 )
 
-// TestTemplatesNoUnsafeInnerHTML enforces FR-002 from spec 001-fix-security-vulns:
+// TestTemplatesNoUnsafeInnerHTML enforces from
 // admin templates must not concatenate server-derived strings into innerHTML
 // without an explicit per-sink escaper.
-//
 // The guard recognizes these safe patterns:
-//   - Empty-string clears: `el.innerHTML = "";` / `el.innerHTML = '';`
-//   - Pure string literals (template-author-controlled): `el.innerHTML = '<div>...</div>';`
-//   - Lines containing an explicit per-sink escaper invocation:
-//     `escHtml(`, `escapeHTML(`, or `DOMPurify.sanitize(`
-//   - Lines (or multi-line expressions) carrying an explicit lint exemption
-//     comment: `// xss-safe: <reason>` on the same line as the innerHTML assignment.
-//
-// Anything else is flagged. The Shannon report's documented attack pattern was
+// - Empty-string clears: `el.innerHTML = "";` / `el.innerHTML = '';`
+// - Pure string literals (template-author-controlled): `el.innerHTML = '<div>...</div>';`
+// - Lines containing an explicit per-sink escaper invocation:
+// `escHtml(`, `escapeHTML(`, or `DOMPurify.sanitize(`
+// - Lines (or multi-line expressions) carrying an explicit lint exemption
+// comment: `// xss-safe: <reason>` on the same line as the innerHTML assignment.
+// Anything else is flagged. The classic attack pattern is
 // `el.innerHTML = '<tag>' + serverValue + '</tag>'` with serverValue unescaped
 // — a single-line concatenation with no escaper. This guard catches that.
-//
-// Multi-line `el.innerHTML = rules.map(function(r) { ... }).join("");` patterns
+// Multi-line `el.innerHTML = rules.map(function(r) {... }).join("");` patterns
 // in policies.html / policy_edit.html have every interpolation escHtml-wrapped
 // inside the map; they're annotated with `// xss-safe: escHtml-wrapped` so the
 // guard skips them.

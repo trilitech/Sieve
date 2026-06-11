@@ -1,7 +1,6 @@
 package api_test
 
 // Tests for sentinel mapping in the REST API.
-//
 // When connections.GetConnector returns ErrReauthRequired or
 // ErrConnectionDisabled, the router translates the sentinel into a
 // structured 403 response: {"error": "<code>", "message": "..."}.

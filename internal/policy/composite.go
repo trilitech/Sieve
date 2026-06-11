@@ -1,15 +1,14 @@
 // composite.go implements the CompositeEvaluator which chains multiple
 // policy evaluators. This is used when a token references multiple policies
 // (e.g., "gmail-drafter" + "redact-pii" + "rate-limit").
-//
 // Evaluation semantics:
-//   - All evaluators run in order
-//   - First "deny" short-circuits and returns immediately
-//   - Any "approval_required" is sticky (returned if nothing denies)
-//   - All redactions are merged
-//   - All response filters from "allow" decisions are merged
-//   - Last non-empty rewrite wins (later policies can override earlier rewrites)
-//   - If all evaluators return "allow", the result is "allow"
+// - All evaluators run in order
+// - First "deny" short-circuits and returns immediately
+// - Any "approval_required" is sticky (returned if nothing denies)
+// - All redactions are merged
+// - All response filters from "allow" decisions are merged
+// - Last non-empty rewrite wins (later policies can override earlier rewrites)
+// - If all evaluators return "allow", the result is "allow"
 package policy
 
 import (

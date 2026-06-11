@@ -28,12 +28,11 @@ type bucket struct {
 }
 
 // NewLimiter constructs a per-key token-bucket limiter.
-//
-//   - capacity: bucket size (max consecutive failures before refusal).
-//     Zero or negative is replaced with 10.
-//   - refill: one token added every `refill` duration. Zero or negative
-//     is replaced with 6 seconds (matches the documented 10/minute default).
-//   - maxKeys: LRU bound on tracked keys. Zero is replaced with 10000.
+// - capacity: bucket size (max consecutive failures before refusal).
+// Zero or negative is replaced with 10.
+// - refill: one token added every `refill` duration. Zero or negative
+// is replaced with 6 seconds (matches the documented 10/minute default).
+// - maxKeys: LRU bound on tracked keys. Zero is replaced with 10000.
 func NewLimiter(capacity int, refill time.Duration, maxKeys int) *Limiter {
 	if capacity <= 0 {
 		capacity = 10
@@ -77,7 +76,7 @@ func (l *Limiter) Allow(key string) (bool, time.Duration) {
 
 // Refund returns one token to the key's bucket. Used after a successful
 // authentication so legitimate high-throughput clients are not penalised
-// for an occasional auth failure (FR-042).
+// for an occasional auth failure.
 func (l *Limiter) Refund(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -13,7 +13,6 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// Spec 001-fix-security-vulns US7 / FR-028..FR-033d:
 // login/logout/setup HTTP handlers + the requireOperatorSession
 // middleware. This file exercises the auth flow in isolation —
 // the next commit wraps every admin endpoint with the middleware
@@ -340,7 +339,7 @@ func TestMiddleware_RedirectsToSetupWhenNoCredential(t *testing.T) {
 
 func TestMiddleware_500WhenAuthNotWired(t *testing.T) {
 	// Server constructed without SetAuth — middleware MUST refuse
-	// to serve admin routes per FR-028. This replaces the earlier
+	// to serve admin routes per. This replaces the earlier
 	// transitional pass-through.
 	env := testenv.New(t)
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)

@@ -20,7 +20,6 @@ const (
 )
 
 // Config is the persisted, decrypted connection config for a GitHub connection.
-//
 // A single connection can hold multiple credentials, each scoped to a user or
 // an org. The connector picks the credential that covers the owner of each
 // request; if no specific scope matches and DefaultIndex is set, that

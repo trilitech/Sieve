@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// Spec 001-fix-security-vulns US4 (Shannon INJ-VULN-01/02/03): the
 // command field on script-type policies (and on rules-type nested
 // `script.command`) must be validated against an operator-configurable
 // allowlist at every CRUD site and at evaluation time.

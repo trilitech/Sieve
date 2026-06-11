@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Spec 001-fix-security-vulns US10 (FR-040..FR-043): per-key
+// ): per-key
 // constant-refill token bucket. Defaults: capacity 10, refill 6s,
 // LRU bound 10000 keys.
 

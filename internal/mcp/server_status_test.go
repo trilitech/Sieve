@@ -1,12 +1,10 @@
 package mcp_test
 
 // MCP-side coverage for sentinel surfacing.
-//
 // When connections.GetConnector returns ErrReauthRequired or
 // ErrConnectionDisabled, the MCP server returns a tool-call result
 // with IsError=true and a text body that begins with the stable
-// error code ("reauth_required: ..." / "disabled: ...").
-//
+// error code ("reauth_required:..." / "disabled:...").
 // This is the agent-facing equivalent of the REST 403-mapping tested
 // in internal/api/router_status_test.go. Together they verify that
 // every agent surface exposes the same machine-readable error code.

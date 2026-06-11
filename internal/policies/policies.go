@@ -20,7 +20,7 @@ type Policy struct {
 	CreatedAt    time.Time      `json:"created_at"`
 	// LintAck stores sticky acknowledgements of lint warnings keyed by
 	// the lint rule name (e.g., "deny_ceiling_v1"). Spec
-	// 001-fix-security-vulns US6 / FR-024a. A non-empty value means the
+	// A non-empty value means the
 	// operator has accepted the named lint for the current policy shape;
 	// subsequent saves that produce the same fingerprint don't re-warn.
 	LintAck map[string]any `json:"lint_ack,omitempty"`
@@ -187,7 +187,7 @@ func scanPolicy(row interface{ Scan(...any) error }) (*Policy, error) {
 // SetLintAck overwrites the lint_ack JSON for the given policy.
 // Callers compute the payload (typically a single rule_name → AckPayload
 // entry) and pass it in. Pass nil/empty to clear the acks (the
-// composition was removed). Spec 001-fix-security-vulns US6 / FR-024a.
+// composition was removed).
 func (s *Service) SetLintAck(id string, ack map[string]any) error {
 	var payload string
 	if len(ack) == 0 {

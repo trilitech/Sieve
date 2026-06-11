@@ -43,7 +43,6 @@ func Extract(r *http.Request) string {
 // stored hash. Returns ErrMissing when no token was submitted,
 // ErrMismatch when a token was submitted but didn't match, nil
 // on success.
-//
 // Callers should invoke this BEFORE any side-effecting code runs
 // (DB write, OAuth start, audit emit, etc.). The middleware in
 // internal/web wraps this for the admin handler chain.

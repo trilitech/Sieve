@@ -72,8 +72,7 @@ func TestFactory_AuthValueBearerAutoPrefix(t *testing.T) {
 
 // makeProxy builds a ProxyConnector pointing at the supplied test server, with
 // the given auth_header/auth_value and scrub-on-by-default.
-//
-// httpguard (spec 001-fix-security-vulns US2) refuses to dial loopback by
+// httpguard (
 // default; httptest.Server always binds to 127.0.0.1, so every test config
 // gets 127.0.0.0/8 in outbound_allowlist.
 func makeProxy(t *testing.T, ts *httptest.Server, authHeader, authValue string) *ProxyConnector {
@@ -628,7 +627,7 @@ func TestExecuteUrlEncodesSpecialChars(t *testing.T) {
 	const secret = "key+with=special&chars/and%spaces"
 	var observedAppid string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// r.URL.Query() decodes — observedAppid receives the original byte sequence.
+		// r.URL.Query decodes — observedAppid receives the original byte sequence.
 		observedAppid = r.URL.Query().Get("appid")
 		w.WriteHeader(200)
 		w.Write([]byte(`{}`))

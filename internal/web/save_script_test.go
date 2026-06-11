@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-// Spec 001-fix-security-vulns US7 / FR-046, FR-047: the /api/save-script
 // filename parameter must be a single safe filename — no path separators,
 // no ".." segments, no leading ".", no disallowed characters.
 

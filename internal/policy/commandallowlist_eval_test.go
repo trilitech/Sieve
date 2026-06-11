@@ -8,10 +8,8 @@ import (
 	"github.com/trilitech/Sieve/internal/policy"
 )
 
-// Spec 001-fix-security-vulns US4 / FR-018a (hard-break migration):
 // stored policies whose `command` is outside the configured allowlist
 // MUST fail at the next evaluation with the documented error.
-//
 // The evaluator is built fresh per request via CreateEvaluator →
 // NewScriptEvaluator, so the construction-time check IS the
 // evaluation-time safety net. This test exercises CreateEvaluator

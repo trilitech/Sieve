@@ -10,7 +10,6 @@ import (
 	"github.com/trilitech/Sieve/internal/operator"
 )
 
-// Spec 001-fix-security-vulns US7 / FR-030..FR-032a.
 
 func newTestService(t *testing.T) *operator.Service {
 	t.Helper()

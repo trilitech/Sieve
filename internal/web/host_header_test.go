@@ -13,7 +13,6 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// Spec 001-fix-security-vulns US3 (AUTH-VULN-06): URLs the admin UI emits
 // for OAuth flows MUST derive from the configured public_base_url setting,
 // never from inbound Host/X-Forwarded-Host/X-Forwarded-Proto headers.
 

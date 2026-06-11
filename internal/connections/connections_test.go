@@ -526,7 +526,7 @@ func TestService_GetConnector_RecoversAfterReactivate(t *testing.T) {
 
 // TestService_LoadConnectorForRevalidation_BypassesReauthGate verifies the
 // helper the reauth sweeper uses to probe recovery: a connection with
-// status=reauth_required must yield a live connector (so Validate() can be
+// status=reauth_required must yield a live connector (so Validate can be
 // called) rather than short-circuiting like GetConnector does. Without
 // this path the sweeper can never auto-recover from a transient upstream
 // blip.

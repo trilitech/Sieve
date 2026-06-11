@@ -167,7 +167,7 @@ func TestRotateHandlerRejectsAgentToken(t *testing.T) {
 
 	// Deliberately NOT env.AdminClient — the request must NOT carry an
 	// operator session. The middleware sees the agent bearer header
-	// without a session cookie and returns 403 (FR-036).
+	// without a session cookie and returns 403.
 	bareClient := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -496,7 +496,7 @@ func readBody(t *testing.T, resp *http.Response) string {
 }
 
 // serverFromHandler reaches into the test server to recover the underlying
-// *Server. The test server is constructed with srv.Handler() — we have
+// *Server. The test server is constructed with srv.Handler — we have
 // the handler, and the handler is a *http.ServeMux holding closures over
 // the *Server. Rather than expose internals, the helper tests cheat: they
 // keep a side-table of (testserver URL → *Server) populated by

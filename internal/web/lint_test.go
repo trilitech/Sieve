@@ -12,7 +12,6 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// Spec 001-fix-security-vulns US6 (Shannon AUTHZ-VULN-10): the deny +
 // numeric-ceiling + non-deny-default composition surfaces a sticky lint
 // warning at the policy save endpoint. Operators must explicitly
 // acknowledge to proceed; a re-save with the same composition reuses
@@ -47,9 +46,10 @@ func postPolicyCreateForm(t *testing.T, ts *httptest.Server, env *testenv.Env, f
 	return resp
 }
 
-// TestPolicyCreate_LintBlocksWithoutAck — the documented Shannon attack
-// path: a deny rule with a numeric ceiling + a non-deny default. The
-// save endpoint MUST return 400 and a structured lint payload.
+// TestPolicyCreate_LintBlocksWithoutAck — deny rule with a numeric
+// ceiling and a non-deny default action (the ceiling-inverts-deny
+// footgun). The save endpoint MUST return 400 with a structured
+// lint payload until the operator acknowledges.
 func TestPolicyCreate_LintBlocksWithoutAck(t *testing.T) {
 	ts, env := newLintTestServer(t)
 	form := url.Values{}

@@ -2,20 +2,17 @@
 // to an upstream MCP server (via SSE or Streamable HTTP transport), discovers
 // its tools, and exposes them as connector operations. Each tool call goes
 // through Sieve's policy pipeline before being forwarded upstream.
-//
 // This enables Sieve to sit in front of any MCP server (database tools,
 // filesystem tools, third-party integrations) and enforce fine-grained
 // policies on tool calls — the agent doesn't know it's not talking directly
 // to the upstream server.
-//
 // Connection config:
-//
-//	{
-//	  "url": "http://localhost:3000/mcp",
-//	  "auth_header": "Authorization",       // optional
-//	  "auth_value": "Bearer sk-xxx",        // optional
-//	  "name": "my-mcp-server"               // display name for the server
-//	}
+//{
+//"url": "http://localhost:3000/mcp",
+//"auth_header": "Authorization", // optional
+//"auth_value": "Bearer sk-xxx", // optional
+//"name": "my-mcp-server" // display name for the server
+//}
 package mcpproxy
 
 import (
@@ -146,7 +143,7 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		}
 	}
 
-	// Outbound SSRF guard (spec 001-fix-security-vulns US2): the previous
+	// Outbound SSRF guard (
 	// http.Client allowed redirects with no destination check. httpguard.Client
 	// enforces scheme/IP-range deny rules on the first request and on every
 	// redirect, including DNS-rebinding protection at dial time. The

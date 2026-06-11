@@ -23,7 +23,7 @@ var authQueryParamPattern = regexp.MustCompile(httpproxy.AuthQueryParamPatternSt
 // the success/error banner state).
 type connectionEditData struct {
 	// Active drives the side-nav highlight; templates/nav.html reads
-	// .Active to decide which menu item is current.
+	// Active to decide which menu item is current.
 	Active string
 
 	ID            string
@@ -81,7 +81,6 @@ var staticHTTPProxyBaselineKeys = []string{
 }
 
 // handleConnectionEditPage renders the connection-edit page. GET only.
-//
 // This page is admin-listener-only and rejects any agent bearer token.
 // It is the only surface that exposes the optional config fields
 // (auth_value_scrub, additional_denied_headers, response_body_cap_bytes,
@@ -102,16 +101,15 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 }
 
 // handleConnectionEditSave validates and persists the edit form. POST only.
-//
 // The save handler:
-//  1. Rejects agent bearer tokens.
-//  2. Applies the same Origin/Referer CSRF check that handleRotatePassphrase
-//     uses.
-//  3. Validates per-connector inputs (positive cap, non-empty trimmed
-//     allow-list / additional-denies entries).
-//  4. Calls connections.Service.UpdateConfig with the merged config map.
-//  5. Redirects to the edit page with ?saved=1 on success, or re-renders
-//     with a scoped error and the operator's typed values preserved.
+// 1. Rejects agent bearer tokens.
+// 2. Applies the same Origin/Referer CSRF check that handleRotatePassphrase
+// uses.
+// 3. Validates per-connector inputs (positive cap, non-empty trimmed
+// allow-list / additional-denies entries).
+// 4. Calls connections.Service.UpdateConfig with the merged config map.
+// 5. Redirects to the edit page with ?saved=1 on success, or re-renders
+// with a scoped error and the operator's typed values preserved.
 func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request) {
 	if !s.checkRotationOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
@@ -301,7 +299,6 @@ func joinStringSliceField(v any) string {
 // renderEditError re-renders the edit page with the given error banner.
 // Operator-typed values from the request (where non-secret) are preserved
 // in the form so the operator doesn't have to re-enter them.
-//
 // Sets Content-Type and the 400 status on the ResponseWriter directly
 // rather than calling s.render's helper, so we don't trip the
 // "superfluous WriteHeader" warning when render then writes its own

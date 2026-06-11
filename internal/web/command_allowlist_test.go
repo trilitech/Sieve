@@ -12,7 +12,6 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// Spec 001-fix-security-vulns US4 (Shannon INJ-VULN-01/02/03): the
 // `command` field on script-type policies and on rules-type nested
 // `script.command` MUST be rejected by the policy CREATE / UPDATE
 // handlers when it isn't on the operator-configured allowlist.
@@ -119,7 +118,7 @@ func TestPolicyCreate_AcceptsBundledPython(t *testing.T) {
 func TestPolicyCreate_RejectsRulesNestedScriptCommand(t *testing.T) {
 	ts, env := newPolicyAllowlistTestServer(t)
 	// Rules-type policy with action=script and bash as the nested
-	// command — the path Shannon INJ-VULN-03 exercised.
+	// command — the path exercised.
 	cfg := `{"rules":[{"action":"script","script":{"command":"bash","path":"/dev/stdin"}}],"default_action":"deny"}`
 	resp := postPolicyCreate(t, ts, env, "rules-nested-bash", "rules", cfg)
 	defer resp.Body.Close()

@@ -1,17 +1,14 @@
 package slack
 
 // Terminal-auth error classifier per research R10.
-//
 // Slack signals revocation via a small set of well-known error codes in
 // the response body's `error` field (Slack always returns HTTP 200 even
-// on "logical" auth failures — the body's `ok: false` and `error: ...`
+// on "logical" auth failures — the body's `ok: false` and `error:...`
 // fields are authoritative).
-//
 // On a hit, the connector calls connections.Service.SetStatus(id,
 // "reauth_required") so subsequent calls short-circuit at GetConnector
 // (mapped to HTTP 403 by the API and to IsError by MCP — both
 // translations covered in T015 / T017).
-//
 // The classifier is deliberately conservative: false positives flip
 // status unnecessarily (correctable), false negatives leave a stale
 // credential `active` until the next call.
@@ -27,16 +24,14 @@ type errorEnvelope struct {
 // terminalAuthErrors are the Slack error codes that indicate the bot
 // token is no longer valid: revoked, scoped to a deleted user/team,
 // or never properly authenticated.
-//
 // See https://docs.slack.dev/authentication/tokens — these codes are
 // stable across API versions and apply to every Web API method.
-//
 // Codes deliberately NOT in this set:
-//   - "team_added_to_org" — workspace migration, recoverable
-//   - "rate_limited" / 429 — transient
-//   - any 5xx — transient
-//   - unknown new codes — treated as transient (false negative is
-//     preferred over false positive for unknowns)
+// - "team_added_to_org" — workspace migration, recoverable
+// - "rate_limited" / 429 — transient
+// - any 5xx — transient
+// - unknown new codes — treated as transient (false negative is
+// preferred over false positive for unknowns)
 var terminalAuthErrors = map[string]bool{
 	"invalid_auth":     true, // token is bad or malformed
 	"token_revoked":    true, // operator uninstalled the app

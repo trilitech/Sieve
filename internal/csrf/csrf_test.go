@@ -12,10 +12,9 @@ import (
 	"github.com/trilitech/Sieve/internal/session"
 )
 
-// Spec 001-fix-security-vulns US7 / FR-033b.
 
 // mockVerifier matches the signature session.Manager.VerifyCSRF expects.
-// Used to drive Check() tests without standing up a DB.
+// Used to drive Check tests without standing up a DB.
 func mockVerifier(expected string) func(*session.Session, string) bool {
 	return func(_ *session.Session, submitted string) bool {
 		return submitted == expected
@@ -23,7 +22,7 @@ func mockVerifier(expected string) func(*session.Session, string) bool {
 }
 
 // makeSession returns a session whose CSRFHash matches `token` so the
-// real session.Manager.VerifyCSRF would accept it. The Check() tests
+// real session.Manager.VerifyCSRF would accept it. The Check tests
 // use mockVerifier; this helper is for tests that exercise both.
 func makeSession(token string) *session.Session {
 	sum := sha256.Sum256([]byte(token))

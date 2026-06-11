@@ -287,7 +287,7 @@ func TestEditPageRejectsAgentToken(t *testing.T) {
 
 	// Deliberately NOT using env.AdminClient — the request must NOT
 	// carry an operator session. The middleware sees the agent bearer
-	// header and surfaces 403 (FR-036) instead of 401/redirect, giving
+	// header and surfaces 403 instead of 401/redirect, giving
 	// a confused agent client a clearer "wrong port" signal.
 	bareClient := &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

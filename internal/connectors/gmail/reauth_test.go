@@ -8,7 +8,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// fakeTokenSource lets a test inject any error from base.Token() so we can
+// fakeTokenSource lets a test inject any error from base.Token so we can
 // exercise the wrapping logic in persistingTokenSource without standing up a
 // real OAuth endpoint.
 type fakeTokenSource struct {

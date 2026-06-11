@@ -11,12 +11,11 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// Spec 001-fix-security-vulns US11 (FR-044): every response that returns
 // a newly-issued bearer token or other one-time credential MUST carry
 // cache-prevention headers so an intermediate proxy can't store the
 // response and replay the secret to a later requester.
 
-// Expected header set per contracts/admin-auth.md and the FR-044 spec.
+// Expected header set per contracts/admin-auth.md and the spec.
 var sensitiveHeaders = map[string]string{
 	"Cache-Control": "no-store, no-cache, max-age=0, must-revalidate, private",
 	"Pragma":        "no-cache",
@@ -53,7 +52,7 @@ func assertSensitiveHeaders(t *testing.T, h http.Header) {
 
 // TestTokenCreateResponseHeaders proves the token-create endpoint returns
 // the documented cache-prevention header set on a successful create.
-// Pre-fix Shannon AUTH-VULN-10 noted the response carries the plaintext
+// Pre-fix noted the response carries the plaintext
 // bearer token in the body and zero cache-control hygiene; an upstream
 // proxy could store it.
 func TestTokenCreateResponseHeaders(t *testing.T) {
@@ -80,7 +79,7 @@ func TestTokenCreateResponseHeaders(t *testing.T) {
 	assertSensitiveHeaders(t, resp.Header)
 }
 
-// TestLoginPageHeaders confirms the (forthcoming US7) login page also
+// TestLoginPageHeaders confirms the (forthcoming ) login page also
 // carries the headers, since it shows context that could include
 // inadvertently-cached values. Today the page is reachable as a normal
 // admin route — the headers come from the same middleware so this test

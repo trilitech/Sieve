@@ -13,7 +13,7 @@ import (
 	"github.com/trilitech/Sieve/internal/tokens"
 )
 
-// Spec 001-fix-security-vulns US9 (FR-037..FR-039): admin mutation
+// ): admin mutation
 // handlers MUST emit an audit row identifying the operator. This
 // covers the headline mutation paths; per-handler coverage can grow
 // as additional flows land.

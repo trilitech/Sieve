@@ -2,22 +2,18 @@
 // service APIs (Gmail, Drive, Calendar, Contacts, Sheets, and Docs) behind
 // the connector.Connector interface so that the MCP server and REST API can
 // invoke Google operations uniformly through the policy pipeline.
-//
 // The connector uses a Factory pattern: Factory(config) returns a ready-to-use
 // GoogleConnector. The factory handles two OAuth token scenarios:
-//
-//  1. If client_id and client_secret are present in the config, it builds a
-//     refreshing TokenSource via oauth2.Config.TokenSource. This means expired
-//     access tokens are automatically refreshed using the refresh_token, which
-//     is the normal production path after the web UI OAuth flow.
-//
-//  2. If client credentials are missing (e.g., CLI setup before OAuth), it
-//     falls back to a StaticTokenSource that uses the access token as-is.
-//     This won't refresh, so it will stop working once the token expires —
-//     but it allows basic validation and testing.
-//
+// 1. If client_id and client_secret are present in the config, it builds a
+// refreshing TokenSource via oauth2.Config.TokenSource. This means expired
+// access tokens are automatically refreshed using the refresh_token, which
+// is the normal production path after the web UI OAuth flow.
+// 2. If client credentials are missing (e.g., CLI setup before OAuth), it
+// falls back to a StaticTokenSource that uses the access token as-is.
+// This won't refresh, so it will stop working once the token expires —
+// but it allows basic validation and testing.
 // Token expiry handling: if the stored expiry is zero/missing, it is set to
-// time.Now() so the oauth2 library treats the token as expired and immediately
+// time.Now so the oauth2 library treats the token as expired and immediately
 // attempts a refresh. This ensures stale tokens from a database restore or
 // manual config don't silently fail.
 package gmail
@@ -68,12 +64,11 @@ type GoogleConnector struct {
 
 // persistingTokenSource wraps an oauth2.TokenSource and calls callbacks for
 // the two outcomes that matter to Sieve's persistence layer:
-//
-//   - onRefresh: a refresh succeeded. Persist the new token to the DB so
-//     server restarts don't burn a fresh refresh on every startup.
-//   - onRefreshFailure: a refresh failed irrecoverably (invalid_grant et al.).
-//     Mark the connection needs_reauth so the UI surfaces it and future
-//     calls return a structured error instead of opaque 500s.
+// - onRefresh: a refresh succeeded. Persist the new token to the DB so
+// server restarts don't burn a fresh refresh on every startup.
+// - onRefreshFailure: a refresh failed irrecoverably (invalid_grant et al.).
+// Mark the connection needs_reauth so the UI surfaces it and future
+// calls return a structured error instead of opaque 500s.
 type persistingTokenSource struct {
 	base             oauth2.TokenSource
 	lastHash         string // last seen access_token, to detect actual refreshes
@@ -124,10 +119,10 @@ func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
 
 // Factory creates a new GoogleConnector from the provided config.
 // Expected config keys:
-//   - "email": string - the user's email address
-//   - "oauth_token": map[string]any - OAuth2 token with keys: access_token, token_type, refresh_token, expiry
-//   - "client_id", "client_secret": for token refresh
-//   - "_on_token_refresh": func(*oauth2.Token) - optional callback for persisting refreshed tokens
+// - "email": string - the user's email address
+// - "oauth_token": map[string]any - OAuth2 token with keys: access_token, token_type, refresh_token, expiry
+// - "client_id", "client_secret": for token refresh
+// - "_on_token_refresh": func(*oauth2.Token) - optional callback for persisting refreshed tokens
 func Factory(config map[string]any) (connector.Connector, error) {
 	email, ok := config["email"].(string)
 	if !ok || email == "" {
@@ -239,7 +234,7 @@ func tokenFromMap(m map[string]any) (*oauth2.Token, error) {
 	}
 
 	// If expiry is zero (missing or unparseable), set it to now. The oauth2
-	// library checks token.Valid() which returns false when Expiry <= now,
+	// library checks token.Valid which returns false when Expiry <= now,
 	// triggering an automatic refresh via the refresh_token. Without this,
 	// a missing expiry would make the token appear perpetually valid even
 	// after the access token actually expires on Google's side.

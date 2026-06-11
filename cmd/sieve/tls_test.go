@@ -10,7 +10,6 @@ import (
 	"testing"
 )
 
-// Spec 001-fix-security-vulns US12 / FR-048..FR-050.
 
 func TestTLSPairEnabled_NeitherSet(t *testing.T) {
 	on, err := tlsPair{}.enabled()

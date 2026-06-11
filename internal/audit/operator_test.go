@@ -8,7 +8,7 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// Spec 001-fix-security-vulns US9 (FR-037..FR-039): admin mutations
+// ): admin mutations
 // must produce audit rows that identify the operator, never include
 // plaintext bearer tokens or other one-time secrets.
 

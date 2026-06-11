@@ -374,7 +374,7 @@ func TestParseCIDRs(t *testing.T) {
 // ---- helpers --------------------------------------------------------------
 
 // unwrapURLError peels off the *url.Error wrapper that net/http returns from
-// Do() so tests can assert on the underlying sentinel.
+// Do so tests can assert on the underlying sentinel.
 func unwrapURLError(err error) error {
 	var uerr *url.Error
 	if errors.As(err, &uerr) {
