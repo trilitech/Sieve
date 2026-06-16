@@ -15,8 +15,9 @@ import (
 // Using a package var avoids cascading signature changes through
 // CreateEvaluator/NewScriptEvaluator/NewRulesEvaluator (each of which
 // has multiple call sites in production code and tests). The trade-off
-// is that tests must reset the var on entry to avoid cross-test leak —
-// see TestMain in this package for the reset hook.
+// is that tests must reset the var on entry to avoid cross-test leak;
+// they do so with `t.Cleanup(func() { policy.SetCommandAllowlist(nil) })`
+// at the start of each test that mutates it.
 var (
 	cmdAllowlistMu sync.RWMutex
 	cmdAllowlist   []string // nil = caller has not configured; ValidateCommand uses DefaultCommand
