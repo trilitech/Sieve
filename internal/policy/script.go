@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -55,9 +56,26 @@ func NewScriptEvaluator(config map[string]any) (*ScriptEvaluator, error) {
 		return nil, fmt.Errorf("script evaluator: %w", err)
 	}
 
-	if _, err := os.Stat(sc.Script); err != nil {
+	// Resolve symlinks so we can reason about what the interpreter will
+	// actually open. EvalSymlinks also turns a relative path into an
+	// absolute one, which protects against a later `os.Chdir` racing the
+	// exec. We refuse non-regular files (devices, FIFOs, sockets) — the
+	// interpreter would block or read garbage from those — and surface
+	// the resolved path back into the stored config so subsequent
+	// re-runs of this evaluator see the same file even if a symlink
+	// further up the chain is replaced.
+	resolved, err := filepath.EvalSymlinks(sc.Script)
+	if err != nil {
 		return nil, fmt.Errorf("script evaluator: script not found: %w", err)
 	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("script evaluator: script not readable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("script evaluator: script must be a regular file (got %s)", info.Mode().Type())
+	}
+	sc.Script = resolved
 
 	return &ScriptEvaluator{config: sc}, nil
 }
