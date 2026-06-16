@@ -228,16 +228,22 @@ func (g *Connector) opRequest(ctx context.Context, params map[string]any) (any, 
 
 	var body any
 	if b := getString(params, "body"); b != "" {
-		// Validate the body is well-formed JSON, but pass the original
-		// bytes through as json.RawMessage rather than unmarshaling +
-		// re-marshaling. The round-trip would drop a literal JSON `null`
-		// (json.Unmarshal sets the target to nil; doRequest then treats
-		// nil as "no body" and omits Content-Type entirely, changing
-		// request semantics). RawMessage preserves byte-exact body
-		// including null, numeric precision, and key ordering.
-		var dummy any
-		if err := json.Unmarshal([]byte(b), &dummy); err != nil {
-			return nil, fmt.Errorf("gitlab: parse body as JSON: %w", err)
+		// Validate the body is syntactically valid JSON, but pass the
+		// original bytes through as json.RawMessage rather than
+		// unmarshaling + re-marshaling. The round-trip would drop a
+		// literal JSON `null` (json.Unmarshal sets the target to nil;
+		// doRequest then treats nil as "no body" and omits
+		// Content-Type entirely, changing request semantics).
+		// RawMessage preserves byte-exact body including null, large
+		// integers, and key ordering.
+		//
+		// json.Valid (not json.Unmarshal) is the right check here:
+		// it validates syntax only, doesn't allocate the parsed
+		// structure, and doesn't force numbers through float64 (which
+		// would silently lossy-decode large integers even though the
+		// original bytes survive in the RawMessage we forward).
+		if !json.Valid([]byte(b)) {
+			return nil, fmt.Errorf("gitlab: param %q is not valid JSON", "body")
 		}
 		body = json.RawMessage(b)
 	}
