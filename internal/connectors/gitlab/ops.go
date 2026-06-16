@@ -22,14 +22,12 @@ func encodeProject(p string) string {
 	return url.PathEscape(p)
 }
 
-// encodeRefOrPath percent-encodes a path that may contain '/', preserving
-// the slashes (used for repository file paths where the API expects the
-// embedded slashes to be percent-encoded to %2F so the URL parses as a
-// single segment).
+// encodeRefOrPath percent-encodes a repository file path so its embedded
+// '/' characters become %2F and the whole value reaches GitLab as ONE
+// API path segment. Same convention as encodeProject — the GitLab API
+// expects "docs/setup.md" to land at .../files/docs%2Fsetup.md, not at
+// .../files/docs/setup.md (which would 404).
 func encodeRefOrPath(p string) string {
-	// GitLab's files endpoint expects the file path to be ONE segment
-	// with embedded slashes encoded as %2F, same convention as project
-	// identifiers.
 	return url.PathEscape(p)
 }
 
@@ -42,7 +40,7 @@ var operations = []connector.OperationDef{
 		Description: "Send a raw GitLab REST API request. Path must start with '/' (e.g. /projects). Body is JSON-encoded.",
 		ReadOnly:    false,
 		Params: map[string]connector.ParamDef{
-			"method": {Type: "string", Required: true, Description: "HTTP method (GET, POST, PUT, PATCH, DELETE)."},
+			"method": {Type: "string", Required: true, Description: "HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS). Case-insensitive."},
 			"path":   {Type: "string", Required: true, Description: "API path beginning with '/' (relative to /api/v4)."},
 			"query":  {Type: "string", Required: false, Description: "Query string without leading '?'."},
 			"body":   {Type: "string", Required: false, Description: "JSON request body, as a string."},
