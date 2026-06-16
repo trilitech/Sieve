@@ -70,7 +70,9 @@ func sessionFromContext(r *http.Request) *session.Session {
 
 // operatorDisplayName returns the audit-identity label for the
 // current request's operator, or "" when no session is attached.
-// Used by audit producers (spec, ).
+// Called by every admin mutation handler that emits an audit row
+// (s.audit.LogOperator) so each mutation is attributable to a
+// named operator rather than the bare "operator" actor kind.
 func operatorDisplayName(r *http.Request, s *Server) string {
 	if sess := sessionFromContext(r); sess != nil {
 		if s.operatorSvc != nil {

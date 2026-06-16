@@ -18,11 +18,12 @@ type Policy struct {
 	PolicyType   string         `json:"policy_type"`
 	PolicyConfig map[string]any `json:"policy_config"`
 	CreatedAt    time.Time      `json:"created_at"`
-	// LintAck stores sticky acknowledgements of lint warnings keyed by
-	// the lint rule name (e.g., "deny_ceiling_v1"). Spec
-	// A non-empty value means the
-	// operator has accepted the named lint for the current policy shape;
-	// subsequent saves that produce the same fingerprint don't re-warn.
+	// LintAck stores sticky acknowledgements of lint warnings, keyed by
+	// the lint rule name (e.g., "deny_ceiling_v1"). A non-empty value
+	// means the operator has accepted the named lint for the current
+	// policy shape; subsequent saves that produce the same fingerprint
+	// don't re-warn. Persisted in the lint_ack column of the policies
+	// table as a JSON object; SetLintAck overwrites the whole column.
 	LintAck map[string]any `json:"lint_ack,omitempty"`
 }
 
@@ -119,7 +120,9 @@ func (s *Service) List() ([]Policy, error) {
 			return nil, fmt.Errorf("unmarshal policy config: %w", err)
 		}
 		if lintAckJSON != "" && lintAckJSON != "{}" {
-			_ = json.Unmarshal([]byte(lintAckJSON), &p.LintAck)
+			if err := json.Unmarshal([]byte(lintAckJSON), &p.LintAck); err != nil {
+				return nil, fmt.Errorf("unmarshal policy lint_ack (id=%s): %w", p.ID, err)
+			}
 		}
 		result = append(result, p)
 	}
@@ -179,7 +182,9 @@ func scanPolicy(row interface{ Scan(...any) error }) (*Policy, error) {
 		return nil, fmt.Errorf("unmarshal policy config: %w", err)
 	}
 	if lintAckJSON != "" && lintAckJSON != "{}" {
-		_ = json.Unmarshal([]byte(lintAckJSON), &p.LintAck)
+		if err := json.Unmarshal([]byte(lintAckJSON), &p.LintAck); err != nil {
+			return nil, fmt.Errorf("unmarshal policy lint_ack (id=%s): %w", p.ID, err)
+		}
 	}
 	return &p, nil
 }

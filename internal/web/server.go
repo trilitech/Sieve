@@ -2438,13 +2438,13 @@ func (s *Server) buildDocsIndex() (DocNavIndex, error) {
 	corpus, err := BuildSearchIndex(idx, m, readDocBody)
 	if err == nil {
 		// Plain string — embedded into <script type="application/json">
-		// in docs.html and consumed via JSON.parse(textContent) (spec
-		// ). corpus is already
-		// json.Marshal output; the consumer template applies the same
-		// </ and U+2028/U+2029 escaping as the `json` FuncMap helper
-		// via the docs template's inline encoder, since the corpus
-		// goes through Go's html/template auto-escaper inside <script
-		// type="application/json"> — which is text-content, not JS.
+		// in docs.html and consumed via JSON.parse(textContent). corpus
+		// is already json.Marshal output; the consumer template applies
+		// the same </ and U+2028/U+2029 escaping as the `json` FuncMap
+		// helper via the docs template's inline encoder, since the
+		// corpus goes through Go's html/template auto-escaper inside
+		// <script type="application/json"> — which is text-content,
+		// not JS.
 		idx.SearchIndexJSON = string(corpus)
 	}
 	return idx, nil

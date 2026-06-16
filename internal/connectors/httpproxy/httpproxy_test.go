@@ -72,9 +72,9 @@ func TestFactory_AuthValueBearerAutoPrefix(t *testing.T) {
 
 // makeProxy builds a ProxyConnector pointing at the supplied test server, with
 // the given auth_header/auth_value and scrub-on-by-default.
-// httpguard (
-// default; httptest.Server always binds to 127.0.0.1, so every test config
-// gets 127.0.0.0/8 in outbound_allowlist.
+// httpguard blocks loopback dials by default; httptest.Server always
+// binds to 127.0.0.1, so every test config opts the loopback CIDR in
+// via outbound_allowlist to permit the dial.
 func makeProxy(t *testing.T, ts *httptest.Server, authHeader, authValue string) *ProxyConnector {
 	t.Helper()
 	c, err := Factory(map[string]any{

@@ -33,8 +33,9 @@ func mockMCP(t *testing.T, after func(w http.ResponseWriter, r *http.Request)) *
 
 func makeMCP(t *testing.T, ts *httptest.Server, capBytes int64) *MCPProxyConnector {
 	t.Helper()
-	// httpguard (
-	// default; httptest.Server binds to 127.0.0.1.
+	// httpguard blocks loopback dials by default; httptest.Server
+	// binds to 127.0.0.1, so we opt the loopback CIDR in via
+	// outbound_allowlist to permit the dial.
 	cfg := map[string]any{
 		"url":                ts.URL,
 		"outbound_allowlist": []string{"127.0.0.0/8"},
