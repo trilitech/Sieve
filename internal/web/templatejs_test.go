@@ -104,8 +104,11 @@ func TestJSONHelperEscapesLineTerminators(t *testing.T) {
 	}
 }
 
-// invokeJSONHelper handles either signature — template.JS (pre-fix) or
-// string (post-fix) — so the test compiles against both.
+// invokeJSONHelper exercises the json helper through its current
+// signature, func(any) string. The post-fix signature is plain string;
+// this helper exists so a future widening (e.g., back to template.JS, or
+// to an error-returning shape) only needs a new case here rather than a
+// rewrite of every call site.
 func invokeJSONHelper(t *testing.T, fn any, v any) string {
 	t.Helper()
 	switch f := fn.(type) {

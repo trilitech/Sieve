@@ -1,9 +1,10 @@
 package web_test
 
 // Tests for the /connections/{id}/disable and /connections/{id}/enable
-// endpoints (status surfacing) and the rejectIfAgentToken protection.
-// External package so we don't touch the private Server type beyond the
-// public NewServer + Handler surfaces an admin would actually use.
+// endpoints (status surfacing) and the agent-token rejection enforced
+// by the requireOperatorSession middleware. External package so we
+// don't touch the private Server type beyond the public NewServer +
+// Handler surfaces an admin would actually use.
 
 import (
 	"net/http"
@@ -49,8 +50,8 @@ func authedPost(t *testing.T, env *testenv.Env, path string) (*http.Request, *ht
 
 // TestServer_DisableConnection_RejectsAgentToken verifies that an
 // agent bearer token cannot disable a connection through the admin UI.
-// rejectIfAgentToken inspects the Authorization header and returns 403
-// before any state mutation.
+// The requireOperatorSession middleware inspects the Authorization
+// header and returns 403 before any state mutation.
 func TestServer_DisableConnection_RejectsAgentToken(t *testing.T) {
 	handler, env := newTestWebServer(t)
 
@@ -78,9 +79,9 @@ func TestServer_DisableConnection_RejectsAgentToken(t *testing.T) {
 }
 
 // TestServer_EnableConnection_RejectsAgentToken — symmetric guard for
-// the enable endpoint. The mistake of forgetting rejectIfAgentToken on
-// one of the two handlers is the kind of regression the constitution's
-// Principle I is designed to catch.
+// the enable endpoint. Mounting a new admin mutator without routing it
+// through requireOperatorSession is the regression this test is
+// designed to catch (Principle I in the constitution).
 func TestServer_EnableConnection_RejectsAgentToken(t *testing.T) {
 	handler, env := newTestWebServer(t)
 

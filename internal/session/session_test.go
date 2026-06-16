@@ -212,8 +212,14 @@ func TestNewCookie_AttributesAreSafe(t *testing.T) {
 	if !c.HttpOnly {
 		t.Error("cookie MUST be HttpOnly")
 	}
-	if c.SameSite != http.SameSiteStrictMode {
-		t.Errorf("SameSite = %v, want Strict", c.SameSite)
+	// SameSite=Lax (not Strict) because the OAuth callback flow returns
+	// the operator via a top-level cross-site navigation from an external
+	// identity provider; under Strict the session cookie wouldn't ride
+	// along and the OAuth callback's session-hash check would 403 every
+	// flow. CSRF defense relies on the explicit token check, not on
+	// SameSite=Strict; see session.go NewCookie for the rationale.
+	if c.SameSite != http.SameSiteLaxMode {
+		t.Errorf("SameSite = %v, want Lax", c.SameSite)
 	}
 	if !c.Secure {
 		t.Error("Secure should be true when TLS is on")

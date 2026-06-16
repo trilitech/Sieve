@@ -13,9 +13,9 @@ import (
 	"github.com/trilitech/Sieve/internal/tokens"
 )
 
-// ): per-IP token-bucket
-// throttling on the bearer-token validation path. Failed auth depletes
-// the bucket; success refunds. 429 + Retry-After on refusal.
+// Per-IP token-bucket throttling on the bearer-token validation path:
+// failed auth depletes the bucket, success refunds. The router returns
+// 429 + Retry-After when the bucket is empty.
 
 func newRateLimitTestServer(t *testing.T, cap int, refill time.Duration) (*httptest.Server, *testenv.Env, *Router) {
 	t.Helper()

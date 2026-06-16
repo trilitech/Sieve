@@ -260,13 +260,25 @@ func (m *Manager) VerifyCSRF(s *Session, submitted string) bool {
 
 // NewCookie returns the http.Cookie the server should set after Issue.
 // `secure` is true when the listener serves over TLS.
+//
+// SameSite=Lax (not Strict) because the OAuth callback flow returns the
+// operator via a top-level cross-site navigation from an external
+// identity provider (accounts.google.com, slack.com). Under Strict, the
+// cookie is not sent on that navigation, which would break the session-
+// hash check on /oauth/callback (server.go's pending.OperatorSessionHash
+// comparison) and lock operators out of every OAuth-based connection
+// flow. CSRF defense against state-changing requests comes from the
+// per-session token check enforced by requireOperatorSession — Lax
+// continues to block cross-site POSTs from delivering the cookie at all,
+// and the token check adds belt-and-braces protection for the GET-then-
+// POST family of attacks that Lax doesn't cover by itself.
 func NewCookie(plaintext string, secure bool) *http.Cookie {
 	c := &http.Cookie{
 		Name:     CookieName,
 		Value:    plaintext,
 		Path:     "/",
 		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 		Secure:   secure,
 	}
 	return c

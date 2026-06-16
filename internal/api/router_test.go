@@ -1464,7 +1464,9 @@ func TestStory63_AgentSelfApproveProtection(t *testing.T) {
 	}
 
 	// Create the web server (needed to test the agent-bearer 403 path
-	// under requireOperatorSession — ).
+	// under requireOperatorSession — the agent-token rejection that
+	// used to live in per-handler rejectIfAgentToken calls now lives in
+	// the auth middleware, and this test exercises that path).
 	env.WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	webSrv := web.NewServer(

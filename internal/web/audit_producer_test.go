@@ -13,10 +13,9 @@ import (
 	"github.com/trilitech/Sieve/internal/tokens"
 )
 
-// ): admin mutation
-// handlers MUST emit an audit row identifying the operator. This
-// covers the headline mutation paths; per-handler coverage can grow
-// as additional flows land.
+// Admin mutation handlers MUST emit an audit row identifying the
+// operator. This file covers the headline mutation paths; per-handler
+// coverage can grow as additional flows land.
 
 func newAuditTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
 	t.Helper()

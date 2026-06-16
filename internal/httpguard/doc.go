@@ -11,7 +11,10 @@
 // pins the dial to the validated IP.
 // - Cross-origin credential strip: Authorization and Cookie headers are
 // stripped when a redirect moves the request to a different origin.
-// Used by every connector in internal/connectors/* that makes outbound HTTP.
+// Used by Sieve's outbound-HTTP connectors. Coverage is connector-by-
+// connector: gmail, github, slack, mcpproxy, httpproxy, and anthropic
+// build their clients through httpguard.Client; any new connector that
+// dials an operator-overridable URL should do the same.
 // Connection.Validate calls ValidateURL on registration; the *http.Client
 // applies the same checks on every request.
 package httpguard

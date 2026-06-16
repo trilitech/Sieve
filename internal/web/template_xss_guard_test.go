@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-// TestTemplatesNoUnsafeInnerHTML enforces from
-// admin templates must not concatenate server-derived strings into innerHTML
-// without an explicit per-sink escaper.
+// TestTemplatesNoUnsafeInnerHTML enforces a static lint over the admin
+// templates: server-derived strings must not be concatenated into
+// innerHTML without an explicit per-sink escaper.
 // The guard recognizes these safe patterns:
 // - Empty-string clears: `el.innerHTML = "";` / `el.innerHTML = '';`
 // - Pure string literals (template-author-controlled): `el.innerHTML = '<div>...</div>';`

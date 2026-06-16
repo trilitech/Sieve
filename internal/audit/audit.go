@@ -23,11 +23,11 @@ type Entry struct {
 	ResponseSummary string    `json:"response_summary,omitempty"`
 	DurationMs      int64     `json:"duration_ms"`
 
-	// ): every admin
-	// mutation produces a row identifying the operator. Agent rows
-	// keep actor_kind="agent" + empty OperatorDisplayName; operator
-	// rows set actor_kind="operator" and populate the display name
-	// captured at credential setup (operator.Service.DisplayName).
+	// Actor attribution: every admin mutation produces a row
+	// identifying the operator. Agent rows keep actor_kind="agent" +
+	// empty OperatorDisplayName; operator rows set actor_kind="operator"
+	// and populate the display name captured at credential setup
+	// (operator.Service.DisplayName).
 	ActorKind           string `json:"actor_kind,omitempty"`
 	OperatorDisplayName string `json:"operator_display_name,omitempty"`
 }

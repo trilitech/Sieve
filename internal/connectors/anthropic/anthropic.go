@@ -27,9 +27,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/httpguard"
 )
 
 // ConnectorType is the registry type string for this connector.
@@ -95,11 +97,35 @@ func Factory() connector.Factory {
 		if err != nil {
 			return nil, err
 		}
-		// Outbound HTTP client with conservative timeouts. When the
-		// internal/httpguard package lands (PR #11) this should swap to
-		// httpguard.Client so operator-overridable base_url inherits the
-		// project's SSRF defense.
-		client := &http.Client{Timeout: 60 * time.Second}
+		// Outbound HTTP client guarded by httpguard so the
+		// operator-overridable base_url cannot point at cloud-metadata
+		// or intranet hosts. The per-connection outbound_allowlist
+		// (parsed from raw config) opts specific CIDRs in — needed for
+		// integration tests that point base_url at a 127.0.0.1
+		// httptest.Server, and for Vertex/Bedrock gateways that live on
+		// private VPC ranges in operator deployments.
+		allowlistStrings, _ := raw["outbound_allowlist"].([]string)
+		if allowlistStrings == nil {
+			if rs, ok := raw["outbound_allowlist"].([]any); ok {
+				for _, v := range rs {
+					if s, ok := v.(string); ok {
+						allowlistStrings = append(allowlistStrings, s)
+					}
+				}
+			}
+		}
+		var allowlist []netip.Prefix
+		if len(allowlistStrings) > 0 {
+			var err error
+			allowlist, err = httpguard.ParseCIDRs(allowlistStrings)
+			if err != nil {
+				return nil, fmt.Errorf("anthropic: outbound_allowlist: %w", err)
+			}
+		}
+		client := httpguard.Client(httpguard.ClientOptions{
+			Timeout:   60 * time.Second,
+			Allowlist: allowlist,
+		})
 		return &Connector{cfg: cfg, httpClient: client}, nil
 	}
 }

@@ -8,9 +8,9 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// ): admin mutations
-// must produce audit rows that identify the operator, never include
-// plaintext bearer tokens or other one-time secrets.
+// Admin mutations must produce audit rows that identify the operator
+// and never include plaintext bearer tokens or other one-time secrets.
+// These tests pin the redaction allowlist used by Logger.LogOperator.
 
 func TestRedactSensitive_StripsKnownSecrets(t *testing.T) {
 	in := map[string]any{

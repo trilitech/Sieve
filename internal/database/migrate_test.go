@@ -8,10 +8,11 @@ import (
 )
 
 // TestSecurityFixesMigration asserts that the 2026-05-22 security-fixes
-// migration (
-// applied to a freshly-created database. Spec anchor: data-model.md.
-// Pre-fix: this test fails because the new tables and columns don't exist.
-// Post-fix: this test passes against any database opened by database.New.
+// migration (operator_credential / operator_session tables, audit
+// actor_kind + operator_display_name columns) has been applied to a
+// freshly-created database. Spec anchor: data-model.md. Pre-fix: this
+// test fails because the new tables and columns don't exist. Post-fix:
+// it passes against any database opened by database.New.
 func TestSecurityFixesMigration(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.New(filepath.Join(dir, "test.db"))

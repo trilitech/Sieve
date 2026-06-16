@@ -145,10 +145,11 @@ func TestRotateHandlerSuccess(t *testing.T) {
 	}
 }
 
-// TestRotateHandlerRejectsAgentToken verifies that the rejectIfAgentToken
-// middleware blocks any attempt to drive the rotation form with a Sieve
-// agent bearer token, even if the Origin/Referer check would otherwise
-// pass. No database write or audit row may result.
+// TestRotateHandlerRejectsAgentToken verifies that the
+// requireOperatorSession middleware blocks any attempt to drive the
+// rotation form with a Sieve agent bearer token, even if the
+// Origin/Referer check would otherwise pass. No database write or
+// audit row may result.
 func TestRotateHandlerRejectsAgentToken(t *testing.T) {
 	ts, env := newRotationTestServer(t)
 
@@ -181,7 +182,7 @@ func TestRotateHandlerRejectsAgentToken(t *testing.T) {
 		t.Fatalf("status: got %d, want %d (Forbidden)", resp.StatusCode, http.StatusForbidden)
 	}
 
-	// No audit rows MUST have been written: rejectIfAgentToken returns
+	// No audit rows MUST have been written: the middleware returns
 	// before any rotation logic runs.
 	if got := countAuditOps(t, env.Audit, "keyring.rotate"); got != 0 {
 		t.Fatalf("keyring.rotate rows after rejected agent-token request: got %d, want 0", got)

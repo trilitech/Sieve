@@ -5,9 +5,8 @@ import (
 	"time"
 )
 
-// ): per-key
-// constant-refill token bucket. Defaults: capacity 10, refill 6s,
-// LRU bound 10000 keys.
+// Per-key constant-refill token bucket. Defaults: capacity 10, refill
+// 6s per token, LRU bound 10000 keys.
 
 // fakeClock returns a deterministic time source that tests can advance.
 type fakeClock struct{ now time.Time }

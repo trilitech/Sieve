@@ -2,11 +2,13 @@
 // from the API/MCP server. This separation is intentional: the web UI is for
 // human operators only and must not be accessible to AI agents.
 // Key security patterns:
-// - rejectIfAgentToken: approval endpoints check for Sieve bearer tokens in
-// the Authorization header. If found, the request is rejected. This prevents
-// an agent from self-approving its own pending operations by calling the
-// web UI endpoints directly. The web UI port (19816) should ideally not be
-// exposed to agents at all, but this check provides defense-in-depth.
+// - requireOperatorSession (auth.go): every admin endpoint is wrapped by
+// this middleware via adminAuthWrapper. A request without a valid
+// operator-session cookie is rejected (401 for a browser; 403 when the
+// request carries a Sieve bearer token, so a compromised agent that
+// discovers an admin URL cannot self-approve its own pending operations
+// by calling it directly). The two-port split (19816 admin / 19817 agent)
+// is the structural defense; this middleware is defense-in-depth.
 // - OAuth flow with pendingOAuth: When adding a Google account connection, the
 // connection is NOT saved to the database until OAuth completes successfully.
 // The pendingOAuth map holds the connection metadata (ID, type, display name)
@@ -834,7 +836,8 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 // until handleConnectionEnable returns the row to "active". Differs from
 // reauth_required in two ways: (1) the operator chose this state
 // explicitly; (2) re-auth flows do NOT clear it — only the explicit
-// Enable button does. Gated by rejectIfAgentToken.
+// Enable button does. Agent-token rejection is upstream via the
+// requireOperatorSession middleware.
 func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.connections.SetStatus(id, connections.StatusDisabled); err != nil {
@@ -851,7 +854,8 @@ func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request)
 // action transitions to "reauth_required" instead of "active" so the
 // connection never serves agent traffic with known-broken credentials.
 // The action itself always succeeds — only the destination state
-// varies. Gated by rejectIfAgentToken.
+// varies. Agent-token rejection is upstream via the
+// requireOperatorSession middleware.
 func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -1836,14 +1840,13 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "approvals", data)
 }
 
-// The historical rejectIfAgentToken helper (spec / ) has been
-// removed. The requireOperatorSession middleware in auth.go is its
-// strict superset: a request without a valid operator-session cookie is
-// rejected (401 for browsers / 403 when the request carries a Sieve
-// bearer token — see isAgentTokenRequest), regardless of whether the
-// individual handler used to invoke rejectIfAgentToken. The middleware
-// runs from Server.Handler via adminAuthWrapper and gates every admin
-// endpoint that isn't in authExemptPaths/authExemptPrefixes.
+// The historical rejectIfAgentToken helper has been removed. The
+// requireOperatorSession middleware in auth.go is its strict superset:
+// a request without a valid operator-session cookie is rejected (401
+// for browsers / 403 when the request carries a Sieve bearer token —
+// see isAgentTokenRequest). The middleware runs from Server.Handler
+// via adminAuthWrapper and gates every admin endpoint that isn't in
+// authExemptPaths/authExemptPrefixes.
 
 func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -2348,11 +2351,45 @@ func docTitleForSlug(slug string) string {
 }
 
 func readDocBody(slug string) (string, error) {
+	if msg := validateDocSlug(slug); msg != "" {
+		return "", fmt.Errorf("invalid doc slug: %s", msg)
+	}
 	b, err := os.ReadFile(fmt.Sprintf("docs/%s.md", slug))
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// validateDocSlug guards readDocBody against path-traversal via the
+// /docs/{name} route. Go's http.ServeMux URL-decodes path segments
+// before delivering them to r.PathValue, so `/docs/..%2Fetc%2Fpasswd`
+// reaches handleDocs as slug="../etc/passwd" — which `docs/%s.md`
+// would resolve to `/etc/passwd.md`. /docs is also in
+// authExemptPrefixes, so without this check the read is unauthenticated.
+// Returns the empty string when the slug is safe.
+func validateDocSlug(slug string) string {
+	if slug == "" {
+		return "empty"
+	}
+	if strings.ContainsAny(slug, `/\`) {
+		return "must be a single path segment (no separators)"
+	}
+	if slug == "." || slug == ".." || strings.HasPrefix(slug, ".") {
+		return "must not start with '.'"
+	}
+	if strings.Contains(slug, "..") {
+		return "must not contain '..'"
+	}
+	for _, c := range slug {
+		if !((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_' || c == '-') {
+			return "contains a disallowed character"
+		}
+	}
+	return ""
 }
 
 // buildDocsIndex composes the filesystem-derived slug list with the live
@@ -2409,6 +2446,10 @@ func docTitle(path string) string {
 
 func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if msg := validateDocSlug(name); msg != "" {
+		http.Error(w, "doc not found", http.StatusNotFound)
+		return
+	}
 	body, err := readDocBody(name)
 	if err != nil {
 		http.Error(w, "doc not found", http.StatusNotFound)

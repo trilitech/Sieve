@@ -55,7 +55,8 @@ func operatorSessionHashesEqual(a, b string) bool {
 // that don't call wrapAuth remain accessible without a session —
 // preserving existing test-bench behavior while the wiring lands
 // incrementally. The follow-up commit wraps the entire admin
-// router and removes the rejectIfAgentToken helper.
+// router; it supersedes the per-handler rejectIfAgentToken helper that
+// used to be sprinkled across individual mutators.
 
 type sessionCtxKey struct{}
 
