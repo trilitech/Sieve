@@ -454,6 +454,90 @@ func TestOpRequest_RejectsRelativePath(t *testing.T) {
 	}
 }
 
+// TestOpRequest_StripsLeadingAPIPrefix pins the friendly-input
+// behaviour: agents that read the GitLab docs naturally type
+// /api/v4/projects but doRequest always prepends apiPrefix. Without
+// normalisation that would land at /api/v4/api/v4/projects and 404.
+// Both `/projects` and `/api/v4/projects` must route to the same
+// endpoint.
+func TestOpRequest_StripsLeadingAPIPrefix(t *testing.T) {
+	var seenPath string
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}
+
+	for _, supplied := range []string{"/projects", "/api/v4/projects"} {
+		t.Run(supplied, func(t *testing.T) {
+			conn := newTestConnector(t, handler)
+			_, err := conn.Execute(context.Background(), "gitlab_request", map[string]any{
+				"method": "GET",
+				"path":   supplied,
+			})
+			if err != nil {
+				t.Fatalf("Execute(path=%q): %v", supplied, err)
+			}
+			if seenPath != "/api/v4/projects" {
+				t.Errorf("path %q produced upstream URL %q, want /api/v4/projects",
+					supplied, seenPath)
+			}
+		})
+	}
+}
+
+// TestOpRequest_RejectsBareAPIPrefix guards against a corner case of
+// the strip-prefix normalisation: "make a request to the API prefix
+// itself" isn't meaningful, and silently turning it into a request to
+// "" would produce a confusing upstream response. Reject loudly.
+func TestOpRequest_RejectsBareAPIPrefix(t *testing.T) {
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("upstream should not be called when path is just the prefix")
+	})
+	for _, bad := range []string{"/api/v4", "/api/v4/"} {
+		t.Run(bad, func(t *testing.T) {
+			_, err := conn.Execute(context.Background(), "gitlab_request", map[string]any{
+				"method": "GET",
+				"path":   bad,
+			})
+			if err == nil {
+				t.Errorf("path %q should be rejected", bad)
+			}
+		})
+	}
+}
+
+// TestValidateRelativePath_RejectsSurvivingEncodedSlash pins the
+// extra %2f check added alongside %2e and %5c. Legitimate paths
+// (encoded once via url.PathEscape) decode in a single pass and don't
+// trigger this branch; only inputs whose encoding survives 5 passes
+// reach it. Matches the github connector's hardening.
+func TestValidateRelativePath_RejectsSurvivingEncodedSlash(t *testing.T) {
+	// %25252525252f is %2f wrapped in five %25 layers. The validator
+	// runs five PathUnescape passes which peel layers but leave the
+	// final %2f intact — the post-decoded `decoded` string still
+	// contains %2f and the rejection check fires.
+	//
+	// (Single- or double-encoded %2f decodes fully inside the loop
+	// and reaches the check as a literal '/', which is allowed —
+	// that's the legitimate single-pass shape used by encodeProject
+	// and encodeRefOrPath.)
+	if err := validateRelativePath("/projects/foo%25252525252fbar"); err == nil {
+		t.Errorf("over-encoded %%2f should be rejected after 5 passes still leave it intact")
+	}
+}
+
+// TestValidateRelativePath_AllowsSinglePassEncodedSlash pins the
+// inverse: a path whose embedded slashes are encoded ONCE (the
+// legitimate output of url.PathEscape used by encodeProject /
+// encodeRefOrPath) must NOT be rejected by the %2f hardening. If it
+// were, every gitlab_get_file call would fail.
+func TestValidateRelativePath_AllowsSinglePassEncodedSlash(t *testing.T) {
+	if err := validateRelativePath("/projects/group%2Fsubgroup/repository/files/docs%2Fsetup.md"); err != nil {
+		t.Errorf("legitimately single-encoded path was rejected: %v", err)
+	}
+}
+
 // TestOperations_CatalogShape catches accidental rename / removal of
 // the v1 operations. Drift here would break every bound policy at
 // execute time.

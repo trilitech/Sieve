@@ -145,8 +145,16 @@ func validateRelativePath(p string) error {
 	// percent-encoded sequences. These would only survive if the
 	// input contained encoding depth beyond maxUnescapePasses, which
 	// we treat as invalid.
+	//
+	// %2f is included alongside %2e and %5c (matching the github
+	// connector's hardening). Legitimate single-pass %2f use — the
+	// embedded-slash encoding inside project identifiers and file
+	// paths constructed by encodeProject / encodeRefOrPath — fully
+	// decodes in one iteration and does NOT carry %2f into the
+	// `decoded` string we test here. Only a maliciously over-encoded
+	// input survives with %2f intact.
 	lower := strings.ToLower(decoded)
-	if strings.Contains(lower, "%2e") || strings.Contains(lower, "%5c") {
+	if strings.Contains(lower, "%2e") || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
 		return errors.New("gitlab: path contains dangerous encoded sequences")
 	}
 

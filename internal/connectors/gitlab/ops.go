@@ -186,6 +186,18 @@ func (g *Connector) opRequest(ctx context.Context, params map[string]any) (any, 
 	if !strings.HasPrefix(path, "/") {
 		return nil, fmt.Errorf("gitlab: path must start with '/', got %q", path)
 	}
+	// The doc says "relative to /api/v4", but agents that read the
+	// GitLab docs will naturally type `/api/v4/projects`. doRequest
+	// always prepends apiPrefix unconditionally, which would otherwise
+	// produce `/api/v4/api/v4/projects` and a confusing 404. Normalize
+	// here so both conventions work; reject the bare prefix because
+	// "make a request to nothing under api/v4" isn't a meaningful op.
+	if path == apiPrefix || path == apiPrefix+"/" {
+		return nil, fmt.Errorf("gitlab: path %q is just the API prefix; supply an endpoint path after it", path)
+	}
+	if strings.HasPrefix(path, apiPrefix+"/") {
+		path = strings.TrimPrefix(path, apiPrefix)
+	}
 
 	var q url.Values
 	if qs := getString(params, "query"); qs != "" {
