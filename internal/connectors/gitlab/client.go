@@ -19,8 +19,12 @@ const (
 	apiPrefix         = "/api/v4"
 )
 
-// httpResponse is the structured form returned to agents by both curated
-// ops (after they unmarshal) and the gitlab_request escape hatch.
+// httpResponse is the structured wrapper every gitlab operation returns
+// to the caller — both the curated ops (which pass doRequest's result
+// through verbatim) and the gitlab_request escape hatch. The agent
+// receives {status, headers, body}; the Body is the raw upstream JSON
+// (or a {"raw": "..."} wrapper for non-JSON payloads like the files/raw
+// endpoint).
 type httpResponse struct {
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers"`
