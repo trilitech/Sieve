@@ -210,11 +210,18 @@ func (g *Connector) opRequest(ctx context.Context, params map[string]any) (any, 
 
 	var body any
 	if b := getString(params, "body"); b != "" {
-		var obj any
-		if err := json.Unmarshal([]byte(b), &obj); err != nil {
+		// Validate the body is well-formed JSON, but pass the original
+		// bytes through as json.RawMessage rather than unmarshaling +
+		// re-marshaling. The round-trip would drop a literal JSON `null`
+		// (json.Unmarshal sets the target to nil; doRequest then treats
+		// nil as "no body" and omits Content-Type entirely, changing
+		// request semantics). RawMessage preserves byte-exact body
+		// including null, numeric precision, and key ordering.
+		var dummy any
+		if err := json.Unmarshal([]byte(b), &dummy); err != nil {
 			return nil, fmt.Errorf("gitlab: parse body as JSON: %w", err)
 		}
-		body = obj
+		body = json.RawMessage(b)
 	}
 
 	return g.doRequest(ctx, method, path, q, body)

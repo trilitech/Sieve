@@ -1,9 +1,13 @@
 // Package gitlab implements a Sieve connector for the GitLab REST API
 // (https://docs.gitlab.com/ee/api/).
 //
-// A single GitLab connection holds one personal access token (or OAuth
-// token) and an optional base URL for self-hosted instances. The token
-// is attached to every outbound call via the PRIVATE-TOKEN header.
+// A single GitLab connection holds one personal access token and an
+// optional base URL for self-hosted instances. The token is attached
+// to every outbound call via the PRIVATE-TOKEN header — GitLab's
+// canonical PAT-auth shape, and unambiguous in the audit log. OAuth
+// (Authorization: Bearer) support is a deliberate v1 omission; if it
+// proves useful, the cleanest add is a `token_type` field on Config
+// that selects between PRIVATE-TOKEN and Bearer at request time.
 //
 // The escape-hatch `gitlab_request` operation surfaces any /api/v4
 // path/method combination through the same auth pipeline so agents can

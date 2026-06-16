@@ -441,6 +441,65 @@ func TestOpRequest_RejectsBadMethod(t *testing.T) {
 	}
 }
 
+// TestOpRequest_PreservesJSONNullBody pins the fix for the
+// unmarshal+remarshal round-trip bug. An agent passing the literal
+// JSON `null` body must produce an upstream request whose body bytes
+// are exactly "null" with Content-Type: application/json set. The
+// previous shape (json.Unmarshal into any → Go nil → doRequest's
+// nil-check skips body marshaling entirely) silently changed the
+// request to "no body, no Content-Type", which is observably
+// different to GitLab.
+func TestOpRequest_PreservesJSONNullBody(t *testing.T) {
+	var seenBody []byte
+	var seenContentType string
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		seenBody, _ = io.ReadAll(r.Body)
+		seenContentType = r.Header.Get("Content-Type")
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	_, err := conn.Execute(context.Background(), "gitlab_request", map[string]any{
+		"method": "POST",
+		"path":   "/test",
+		"body":   "null",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if string(seenBody) != "null" {
+		t.Errorf("body bytes = %q, want \"null\"", string(seenBody))
+	}
+	if seenContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", seenContentType)
+	}
+}
+
+// TestOpRequest_PreservesJSONBodyByteForByte covers the broader
+// contract: json.RawMessage round-trips without losing precision,
+// key ordering, or whitespace. Without this, an agent that crafts a
+// specific JSON payload (say, a large integer that exceeds float64
+// precision) would get a different upstream request than it intended.
+func TestOpRequest_PreservesJSONBodyByteForByte(t *testing.T) {
+	original := `{"description":"hello","numeric":9007199254740993,"nested":{"z":1,"a":2}}`
+	var seenBody []byte
+	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
+		seenBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	_, err := conn.Execute(context.Background(), "gitlab_request", map[string]any{
+		"method": "POST",
+		"path":   "/projects/1/issues",
+		"body":   original,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if string(seenBody) != original {
+		t.Errorf("body modified in transit:\n  got  %q\n  want %q", string(seenBody), original)
+	}
+}
+
 func TestOpRequest_RejectsRelativePath(t *testing.T) {
 	conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("upstream should not be called for non-absolute path")

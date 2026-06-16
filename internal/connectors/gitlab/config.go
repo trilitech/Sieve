@@ -12,10 +12,14 @@ import (
 //
 // Unlike the github connector — which holds multiple PAT/App credentials
 // keyed by user/org scope — a single GitLab connection holds exactly one
-// PAT. GitLab PATs (and OAuth tokens) authenticate the API as the token
-// owner without per-namespace scoping at the auth layer, so a multi-cred
-// shape would be premature complexity for v1. Operators who need separate
-// trust boundaries per namespace add separate connections.
+// PAT. A GitLab PAT authenticates the API as the token owner without
+// per-namespace scoping at the auth layer, so a multi-cred shape would
+// be premature complexity for v1. Operators who need separate trust
+// boundaries per namespace add separate connections.
+//
+// OAuth tokens are NOT supported in v1; only PATs sent via the
+// PRIVATE-TOKEN header. See gitlab.go's package comment for the
+// rationale + the cleanest add path if OAuth support is ever needed.
 //
 // BaseURL defaults to https://gitlab.com and can be overridden to point
 // at a self-hosted GitLab instance.
