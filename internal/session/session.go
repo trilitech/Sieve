@@ -17,7 +17,8 @@ import (
 )
 
 // CookieName is the cookie that carries the opaque session identifier.
-// HttpOnly + SameSite=Strict + Secure (when TLS is on) are set by Issue.
+// HttpOnly + SameSite=Lax + Secure (when TLS is on) are set by NewCookie;
+// see that helper for the Lax-vs-Strict rationale.
 const CookieName = "sieve_session"
 
 // DefaultIdleTimeout is the documented sliding-window expiry. Settings

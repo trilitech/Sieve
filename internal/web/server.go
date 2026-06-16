@@ -138,14 +138,15 @@ type Server struct {
 // funcMap returns the template function map used across all templates.
 func funcMap() template.FuncMap {
 	return template.FuncMap{
-		// json marshals v to a JSON string with aggressive escaping for
-		// values destined for <script type="application/json"> blocks.
-		// Returns a plain string -- template.JS was the legacy "this is
-		// already-safe JavaScript" marker, which is the wrong shape for
-		// serialized user-controlled data ( spec
-		// ). Callers MUST
-		// embed the result inside <script type="application/json" id="...">
-		// and read it via JSON.parse on.textContent.
+		// json marshals v to a JSON string with aggressive escaping
+		// suitable for embedding inside <script type="application/json">
+		// blocks. Returns a plain string (NOT template.JS) so Go's
+		// html/template auto-escaper treats the result as text content,
+		// not as already-safe JavaScript — the latter is the wrong
+		// shape for serialised user-controlled data. Callers MUST embed
+		// the result inside <script type="application/json" id="...">
+		// and read it from the browser side via
+		// JSON.parse(scriptEl.textContent).
 		"json": func(v any) string {
 			b, err := json.MarshalIndent(v, "", "  ")
 			if err != nil {
@@ -432,20 +433,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /docs/category/{id}", s.handleDocsCategory)
 	mux.HandleFunc("GET /docs/{name}", s.handleDocs)
 
-	// Wrap the admin mux with: (1) the operator-session gate ( /
-	// ), which exempts public auth pages and OAuth
-	// callbacks; (2) the sensitive-response header writer ( /
-	// ) so every admin response carries Cache-Control:
-	// no-store etc. Header wrapping is outermost so 401/403/redirect
-	// responses also get the headers.
+	// Wrap the admin mux with two layers:
+	//   1. adminAuthWrapper — routes through requireOperatorSession
+	//      (session cookie + CSRF token gate) for every non-exempt path;
+	//      exempt paths are login/setup/OAuth-callback/docs.
+	//   2. noCacheAllAdmin — sensitive-response header writer that
+	//      stamps Cache-Control: no-store etc. on every admin response.
+	// Header wrapping is OUTERMOST so 401/403/redirect responses
+	// produced by the auth gate also carry the headers.
 	return noCacheAllAdmin(s.adminAuthWrapper(mux))
 }
 
 // authExemptPaths is the set of admin paths that bypass the
 // requireOperatorSession middleware. Login + setup are bootstrap;
 // OAuth callbacks identify the operator via the OAuth state parameter
-// instead of a Sieve session.
-// ( exemption set).
+// + a session-hash check inside the handler rather than a Sieve
+// session cookie surfacing at the middleware layer.
 var authExemptPaths = map[string]bool{
 	"/login":  true,
 	"/setup":  true,
@@ -1874,13 +1877,18 @@ func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
 	// If Get fails, it's fine — we just treat it as a normal (non-proposal) approval.
 	item, getErr := s.approval.Get(id)
 	if getErr == nil && item.Operation == "propose_policy" {
-		if err := s.approval.Approve(id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Create the policy from the proposal
+		// Validate the proposal payload BEFORE Approve(): a malformed
+		// proposal that we'd then fail to materialise as a policy would
+		// leave an "approved" row pointing at no policy, which is
+		// indistinguishable from an honest approve+fail and confuses
+		// the audit trail.
 		data := item.RequestData
 		name, _ := data["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			http.Error(w, "policy proposal is missing the required \"name\" field", http.StatusBadRequest)
+			return
+		}
 		rules, _ := data["rules"].([]any)
 		defaultAction, _ := data["default_action"].(string)
 		if defaultAction == "" {
@@ -1889,6 +1897,10 @@ func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
 		config := map[string]any{
 			"rules":          rules,
 			"default_action": defaultAction,
+		}
+		if err := s.approval.Approve(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		policyRow, err := s.policies.Create(name, "rules", config)
 		if err != nil {
@@ -2125,16 +2137,20 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	// + evaluation calls observe the new value without a process restart.
 	policy.SetCommandAllowlist(s.settings.CommandAllowlist())
 
-	// Audit the keys whose values changed shape (we don't echo values
-	// because some — public_base_url, allowlist — are operator data and
-	// some — none here today — could grow secret).
-	changedKeys := make([]string, 0, len(pairs))
+	// Audit the SUBMITTED key set — i.e. every settings field the form
+	// posted, regardless of whether the value actually changed. We
+	// don't echo values: some (public_base_url, allowlist) are operator
+	// data and the set could grow secret in future, so the audit row
+	// records "what the operator could have touched on this save",
+	// which mirrors what the rendered form already discloses to anyone
+	// with admin access.
+	submittedKeys := make([]string, 0, len(pairs))
 	for k := range pairs {
-		changedKeys = append(changedKeys, k)
+		submittedKeys = append(submittedKeys, k)
 	}
-	sort.Strings(changedKeys)
+	sort.Strings(submittedKeys)
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "settings.save", "-",
-		map[string]any{"keys": changedKeys}, "success")
+		map[string]any{"submitted_keys": submittedKeys}, "success")
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }
@@ -2377,6 +2393,14 @@ func listDocSlugs() ([]string, error) {
 }
 
 func docTitleForSlug(slug string) string {
+	// Defence in depth — docTitleForSlug is reached today only via
+	// listDocSlugs() (filesystem-derived names), but a future call from
+	// a request-derived slug would otherwise bypass the validateDocSlug
+	// check at the handler layer. Refuse the lookup but return the
+	// slug as-is so navigation labels remain stable.
+	if msg := validateDocSlug(slug); msg != "" {
+		return slug
+	}
 	t := docTitle(fmt.Sprintf("docs/%s.md", slug))
 	if t == "" {
 		return slug

@@ -201,9 +201,7 @@
         .then(function(r) { return r.json(); })
         .then(function(data) {
           var models = data.models || [];
-          var html = '';
           if (models.length === 0) {
-            html = '<option value="">No models found (type manually below)</option>';
             // Fall back to a text input approach.
             modelHint.textContent = "Could not load models. You can type a model name manually.";
             modelSelect.style.display = "none";
