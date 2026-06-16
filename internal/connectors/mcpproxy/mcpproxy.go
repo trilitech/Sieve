@@ -146,12 +146,13 @@ func Factory(config map[string]any) (connector.Connector, error) {
 		}
 	}
 
-	// Outbound SSRF guard (
-	// http.Client allowed redirects with no destination check. httpguard.Client
-	// enforces scheme/IP-range deny rules on the first request and on every
+	// Outbound SSRF guard: the underlying HTTP client is httpguard.Client,
+	// which replaces the previous default http.Client — that one allowed
+	// redirects with no destination check. httpguard.Client enforces
+	// scheme/IP-range deny rules on the first request and on every
 	// redirect, including DNS-rebinding protection at dial time. The
-	// per-connection outbound_allowlist field lets the operator opt-in to
-	// private/intranet destinations.
+	// per-connection outbound_allowlist field lets the operator opt in
+	// to private/intranet destinations.
 	allowlistStrings, _ := config["outbound_allowlist"].([]string)
 	if allowlistStrings == nil {
 		// JSON-decoded form may arrive as []any.

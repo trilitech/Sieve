@@ -39,11 +39,11 @@ type Env struct {
 	DBPath      string
 
 	// Operator + session services for tests that need to drive the
-	// authenticated admin surface introduced by
-	// Populated by New with fast Argon2id params so tests don't
-	// burn 200ms per Verify. WithOperator seeds the credential and
-	// returns a logged-in session; the per-Env operatorSession field
-	// caches it for AdminClient to attach automatically.
+	// authenticated admin surface. Populated by New with fast Argon2id
+	// params so tests don't burn 200ms per Verify. WithOperator seeds
+	// the credential and returns a logged-in session; the per-Env
+	// operatorActive field caches it so AdminClient attaches the
+	// session cookie + CSRF token automatically.
 	Operator       *operator.Service
 	Session        *session.Manager
 	operatorActive *session.Session // populated by WithOperator

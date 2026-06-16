@@ -1,7 +1,7 @@
 package web
 
 import (
-	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,8 +13,10 @@ import (
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
-// for OAuth flows MUST derive from the configured public_base_url setting,
-// never from inbound Host/X-Forwarded-Host/X-Forwarded-Proto headers.
+// host_header_test.go verifies that public URLs surfaced to the operator
+// (OAuth callbacks, GitHub App manifest URLs, etc.) derive from the
+// configured public_base_url setting and never from inbound Host or
+// X-Forwarded-* headers, which an unauthenticated client controls.
 
 func newHostHeaderTestServer(t *testing.T) (*httptest.Server, *testenv.Env, *Server) {
 	t.Helper()
@@ -125,21 +127,14 @@ func TestGoogleOAuthRedirectURLIgnoresHostHeader(t *testing.T) {
 	}
 }
 
-// readAll is a tiny helper that returns the response body as a string,
-// or fails the test on error.
-func readAll(t *testing.T, body interface{ Read(p []byte) (int, error) }) string {
+// readAll returns the response body as a string, failing the test if the
+// read errors out. Using io.ReadAll surfaces real I/O failures instead of
+// silently truncating, which makes assertion failures easier to diagnose.
+func readAll(t *testing.T, body io.Reader) string {
 	t.Helper()
-	buf := make([]byte, 0, 4096)
-	tmp := make([]byte, 1024)
-	for {
-		n, err := body.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
-		if err != nil {
-			break
-		}
+	buf, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
 	}
-	_ = context.Background() // suppress unused-import; keeps file deps stable
 	return string(buf)
 }

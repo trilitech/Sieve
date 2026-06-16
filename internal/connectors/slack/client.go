@@ -38,13 +38,15 @@ type client struct {
 // newClient builds a client from the validated Config plus the
 // optional `_base_url` and `_on_terminal_auth` injections. Returns
 // an error if the config has no usable bearer token.
-// Outbound SSRF guard (
-// previous http.DefaultClient — which had no timeout and followed
-// default redirects with no destination check. httpguard.Client
-// enforces scheme + IP-range deny rules on every dial and redirect.
-// Tests using the mock Slack server set _base_url to an httptest.Server
-// on 127.0.0.1; the per-connection outbound_allowlist field carries
-// 127.0.0.0/8 in that case so the loopback dial is permitted.
+//
+// Outbound SSRF guard: the underlying HTTP client is httpguard.Client,
+// which replaces the previous unbounded http.DefaultClient — that one
+// had no timeout and followed default redirects with no destination
+// check. httpguard.Client enforces scheme + IP-range deny rules on
+// every dial and redirect. Tests using the mock Slack server set
+// _base_url to an httptest.Server on 127.0.0.1; the per-connection
+// outbound_allowlist field carries 127.0.0.0/8 in that case so the
+// loopback dial is permitted.
 func newClient(cfg *Config, baseURL string, onTerminalAuth func(), allowlist []netip.Prefix) (*client, error) {
 	tok := cfg.accessToken()
 	if tok == "" {

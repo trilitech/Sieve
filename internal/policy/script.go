@@ -46,10 +46,11 @@ func NewScriptEvaluator(config map[string]any) (*ScriptEvaluator, error) {
 		return nil, fmt.Errorf("script evaluator: script path is required")
 	}
 
-	// Command allowlist enforcement (
-	// ). Stored policies that pre-date the allowlist and
-	// reference a disallowed interpreter MUST fail at evaluation time
-	// with the documented error — see (hard-break migration).
+	// Command allowlist enforcement. Stored policies that pre-date the
+	// allowlist and reference a disallowed interpreter (anything not in
+	// CurrentCommandAllowlist) MUST fail at evaluation time with the
+	// documented error rather than being silently downgraded — operators
+	// are expected to fix the policy by hand, so this is a hard break.
 	if err := ValidateCommand(sc.Command, CurrentCommandAllowlist()); err != nil {
 		return nil, fmt.Errorf("script evaluator: %w", err)
 	}

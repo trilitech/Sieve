@@ -79,11 +79,11 @@ func TestTokenCreateResponseHeaders(t *testing.T) {
 	assertSensitiveHeaders(t, resp.Header)
 }
 
-// TestLoginPageHeaders confirms the (forthcoming ) login page also
-// carries the headers, since it shows context that could include
-// inadvertently-cached values. Today the page is reachable as a normal
-// admin route — the headers come from the same middleware so this test
-// guards the middleware coverage rather than the login flow itself.
+// TestAdminMutationPostResponseHeaders confirms that a representative
+// mutating admin POST (token creation) returns the same sensitive-header
+// set as a GET. The headers come from the shared admin middleware, so
+// this test guards the middleware's coverage of write-path responses
+// rather than any specific handler's behaviour.
 func TestAdminMutationPostResponseHeaders(t *testing.T) {
 	ts, env := newHeadersTestServer(t)
 	role, err := env.Roles.Create("conn-test-role", nil)

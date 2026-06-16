@@ -66,11 +66,13 @@ func Factory() connector.Factory {
 		}
 		baseURL, _ := raw["_base_url"].(string)
 		onTerminalAuth, _ := raw["_on_terminal_auth"].(func())
-		// Outbound SSRF guard ( The Slack
-		// API base is fixed to slack.com in production so the allowlist
-		// is normally empty; tests using the mock Slack server set
-		// _base_url to a 127.0.0.1 httptest.Server and supply 127.0.0.0/8
-		// in outbound_allowlist.
+		// Outbound SSRF guard: the per-connection outbound_allowlist
+		// field opts specific CIDRs into being dialable; everything
+		// else is filtered by httpguard at dial and redirect time. The
+		// Slack API base is fixed to slack.com in production so the
+		// allowlist is normally empty; tests using the mock Slack
+		// server set _base_url to a 127.0.0.1 httptest.Server and
+		// supply 127.0.0.0/8 in outbound_allowlist.
 		allowlistStrings, _ := raw["outbound_allowlist"].([]string)
 		if allowlistStrings == nil {
 			if rs, ok := raw["outbound_allowlist"].([]any); ok {

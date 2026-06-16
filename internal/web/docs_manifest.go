@@ -199,7 +199,7 @@ func (m DocManifest) Validate(knownSlugs []string) error {
 // BuildIndex composes the live filesystem state with the manifest into a
 // renderable navigation index. Pure; no I/O.
 // - fsSlugs: the set of slugs present on disk (filenames under docs/ minus
-// the.md extension), in any order.
+// the .md extension), in any order.
 // - fileTitle: callback returning the title for a given slug. Allowed to be
 // nil; in that case the slug itself is used as the title.
 func BuildIndex(m DocManifest, fsSlugs []string, fileTitle func(slug string) string) DocNavIndex {
