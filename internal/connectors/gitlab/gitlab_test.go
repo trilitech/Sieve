@@ -312,6 +312,74 @@ func TestOpGetFile_EncodesProjectAndPath(t *testing.T) {
 	}
 }
 
+// TestOpGetFile_AcceptsPreEncodedProject pins the double-encode
+// defense. An agent reading GitLab docs may copy a pre-encoded
+// project identifier ("group%2Fsubgroup%2Fproj"); without the
+// PathUnescape-then-PathEscape normalisation we'd send
+// "group%252Fsubgroup%252Fproj" which GitLab parses as a literal
+// "group%2Fsubgroup%2Fproj" project name (a different identifier)
+// and 404s. Both raw and pre-encoded inputs must reach the same
+// upstream URL.
+func TestOpGetFile_AcceptsPreEncodedProject(t *testing.T) {
+	var seenRawPath string
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		seenRawPath = r.URL.RawPath
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"file_name":"README.md"}`))
+	}
+	for _, project := range []string{
+		"acme/subgroup/widget",
+		"acme%2Fsubgroup%2Fwidget",
+		"acme%2Fsubgroup/widget", // mixed encoding
+	} {
+		t.Run(project, func(t *testing.T) {
+			conn := newTestConnector(t, handler)
+			_, err := conn.Execute(context.Background(), "gitlab_get_file", map[string]any{
+				"project": project,
+				"path":    "README.md",
+				"ref":     "main",
+			})
+			if err != nil {
+				t.Fatalf("Execute(project=%q): %v", project, err)
+			}
+			want := "/api/v4/projects/acme%2Fsubgroup%2Fwidget/repository/files/README.md"
+			if seenRawPath != want {
+				t.Errorf("RawPath = %q, want %q", seenRawPath, want)
+			}
+		})
+	}
+}
+
+// TestOpGetFile_AcceptsPreEncodedFilePath covers the symmetric case
+// for the file-path component: a pre-encoded "docs%2Fsetup.md"
+// supplied as `path` must route to the same endpoint as the raw
+// "docs/setup.md".
+func TestOpGetFile_AcceptsPreEncodedFilePath(t *testing.T) {
+	var seenRawPath string
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		seenRawPath = r.URL.RawPath
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"file_name":"setup.md"}`))
+	}
+	for _, filepath := range []string{"docs/setup.md", "docs%2Fsetup.md"} {
+		t.Run(filepath, func(t *testing.T) {
+			conn := newTestConnector(t, handler)
+			_, err := conn.Execute(context.Background(), "gitlab_get_file", map[string]any{
+				"project": "ns/proj",
+				"path":    filepath,
+				"ref":     "main",
+			})
+			if err != nil {
+				t.Fatalf("Execute(path=%q): %v", filepath, err)
+			}
+			want := "/api/v4/projects/ns%2Fproj/repository/files/docs%2Fsetup.md"
+			if seenRawPath != want {
+				t.Errorf("RawPath = %q, want %q", seenRawPath, want)
+			}
+		})
+	}
+}
+
 func TestOpPutFile_DefaultsToPOSTUnlessUpdateTrue(t *testing.T) {
 	var seenMethod string
 	handler := func(w http.ResponseWriter, r *http.Request) {

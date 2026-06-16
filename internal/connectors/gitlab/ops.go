@@ -14,20 +14,38 @@ import (
 // encodeProject percent-encodes a GitLab project identifier for use as
 // a single path segment. GitLab accepts either a numeric ID or a
 // URL-encoded namespace path: "group/sub/project" must be sent as
-// "group%2Fsub%2Fproject". url.PathEscape encodes the literal '/'
-// correctly. We do NOT split the identifier on '/' beforehand because
-// that would change the semantics — the entire namespaced path is one
-// API segment.
+// "group%2Fsub%2Fproject".
+//
+// Both raw and already-encoded inputs are accepted: an agent reading
+// GitLab's docs may supply "group%2Fsubgroup%2Fproject" directly, and
+// without normalising we'd double-encode that to "group%252Fsubgroup..."
+// which GitLab parses as a literal "group%2F..." project name and
+// returns 404. We unescape once first (PathUnescape is idempotent on
+// values without percent sequences, so plain "group/sub/proj" passes
+// through unchanged), then re-escape. Malformed inputs leave
+// PathUnescape returning an error; we fall back to the original and
+// let PathEscape produce a literal-treatment encoding — GitLab will
+// 404 either way but the connector won't crash.
+//
+// The identifier is NOT split on '/' beforehand because that would
+// change semantics — the entire namespaced path is one API segment.
 func encodeProject(p string) string {
+	if decoded, err := url.PathUnescape(p); err == nil {
+		p = decoded
+	}
 	return url.PathEscape(p)
 }
 
 // encodeRefOrPath percent-encodes a repository file path so its embedded
 // '/' characters become %2F and the whole value reaches GitLab as ONE
-// API path segment. Same convention as encodeProject — the GitLab API
-// expects "docs/setup.md" to land at .../files/docs%2Fsetup.md, not at
-// .../files/docs/setup.md (which would 404).
+// API path segment. Same convention and same double-encode protection
+// as encodeProject — the GitLab API expects "docs/setup.md" to land at
+// .../files/docs%2Fsetup.md, not at .../files/docs/setup.md (404), and
+// an already-encoded "docs%2Fsetup.md" should reach the same endpoint.
 func encodeRefOrPath(p string) string {
+	if decoded, err := url.PathUnescape(p); err == nil {
+		p = decoded
+	}
 	return url.PathEscape(p)
 }
 
