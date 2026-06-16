@@ -31,7 +31,10 @@ import (
 // regression slipping in there would go undetected.
 func TestNoTemplateJSAroundDynamicData(t *testing.T) {
 	wrapRE := regexp.MustCompile(`template\.JS\(`)
-	literalRE := regexp.MustCompile(`template\.JS\("[^"]*"\)`) // string literal arg only
+	// Accept the three Go string-literal shapes (interpreted "...", raw
+	// `...`, with escapes "\"...\"") so the lint doesn't false-positive
+	// on legitimate code-author-written static snippets.
+	literalRE := regexp.MustCompile("template\\.JS\\((?:\"(?:[^\"\\\\]|\\\\.)*\"|`[^`]*`)\\)")
 
 	err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
 		if err != nil {

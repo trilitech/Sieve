@@ -486,13 +486,11 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	)
 	defer webSrv.Close()
 
-	// Operator + session services drive the admin-authentication path
-	// ( When this commit's auth
-	// middleware lands wired onto every admin endpoint, an operator
-	// credential will be MANDATORY before the admin UI serves anything
-	// other than /login + /setup. Until then, SetAuth here enables the
-	// login + setup pages while leaving existing handlers reachable
-	// without a session — see internal/web/auth.go.
+	// Operator + session services drive the admin-authentication path.
+	// Wiring SetAuth here makes the operator credential MANDATORY on
+	// every admin endpoint not in authExemptPaths/Prefixes (login,
+	// setup, OAuth callback, docs) — the requireOperatorSession
+	// middleware enforces it. See internal/web/auth.go for the gate.
 	opSvc := operator.NewService(db)
 	sessionMgr := session.NewManager(db, settingsSvc.SessionIdleTimeout())
 	// Wire the session-invalidate hook so a credential rotation
@@ -536,9 +534,9 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	// agent) is structural, not cosmetic — admin endpoints stay on 19816,
 	// agent endpoints stay on 19817.
 	apiRouter := api.NewRouter(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
-	// Per-IP token-bucket on the bearer-token validation path (spec
-	// ). Settings-tuned;
-	// defaults: 10 failures per 60s window.
+	// Per-IP token-bucket on the bearer-token validation path:
+	// failed auth depletes the bucket, success refunds, 429 + Retry-After
+	// on refusal. Settings-tuned; defaults: 10 failures per 60s window.
 	apiRouter.SetRateLimiter(ratelimit.NewLimiter(
 		settingsSvc.RateLimitFailures(),
 		settingsSvc.RateLimitWindow()/time.Duration(max(settingsSvc.RateLimitFailures(), 1)),
@@ -553,14 +551,14 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	webHTTP := &http.Server{Addr: webAddr, Handler: webSrv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	apiHTTP := &http.Server{Addr: apiAddr, Handler: agentMux, ReadHeaderTimeout: 10 * time.Second}
 
-	// Wire the command allowlist for script-policy validation (spec
-	// ). Empty settings value falls back
-	// to the bundled-Python default via policy.ValidateCommand semantics.
+	// Wire the command allowlist for script-policy validation. Empty
+	// settings value falls back to the bundled-Python default via
+	// policy.ValidateCommand semantics — see CurrentCommandAllowlist.
 	policy.SetCommandAllowlist(settingsSvc.CommandAllowlist())
 
-	// Per-listener TLS configuration (
-	// ). Both-or-neither per listener; HSTS automatically
-	// set on every TLS response by hstsMiddleware (inside serveListener).
+	// Per-listener TLS configuration. Both-or-neither per listener;
+	// HSTS automatically set on every TLS response by hstsMiddleware
+	// (inside serveListener).
 	adminTLS := tlsPair{
 		CertPath: settingsSvc.AdminTLSCertPath(),
 		KeyPath:  settingsSvc.AdminTLSKeyPath(),
@@ -578,11 +576,11 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	adminTLSOn, _ := adminTLS.enabled()
 	apiTLSOn, _ := apiTLS.enabled()
 
-	// Startup exposure check (
-	// the admin UI is documented to bind 127.0.0.1 in production. When the
-	// operator overrides that to a non-loopback interface WITHOUT TLS, log
-	// a prominent warning naming the exposure. Don't refuse to start —
-	// some deployments are intentional (e.g., WireGuard-tunneled).
+	// Startup exposure check: the admin UI is documented to bind
+	// 127.0.0.1 in production. When the operator overrides that to a
+	// non-loopback interface WITHOUT TLS, log a prominent warning
+	// naming the exposure. Don't refuse to start — some deployments
+	// are intentional (e.g., WireGuard-tunneled).
 	if host, _, err := net.SplitHostPort(webAddr); err == nil {
 		ip := net.ParseIP(host)
 		nonLoopback := host != "" && host != "localhost" && (ip == nil || !ip.IsLoopback())

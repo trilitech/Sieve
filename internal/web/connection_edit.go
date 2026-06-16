@@ -178,14 +178,16 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	}
 
 	// Audit the field names whose values reached the saved config — never
-	// the values themselves, since Secret fields are present in cfg.
-	editedFields := make([]string, 0, len(cfg))
+	// the values themselves, since Secret fields are present in cfg. The
+	// key name `submitted_keys` matches settings.save for downstream
+	// log-search consistency.
+	submittedKeys := make([]string, 0, len(cfg))
 	for k := range cfg {
-		editedFields = append(editedFields, k)
+		submittedKeys = append(submittedKeys, k)
 	}
-	sort.Strings(editedFields)
+	sort.Strings(submittedKeys)
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.update_config", id,
-		map[string]any{"connector_type": conn.ConnectorType, "fields": editedFields},
+		map[string]any{"connector_type": conn.ConnectorType, "submitted_keys": submittedKeys},
 		"success")
 
 	http.Redirect(w, r, fmt.Sprintf("/connections/%s/edit?saved=1", id), http.StatusSeeOther)

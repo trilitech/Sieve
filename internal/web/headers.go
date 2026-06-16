@@ -5,7 +5,8 @@ import "net/http"
 // WriteSensitive sets the cache-prevention header set required on every
 // response that may carry a credential, secret, or one-time-use value.
 // Belt-and-suspenders: the header set covers HTTP/1.1 (Cache-Control),
-// HTTP/1.0 (Pragma, Expires), and pins Vary on Authorization so any
+// HTTP/1.0 (Pragma, Expires), and pins Vary on both Authorization
+// (agent-token surface) and Cookie (operator-session surface) so any
 // future shared cache that ignores Cache-Control at least segregates
 // by credential. Call BEFORE w.WriteHeader / w.Write — headers committed
 // after the body bytes start are ignored by net/http.
@@ -14,7 +15,7 @@ func WriteSensitive(w http.ResponseWriter) {
 	h.Set("Cache-Control", "no-store, no-cache, max-age=0, must-revalidate, private")
 	h.Set("Pragma", "no-cache")
 	h.Set("Expires", "0")
-	h.Set("Vary", "Authorization")
+	h.Set("Vary", "Authorization, Cookie")
 }
 
 // writeSecurityHeaders sets the static security-headers that apply to

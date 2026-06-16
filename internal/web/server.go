@@ -351,10 +351,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Dashboard redirect
-	// --- Operator authentication (
+	// --- Operator authentication routes.
 	// These routes are intentionally public: login itself can't require
-	// a session, and setup is one-shot for fresh installs. The follow-up
-	// commit wraps every OTHER admin route with requireOperatorSession.
+	// a session, and setup is one-shot for fresh installs. Every OTHER
+	// admin route is wrapped with requireOperatorSession via
+	// adminAuthWrapper below.
 	mux.HandleFunc("GET /login", s.handleLoginGet)
 	mux.HandleFunc("POST /login", s.handleLoginPost)
 	mux.HandleFunc("POST /logout", s.handleLogout)
@@ -903,8 +904,7 @@ func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) 
 // construct OAuth callback / redirect / setup / manifest URLs. Reads from
 // settings.PublicBaseURL — never from inbound Host / X-Forwarded-Host /
 // X-Forwarded-Proto headers, which an attacker could forge to redirect
-// an OAuth flow to an attacker-controlled callback (
-// ).
+// an OAuth flow to an attacker-controlled callback.
 // The *http.Request argument is intentionally accepted (and ignored) so
 // every call site reads with awareness of the forged-header threat — the
 // signature carries the reminder that r.Host MUST NOT be used here.
@@ -939,10 +939,10 @@ func (s *Server) googleOAuthConfig(r *http.Request) (*oauth2.Config, error) {
 	}
 
 	// Single callback URL — connection ID is carried in the state parameter.
-	// Derived from settings.public_base_url (
-	// MUST NOT be built from r.Host because an attacker reaching the admin
-	// listener could forge the Host header and redirect the OAuth callback
-	// to an attacker-controlled server.
+	// Derived from settings.public_base_url. MUST NOT be built from r.Host
+	// because an attacker reaching the admin listener could forge the Host
+	// header and redirect the OAuth callback to an attacker-controlled
+	// server.
 	conf.RedirectURL = s.publicBaseURL(r) + "/oauth/callback"
 	return conf, nil
 }
@@ -2312,13 +2312,11 @@ func (s *Server) handleSaveScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Filename validation (
-	// ): single-segment safe filename only. No path separators,
-	// no ".." segments, no leading "." (hidden files), no empty name.
-	// The pre-fix code accepted the operator's filename after a loose
-	// allowlist filter; traced an arbitrary-file-
-	// write path through it that would have worked under a writable
-	// policies/ mount.
+	// Filename validation: single-segment safe filename only. No path
+	// separators, no ".." segments, no leading "." (hidden files), no
+	// empty name. The pre-fix code accepted the operator's filename
+	// after a loose allowlist filter — an arbitrary-file-write path
+	// that would have worked under a writable policies/ mount.
 	if msg := validateScriptFilename(req.Filename); msg != "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)

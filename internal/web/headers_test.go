@@ -20,7 +20,7 @@ var sensitiveHeaders = map[string]string{
 	"Cache-Control": "no-store, no-cache, max-age=0, must-revalidate, private",
 	"Pragma":        "no-cache",
 	"Expires":       "0",
-	"Vary":          "Authorization",
+	"Vary":          "Authorization, Cookie",
 }
 
 func newHeadersTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
