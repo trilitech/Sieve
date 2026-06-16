@@ -36,6 +36,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -699,6 +700,9 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.add", id,
+			map[string]any{"connector_type": connectorType, "display_name": displayName},
+			"success")
 		http.Redirect(w, r, "/connections", http.StatusSeeOther)
 		return
 	}
@@ -770,6 +774,9 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.add", id,
+		map[string]any{"connector_type": connectorType, "display_name": displayName},
+		"success")
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
@@ -779,6 +786,7 @@ func (s *Server) handleConnectionDelete(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.delete", id, nil, "success")
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
@@ -827,6 +835,10 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 	}
 	s.oauthMu.Unlock()
 
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.reauth_start", id,
+		map[string]any{"connector_type": conn.ConnectorType},
+		"success")
+
 	url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 	http.Redirect(w, r, url, http.StatusFound)
 }
@@ -844,6 +856,7 @@ func (s *Server) handleConnectionDisable(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.disable", id, nil, "success")
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
@@ -877,6 +890,9 @@ func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.enable", id,
+		map[string]any{"reauth_pending": c.ReauthReason != ""},
+		"success")
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
@@ -1389,6 +1405,9 @@ func (s *Server) handleRoleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "role.update", id,
+		map[string]any{"name": name, "binding_count": len(bindings)},
+		"success")
 	http.Redirect(w, r, "/roles", http.StatusSeeOther)
 }
 
@@ -1871,10 +1890,14 @@ func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
 			"rules":          rules,
 			"default_action": defaultAction,
 		}
-		if _, err := s.policies.Create(name, "rules", config); err != nil {
+		policyRow, err := s.policies.Create(name, "rules", config)
+		if err != nil {
 			http.Error(w, "failed to create policy: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		_ = s.audit.LogOperator(operatorDisplayName(r, s), "approval.approve_proposal", id,
+			map[string]any{"policy_id": policyRow.ID, "policy_name": name},
+			"success")
 		http.Redirect(w, r, "/approvals", http.StatusSeeOther)
 		return
 	}
@@ -2101,6 +2124,17 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	// Reload the in-process command allowlist so subsequent policy CRUD
 	// + evaluation calls observe the new value without a process restart.
 	policy.SetCommandAllowlist(s.settings.CommandAllowlist())
+
+	// Audit the keys whose values changed shape (we don't echo values
+	// because some — public_base_url, allowlist — are operator data and
+	// some — none here today — could grow secret).
+	changedKeys := make([]string, 0, len(pairs))
+	for k := range pairs {
+		changedKeys = append(changedKeys, k)
+	}
+	sort.Strings(changedKeys)
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "settings.save", "-",
+		map[string]any{"keys": changedKeys}, "success")
 
 	http.Redirect(w, r, "/settings?saved=1", http.StatusSeeOther)
 }

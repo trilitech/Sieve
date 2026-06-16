@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/trilitech/Sieve/internal/connections"
@@ -175,6 +176,17 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 		s.renderEditErrorWithConfig(w, conn, cfg, "save failed: "+err.Error())
 		return
 	}
+
+	// Audit the field names whose values reached the saved config — never
+	// the values themselves, since Secret fields are present in cfg.
+	editedFields := make([]string, 0, len(cfg))
+	for k := range cfg {
+		editedFields = append(editedFields, k)
+	}
+	sort.Strings(editedFields)
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.update_config", id,
+		map[string]any{"connector_type": conn.ConnectorType, "fields": editedFields},
+		"success")
 
 	http.Redirect(w, r, fmt.Sprintf("/connections/%s/edit?saved=1", id), http.StatusSeeOther)
 }
