@@ -1031,11 +1031,21 @@ func buildInputSchema(op connector.OperationDef, multiConn bool) map[string]any 
 			prop["type"] = "string"
 		case "int":
 			prop["type"] = "integer"
+		case "float", "number":
+			prop["type"] = "number"
 		case "bool":
 			prop["type"] = "boolean"
 		case "[]string":
 			prop["type"] = "array"
 			prop["items"] = map[string]any{"type": "string"}
+		case "object":
+			// Free-form object — schema-less because the upstream API's
+			// shape lives in its docs, not in our catalog. MCP clients
+			// pass these through as-is.
+			prop["type"] = "object"
+		case "[]object":
+			prop["type"] = "array"
+			prop["items"] = map[string]any{"type": "object"}
 		default:
 			prop["type"] = "string"
 		}

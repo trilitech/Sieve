@@ -1,0 +1,73 @@
+{{define "connection_edit_field"}}
+{{/*
+  Renders a single editFieldView. Pulled into a partial so the same
+  field-rendering code can be reused by other surfaces that need to
+  expose the connector's declared form fields (currently the edit page;
+  the connect-time generic catalog cards may adopt it later).
+
+  Only the renderable Type values from connection_form.go::
+  renderableFieldTypes appear here. Unsupported types are filtered out
+  upstream in fieldInMode, so this template has no silent fallback —
+  an unknown type at this point is a programming error and the
+  template branch deliberately renders nothing rather than guessing
+  with a plain text input.
+*/}}
+<div>
+  {{if eq .Type "checkbox"}}
+  <label class="flex items-start gap-3 cursor-pointer">
+    <input type="checkbox" name="{{.Name}}" value="1" {{if .BoolValue}}checked{{end}}
+      class="mt-1 rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500">
+    <span class="text-sm text-slate-300">
+      <span class="font-medium text-white">{{.Label}}</span>
+      {{if .HelpText}}<span class="block text-slate-400 mt-1">{{.HelpText}}</span>{{end}}
+    </span>
+  </label>
+
+  {{else if eq .Type "textarea"}}
+  <label class="block">
+    <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    <textarea name="{{.Name}}" rows="6" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
+      class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">{{.TextareaValue}}</textarea>
+  </label>
+
+  {{else if eq .Type "json"}}
+  <label class="block">
+    <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    <textarea name="{{.Name}}" rows="4" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
+      class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">{{.StringValue}}</textarea>
+  </label>
+
+  {{else if eq .Type "number"}}
+  <label class="block">
+    <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    <input type="number" name="{{.Name}}" min="0" step="1"
+      value="{{.StringValue}}" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
+      class="w-64 rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">
+  </label>
+
+  {{else if eq .Type "password"}}
+  <label class="block">
+    <span class="text-sm font-medium text-white">{{.Label}}{{if and .Required (not .Secret)}} <span class="text-red-400" title="required">*</span>{{end}}</span>
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    {{/* Secret password fields don't get the HTML required attribute:
+         an empty submission on edit means "keep stored", and adding
+         required would break that path. */}}
+    <input type="password" name="{{.Name}}" placeholder="{{.Placeholder}}"
+      class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono"
+      autocomplete="off">
+  </label>
+
+  {{else if eq .Type "text"}}
+  <label class="block">
+    <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    <input type="text" name="{{.Name}}" value="{{.StringValue}}" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
+      class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">
+  </label>
+  {{/* No fallback else branch: unsupported types are filtered upstream. */}}
+  {{end}}
+</div>
+{{end}}

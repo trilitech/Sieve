@@ -92,8 +92,7 @@
                 </form>
                 {{else}}
                 <form method="POST" action="/connections/{{.ID}}/disable"
-                      hx-post="/connections/{{.ID}}/disable"
-                      hx-confirm="Disable connection '{{.ID}}'? Agent operations will fail until you re-enable it."
+                      data-confirm="Disable connection '{{.ID}}'? Agent operations will fail until you re-enable it."
                       class="inline mr-3">
                   <button type="submit"
                           class="text-sm text-amber-400 hover:text-amber-300 font-medium transition-colors">
@@ -102,8 +101,7 @@
                 </form>
                 {{end}}
                 <form method="POST" action="/connections/{{.ID}}/delete"
-                      hx-post="/connections/{{.ID}}/delete"
-                      hx-confirm="Delete connection '{{.ID}}'? This cannot be undone."
+                      data-confirm="Delete connection '{{.ID}}'? This cannot be undone."
                       class="inline">
                   <button type="submit"
                           class="text-sm text-red-400 hover:text-red-300 font-medium transition-colors">
@@ -837,6 +835,43 @@
       {{end}}
     </div>
   </main>
+
+  {{/*
+    Single delegated submit handler for forms that carry data-confirm.
+    Replaces the previous hx-post + hx-confirm on the Disable / Delete
+    forms above (which had two problems: htmx intercepted the POST,
+    then swapped the redirect-target page into the form's parent cell
+    because no hx-target was set — and hx-confirm only fires when an
+    htmx request is being issued, so dropping hx-post in place would
+    have silently lost the confirmation step too).
+
+    CSP note: this is still an inline <script> block and DOES require a
+    CSP allowance (a nonce, a hash, or 'unsafe-inline') to execute under
+    a strict policy — Sieve doesn't ship CSP yet, tracked in #17. The
+    win over equivalent per-form on*-attribute handlers is migration
+    ergonomics: an inline <script> can be CSP-nonced trivially in a
+    single edit, whereas attribute handlers require either
+    'unsafe-hashes' (with hashing each attribute value) or rewriting
+    every form to data-* + a delegated handler. Doing the rewrite once
+    now makes the eventual CSP work a one-line nonce on this script tag.
+
+    The confirmation message lives in the data-confirm attribute, which
+    Go's html/template contextually escapes — no JS-string injection
+    surface even if a connection ID ever contains a quote.
+  */}}
+  <script>
+    // Capture phase (third arg = true) so the confirmation runs even
+    // if a deeper handler calls stopPropagation during the bubble
+    // pass — a delegated listener attached in bubble would silently
+    // miss those submits.
+    document.addEventListener("submit", function (e) {
+      var msg = e.target && e.target.getAttribute && e.target.getAttribute("data-confirm");
+      if (msg && !window.confirm(msg)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+  </script>
 </body>
 </html>
 {{end}}

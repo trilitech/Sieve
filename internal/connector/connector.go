@@ -62,14 +62,37 @@ type ConnectorMeta struct {
 	SetupFields []Field  `json:"setup_fields"` // fields needed to create a connection
 }
 
-// Field describes a form field for connection setup.
+// Field describes a form field for connection setup and editing.
+//
+// SetupFields is the single source of truth for the generic connection
+// forms: the create flow renders/parses every non-EditOnly field, the
+// edit page renders/parses every Editable field. Adding a field here is
+// the ONLY step needed to surface it in both forms — the web layer has
+// no per-connector form code. (Bespoke flows — Google OAuth, Slack
+// install — bypass this mechanism entirely.)
 type Field struct {
 	Name        string `json:"name"`
 	Label       string `json:"label"`
-	Type        string `json:"type"`  // "text", "password", "oauth", "select"
+	Type        string `json:"type"` // "text", "password", "oauth", "select", "checkbox", "textarea", "number", "json"
 	Required    bool   `json:"required"`
 	Placeholder string `json:"placeholder,omitempty"`
 	HelpText    string `json:"help_text,omitempty"`
+
+	// Editable fields appear on the connection-edit page and may be
+	// changed after creation. Fields without it are create-time-only
+	// (shown on the create form, frozen thereafter).
+	Editable bool `json:"editable,omitempty"`
+	// EditOnly marks operational settings with no meaning at creation
+	// time (response-size caps, scrub toggles). They render only on the
+	// edit page. EditOnly fields are never Required at create.
+	EditOnly bool `json:"edit_only,omitempty"`
+	// Secret values (API keys, tokens) are never echoed back into the
+	// edit form. An empty submitted value on edit means "keep stored".
+	Secret bool `json:"secret,omitempty"`
+	// Default is the value assumed when the stored config has no entry.
+	// Used by checkbox fields ("true"/"false") to distinguish "unset,
+	// use default" from "explicitly off".
+	Default string `json:"default,omitempty"`
 }
 
 // Registry holds registered connector factories and metadata.

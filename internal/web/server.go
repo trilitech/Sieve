@@ -305,6 +305,7 @@ func NewServer(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
 				"templates/nav.html",
 				"templates/policy_ops_picker.html",
+				"templates/connection_edit_field.html",
 				fmt.Sprintf("templates/%s.html", page),
 			),
 		)
@@ -682,31 +683,15 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For proxy connectors (HTTP or MCP), read the proxy-specific fields
-	// from the form and save the connection directly (no OAuth flow needed).
-	if connectorType == "http_proxy" || connectorType == "mcp_proxy" {
-		config := map[string]any{
-			"target_url":  r.FormValue("target_url"),
-			"auth_header": r.FormValue("auth_header"),
-			"auth_value":  r.FormValue("auth_value"),
-		}
-		// Category tag (e.g., "llm" for LLM provider connections).
-		if cat := r.FormValue("category"); cat != "" {
-			config["category"] = cat
-		}
-		// AWS Bedrock-specific fields.
-		if ak := r.FormValue("aws_access_key"); ak != "" {
-			config["aws_access_key"] = ak
-		}
-		if region := r.FormValue("aws_region"); region != "" {
-			config["aws_region"] = region
-		}
-		// Parse extra_headers if provided (JSON object of additional headers).
-		if extra := r.FormValue("extra_headers"); extra != "" {
-			var headers map[string]any
-			if err := json.Unmarshal([]byte(extra), &headers); err == nil {
-				config["extra_headers"] = headers
-			}
+	// Generic save path. The connector's declared SetupFields drive
+	// which form values get pulled into the config map — there's no
+	// per-connector switch here. Bespoke flows (Slack install, Google
+	// OAuth) intercept BEFORE this point.
+	if meta, ok := s.registry.Meta(connectorType); ok && !connectorRequiresBespokeAdd(connectorType) {
+		config := map[string]any{}
+		if msg := applyConnectorFormFields(meta, formModeCreate, r, config); msg != "" {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
 		}
 		if err := s.connections.Add(id, connectorType, displayName, config); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -727,6 +712,20 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 			"Slack connections must be added via the Slack-specific install flow "+
 				"(POST /connections/slack/oauth/start or /connections/slack/token). "+
 				"The generic add endpoint cannot validate Slack credentials.",
+			http.StatusBadRequest)
+		return
+	}
+
+	// GitHub is similar to Slack: credentials are installed via dedicated
+	// /connections/github/{pat,app/start,...} endpoints that validate
+	// against GitHub before persisting. Falling through to the empty-config
+	// save below would leave a row with no credentials — every operation
+	// would fail because parseConfig requires at least one credential.
+	if connectorType == "github" {
+		http.Error(w,
+			"GitHub connections must be added via the GitHub-specific install flow "+
+				"(POST /connections/github/pat or /connections/github/app/start). "+
+				"The generic add endpoint cannot validate GitHub credentials.",
 			http.StatusBadRequest)
 		return
 	}

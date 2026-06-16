@@ -46,10 +46,13 @@ var Meta = connector.ConnectorMeta{
 	Description: "Proxy to an upstream MCP server — apply Sieve policies to any MCP tool",
 	Category:    "Proxy",
 	SetupFields: []connector.Field{
-		{Name: "url", Label: "MCP Server URL", Type: "text", Required: true, Placeholder: "http://localhost:3000/mcp"},
-		{Name: "auth_header", Label: "Auth Header (optional)", Type: "text", Required: false, Placeholder: "Authorization"},
-		{Name: "auth_value", Label: "Auth Value (optional)", Type: "password", Required: false, Placeholder: "Bearer sk-..."},
-		{Name: "name", Label: "Server Name", Type: "text", Required: false, Placeholder: "my-mcp-server"},
+		{Name: "url", Label: "MCP Server URL", Type: "text", Required: true, Editable: true, Placeholder: "http://localhost:3000/mcp"},
+		{Name: "auth_header", Label: "Auth Header (optional)", Type: "text", Required: false, Editable: true, Placeholder: "Authorization"},
+		{Name: "auth_value", Label: "Auth Value (optional)", Type: "password", Required: false, Editable: true, Secret: true, Placeholder: "Bearer sk-...",
+			HelpText: "Leave blank on edit to keep the stored value."},
+		{Name: "name", Label: "Server Name", Type: "text", Required: false, Editable: true, Placeholder: "my-mcp-server"},
+		{Name: "response_body_cap_bytes", Label: "Upstream response body cap (bytes)", Type: "number", EditOnly: true, Editable: true, Placeholder: "5242880",
+			HelpText: "Maximum bytes Sieve reads from a tools/call upstream response. 0 or empty = 5 MiB default."},
 	},
 }
 
