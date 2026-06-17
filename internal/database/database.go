@@ -394,17 +394,22 @@ func (db *DB) migrate() error {
 		}
 	}
 
-	// Security-hardening migration. Adds:
-	// - operator_credential (singleton row holding Argon2id verifier + display name)
-	// - operator_session (one row per active admin browser session)
-	// - audit_log.actor_kind, audit_log.operator_display_name
-	// - policies.lint_ack (sticky numeric-ceiling lint acknowledgement)
-	// All additive; no destructive migrations.
-	// The per-connection outbound SSRF allowlist deliberately lives inside
-	// the envelope-encrypted config blob (see internal/connectors/{http,mcp}proxy,
-	// internal/connectors/slack), NOT in a top-level column — keeping it out
-	// of plaintext backups and reducing the chance of two divergent sources
-	// of truth.
+	// Security-hardening migration.
+	// Additive steps:
+	//   - operator_credential (singleton row holding Argon2id verifier + display name)
+	//   - operator_session (one row per active admin browser session)
+	//   - audit_log.actor_kind, audit_log.operator_display_name
+	//   - policies.lint_ack (sticky numeric-ceiling lint acknowledgement)
+	// Destructive step (idempotent):
+	//   - connections.outbound_allowlist DROP COLUMN — see dropColumnIfPresent
+	//     call below. Safe because the column was never read or written by
+	//     any code path; the live SSRF allowlist sits inside the envelope-
+	//     encrypted config blob (see internal/connectors/{http,mcp}proxy and
+	//     internal/connectors/slack). Dropping it removes a misleading
+	//     plaintext shadow that an operator could think was authoritative,
+	//     and prevents a future PR from wiring reads to it and silently
+	//     bypassing the encrypted source of truth. New databases never see
+	//     the column; the DROP is a no-op when the column is absent.
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS operator_credential (
 			id                  INTEGER PRIMARY KEY CHECK (id = 1),
