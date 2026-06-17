@@ -44,19 +44,19 @@ func operatorSessionHashesEqual(a, b string) bool {
 }
 
 // This file contains:
-// - sessionContextKey + helpers for handlers to read the active
-// operator session out of the request context.
-// - requireOperatorSession middleware that gates a handler chain
-// on a valid cookie + (for state-changing methods) a CSRF token.
+// - sessionCtxKey + helpers for handlers to read the active operator
+//   session out of the request context.
+// - requireOperatorSession middleware that gates a handler chain on a
+//   valid cookie + (for state-changing methods) a CSRF token.
 // - handleLoginGet / handleLoginPost — render + accept the login form.
 // - handleLogout — clear session + cookie.
 // - handleSetupGet / handleSetupPost — first-run credential setup.
-// The middleware is opt-in per endpoint via wrapAuth. Endpoints
-// that don't call wrapAuth remain accessible without a session —
-// preserving existing test-bench behavior while the wiring lands
-// incrementally. The follow-up commit wraps the entire admin
-// router; it supersedes the per-handler rejectIfAgentToken helper that
-// used to be sprinkled across individual mutators.
+// The middleware is wired in front of the admin mux by
+// adminAuthWrapper (see server.go), which routes every request through
+// requireOperatorSession unless its path is in authExemptPaths /
+// authExemptPrefixes. There is no per-handler opt-in; the wrapper is
+// the single gate and replaces the per-handler rejectIfAgentToken
+// helper that used to be sprinkled across individual mutators.
 
 type sessionCtxKey struct{}
 
@@ -86,27 +86,25 @@ func operatorDisplayName(r *http.Request, s *Server) string {
 
 // requireOperatorSession is the gating middleware for admin
 // endpoints. Behavior:
-// - Sieve has no operator credential configured yet → redirect
-// to /setup for GET / show "service locked" 503 for other
-// methods. Lets a fresh install bootstrap without panicking.
-// - Cookie missing or session unknown → redirect to /login on
-// GET, 401 on other methods.
-// - Session expired (sliding-window past idle timeout) → row
-// deleted by Lookup; same outcome as "missing".
-// - State-changing method (POST/PUT/PATCH/DELETE) without a
-// valid CSRF token → 403.
-// - Success → session attached to context as sessionCtxKey.
-// When the Server has no operator service wired (SetAuth never
-// called — typical for tests that don't need auth), the middleware
-// is a pass-through. This is the temporary "land infrastructure
-// first, wire it second" pattern; the follow-up commit removes
-// this branch and makes auth mandatory.
+//   - No operator credential configured yet → redirect to /setup for
+//     GET, "service locked" 503 for other methods. Lets a fresh install
+//     bootstrap without panicking.
+//   - Cookie missing or session unknown → redirect to /login on GET,
+//     401 on other methods.
+//   - Session expired (sliding-window past idle timeout) → row deleted
+//     by Lookup; same outcome as "missing".
+//   - State-changing method (POST/PUT/PATCH/DELETE) without a valid
+//     CSRF token → 403.
+//   - Success → session attached to context under sessionCtxKey.
+//
+// The auth services (operatorSvc, sessionMgr) MUST be wired before
+// any admin endpoint is reachable. If they are nil at request time the
+// middleware fails closed with 500 — earlier transitional builds let
+// this branch pass through; that pass-through is gone.
 func (s *Server) requireOperatorSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Auth services MUST be wired before any admin endpoint is
-		// reachable. The previous commit (foundation) tolerated nil
-		// services as a transitional pass-through; this commit makes
-		// the gate mandatory per.
+		// reachable. Fail closed with 500 — never pass through.
 		if s.operatorSvc == nil || s.sessionMgr == nil {
 			http.Error(w, "admin auth not configured", http.StatusInternalServerError)
 			return
@@ -119,9 +117,8 @@ func (s *Server) requireOperatorSession(next http.Handler) http.Handler {
 		}
 		if !exists {
 			// First-run state — redirect to setup so the operator
-			// can install credentials. Setup page itself is exempt
-			// (see wrapAuth's exemption set), so this redirect
-			// won't loop.
+			// can install credentials. /setup itself is listed in
+			// authExemptPaths (server.go), so this redirect won't loop.
 			if r.Method == http.MethodGet {
 				http.Redirect(w, r, "/setup", http.StatusSeeOther)
 				return
@@ -209,8 +206,9 @@ func (s *Server) requireOperatorSessionExceptCSRF(next http.Handler) http.Handle
 
 // isAgentTokenRequest reports whether the request carries the
 // "Authorization: Bearer sieve_tok_*" header that identifies an
-// agent. : the middleware surfaces 403 for these so operators
-// inspecting agent behavior get a clear "wrong port" signal.
+// agent. When the admin middleware sees one it surfaces 403 ("not
+// accessible to agents") instead of the generic 401 / login redirect,
+// so a confused agent implementation gets a clear "wrong port" signal.
 func isAgentTokenRequest(r *http.Request) bool {
 	auth := r.Header.Get("Authorization")
 	return strings.HasPrefix(auth, "Bearer sieve_tok_")

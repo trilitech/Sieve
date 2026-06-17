@@ -118,10 +118,11 @@
       renderBindings();
     }
 
-    // renderBindings is XSS-hardened (spec 001-fix-security-vulns US1).
-    // Every server-derived string (c.name, p.name, c.id, p.id) reaches the
-    // DOM via .textContent or .value — never via innerHTML or string
-    // concatenation. The only innerHTML assignment is the empty-string clear.
+    // renderBindings is XSS-hardened. Every server-derived string
+    // (c.name, c.id, p.name, p.id) reaches the DOM via .textContent or
+    // .value — never via innerHTML or string concatenation. The only
+    // innerHTML assignment is the empty-string clear; the lint in
+    // template_xss_guard_test.go enforces this invariant.
     function renderBindings() {
       var list = document.getElementById("bindings-list");
       list.innerHTML = ""; // xss-safe: constant empty-string clear

@@ -314,7 +314,7 @@
                  '<div class="text-xs text-slate-400 mt-1">' + excerpt + '</div>' +
                  '</a>';
         }).join('');
-        results.innerHTML = html; // xss-safe: every interpolation in `html` is wrapped in highlight() (which escapes via escapeHTML) or escapeHTML() directly — see lines above
+        results.innerHTML = html; // xss-safe: every server-text interpolation in `html` is wrapped in highlight() (which escapes via escapeHTML) or escapeHTML() directly. `url` is built from h.page.slug and h.section.anchor only — both are passed through the Go-side slugify() (docs_toc.go) which keeps [a-z0-9-] only, so they carry no HTML metacharacters by construction.
         results.hidden = false;
       }
 

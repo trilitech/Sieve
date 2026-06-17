@@ -223,8 +223,10 @@
   </main>
 
   {{/* Stored policy config travels as JSON text — parsed via JSON.parse on
-       .textContent below. Never embedded inline as JavaScript source
-       (Shannon INJ-VULN-06 / spec 001-fix-security-vulns US5). */}}
+       .textContent below. Never embedded inline as JavaScript source: a
+       template.JS(userJSON) sink would let any < or " in stored config
+       break out of its string literal and execute as script. See
+       SECURITY_AUDIT.md for the full XSS chain this closed. */}}
   <script type="application/json" id="policy-config-data">{{json .Policy.PolicyConfig}}</script>
 
   <script>
@@ -717,8 +719,8 @@
     // parsed via JSON.parse — never embedded inline as JavaScript.
     // Pre-fix this was the json template helper inlined into a <script>
     // block, which made the policy config part of the page's JavaScript
-    // source (Shannon INJ-VULN-06). The new path keeps user-controlled
-    // data as text.
+    // source; a stored value containing </script> or " could break out
+    // and execute. The new path keeps user-controlled data as inert text.
     (function() {
       var configEl = document.getElementById("policy-config-data");
       var existingConfig = null;

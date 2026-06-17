@@ -188,11 +188,14 @@ func (l *Logger) LogRotationLockout(surface string, threshold int) error {
 	})
 }
 
-// LogOperator is a convenience wrapper around Log for admin
-// mutations: pre-fills actor_kind="operator", redacts sensitive
-// keys from params via RedactSensitive, and tolerates an empty
-// connection ID (entity-level audit rows aren't tied to a
-// connection)...
+// LogOperator is a convenience wrapper around Log for admin mutations.
+// It pre-fills actor_kind="operator", routes the display name into
+// both TokenName (legacy column kept for backward-compatible List
+// output) and OperatorDisplayName (typed column added by the security-
+// fixes migration), redacts sensitive keys from params via
+// RedactSensitive, and tolerates an empty connection ID — entity-level
+// admin rows (token created, role updated, settings changed) are not
+// tied to a connection and pass "" for entityID.
 func (l *Logger) LogOperator(operatorDisplayName, operation, entityID string, params map[string]any, outcome string) error {
 	if params != nil {
 		params = RedactSensitive(params)
