@@ -592,11 +592,15 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	if len(decision.Filters) > 0 {
 		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
 		if ferr != nil {
+			// Log the detailed failure server-side; keep the
+			// agent-facing message generic so internal details (script
+			// paths, command allowlist entries, evaluator stderr) don't
+			// leak through the JSON-RPC error envelope.
 			s.logAudit(tok, connID, opName, call.Arguments, "response_filter_failed", ferr.Error(), durationMs)
 			return &JSONRPCResponse{
 				JSONRPC: "2.0",
 				ID:      id,
-				Error:   &JSONRPCError{Code: -32000, Message: "response filter failed: " + ferr.Error()},
+				Error:   &JSONRPCError{Code: -32000, Message: "response filter failed"},
 			}
 		}
 		resultJSON = filtered

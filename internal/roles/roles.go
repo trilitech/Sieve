@@ -7,14 +7,15 @@
 // means DENY ALL — the agent can see the connection exists but cannot
 // perform any operations through it.
 // Example role:
-//{
-//"name": "project-x-dev",
-//"bindings": [
-//{"connection_id": "google-work", "policy_ids": ["gmail-drafter", "drive-read-only"]},
-//{"connection_id": "anthropic", "policy_ids": ["sonnet-only"]},
-//{"connection_id": "aws-prod", "policy_ids": ["ec2-describe-only"]}
-//]
-//}
+//
+//	{
+//	  "name": "project-x-dev",
+//	  "bindings": [
+//	    {"connection_id": "google-work", "policy_ids": ["gmail-drafter", "drive-read-only"]},
+//	    {"connection_id": "anthropic",   "policy_ids": ["sonnet-only"]},
+//	    {"connection_id": "aws-prod",    "policy_ids": ["ec2-describe-only"]}
+//	  ]
+//	}
 package roles
 
 import (

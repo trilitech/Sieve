@@ -7,12 +7,13 @@
 // policies on tool calls — the agent doesn't know it's not talking directly
 // to the upstream server.
 // Connection config:
-//{
-//"url": "http://localhost:3000/mcp",
-//"auth_header": "Authorization", // optional
-//"auth_value": "Bearer sk-xxx", // optional
-//"name": "my-mcp-server" // display name for the server
-//}
+//
+//	{
+//	  "url": "http://localhost:3000/mcp",
+//	  "auth_header": "Authorization",   // optional
+//	  "auth_value": "Bearer sk-xxx",    // optional
+//	  "name": "my-mcp-server"           // display name for the server
+//	}
 package mcpproxy
 
 import (

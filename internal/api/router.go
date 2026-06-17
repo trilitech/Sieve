@@ -393,7 +393,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
 			if ferr != nil {
 				rt.logAudit(tok, connID, operation, params, "response_filter_failed", ferr.Error(), time.Since(start).Milliseconds())
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("response filter failed: %v", ferr))
+				writeError(w, http.StatusInternalServerError, "response filter failed")
 				return
 			}
 			resultJSON = filtered
@@ -499,7 +499,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 			filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
 			if ferr != nil {
 				rt.logAudit(tok, connID, operation, params, "response_filter_failed", ferr.Error(), time.Since(start).Milliseconds())
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("response filter failed: %v", ferr))
+				writeError(w, http.StatusInternalServerError, "response filter failed")
 				return
 			}
 			resultJSON = filtered
@@ -1047,7 +1047,7 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
 		if ferr != nil {
 			rt.logAudit(tok, connID, operation, params, "response_filter_failed", ferr.Error(), time.Since(start).Milliseconds())
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("response filter failed: %v", ferr))
+			writeError(w, http.StatusInternalServerError, "response filter failed")
 			return
 		}
 		resultJSON = filtered

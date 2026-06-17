@@ -21,20 +21,38 @@ func WriteSensitive(w http.ResponseWriter) {
 // writeSecurityHeaders sets the static security-headers that apply to
 // every admin response. Defense-in-depth against a future XSS regression
 // or a clickjack pivot: even if a script-injection sink slips back in,
-// the CSP refuses to execute inline / cross-origin script; X-Frame-Options
-// refuses to frame; nosniff refuses MIME-confusion; no-referrer refuses
-// to leak in-page URLs to third parties.
+// the CSP refuses to execute cross-origin script (outside the documented
+// CDN allowlist); X-Frame-Options refuses to frame; nosniff refuses
+// MIME-confusion; no-referrer refuses to leak in-page URLs to third
+// parties.
+//
 // CSP uses 'unsafe-inline' for script-src because admin templates carry
 // per-page inline <script> blocks today. Moving those to nonces or
-// external files is a larger lift; the inline opener is documented here so
-// the next pass can tighten it. The other directives are already strict.
+// external files is a larger lift; the inline opener is documented here
+// so the next pass can tighten it.
+//
+// The CDN allowlist is the minimum the bundled templates require:
+//   - script-src cdn.tailwindcss.com — Tailwind CDN runtime
+//   - script-src cdn.jsdelivr.net    — marked + DOMPurify (docs)
+//   - script-src unpkg.com           — htmx (approvals)
+//   - style-src + font-src fonts.googleapis.com / fonts.gstatic.com
+//     — Inter font, loaded by every admin page header
+//
+// connect-src also names these hosts because tailwindcss.com's runtime
+// fetches its CSS via XHR; without that, the page loads but stays
+// unstyled.
 func writeSecurityHeaders(w http.ResponseWriter) {
+	const cdnScripts = "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
+	const cdnStyles = "https://fonts.googleapis.com"
+	const cdnFonts = "https://fonts.gstatic.com"
 	h := w.Header()
 	h.Set("Content-Security-Policy",
 		"default-src 'self'; "+
-			"script-src 'self' 'unsafe-inline'; "+
-			"style-src 'self' 'unsafe-inline'; "+
+			"script-src 'self' 'unsafe-inline' "+cdnScripts+"; "+
+			"style-src 'self' 'unsafe-inline' "+cdnStyles+"; "+
+			"font-src 'self' "+cdnFonts+"; "+
 			"img-src 'self' data:; "+
+			"connect-src 'self' "+cdnScripts+" "+cdnStyles+"; "+
 			"object-src 'none'; "+
 			"frame-ancestors 'none'; "+
 			"base-uri 'none'; "+
