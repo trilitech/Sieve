@@ -155,6 +155,11 @@
                 <svg class="w-5 h-5 text-slate-200" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.11.82-.26.82-.577v-2.17c-3.338.726-4.042-1.61-4.042-1.61-.546-1.387-1.333-1.757-1.333-1.757-1.09-.745.082-.73.082-.73 1.204.085 1.838 1.236 1.838 1.236 1.07 1.834 2.807 1.304 3.492.997.108-.776.42-1.305.763-1.605-2.665-.303-5.467-1.332-5.467-5.93 0-1.31.468-2.381 1.235-3.22-.124-.303-.535-1.524.117-3.176 0 0 1.008-.323 3.3 1.23.957-.266 1.983-.4 3.003-.404 1.02.004 2.046.138 3.006.404 2.29-1.553 3.297-1.23 3.297-1.23.653 1.652.242 2.873.118 3.176.77.839 1.233 1.91 1.233 3.22 0 4.61-2.807 5.624-5.48 5.92.43.37.814 1.102.814 2.222v3.293c0 .32.217.694.825.577C20.565 21.795 24 17.298 24 12c0-6.63-5.37-12-12-12z"/></svg>
               </div>
               {{end}}
+              {{if eq .Type "gitlab"}}
+              <div class="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center flex-shrink-0">
+                <svg class="w-5 h-5 text-orange-400" viewBox="0 0 24 24" fill="currentColor"><path d="M23.6 9.593l-.033-.086L20.3.98a.851.851 0 0 0-1.6-.024L16.5 8.196H7.5L5.3.956A.85.85 0 0 0 3.7.98L.43 9.507.397 9.593a6.034 6.034 0 0 0 2.005 6.967l.013.01.034.024 4.953 3.71 2.45 1.853 1.493 1.13a1.002 1.002 0 0 0 1.213 0l1.493-1.13 2.45-1.852 4.99-3.733.01-.01a6.029 6.029 0 0 0 2.001-6.969z"/></svg>
+              </div>
+              {{end}}
               {{if eq .Type "slack"}}
               <div class="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
                 <svg class="w-5 h-5 text-emerald-400" viewBox="0 0 24 24" fill="currentColor"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></svg>
@@ -259,6 +264,36 @@
                 </button>
               </form>
             </div>
+            {{else if eq .Type "gitlab"}}
+            <form method="POST" action="/connections/add" class="space-y-3">
+              <input type="hidden" name="connector_type" value="gitlab">
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Connection Alias</label>
+                <input type="text" name="id" required placeholder="e.g. my-gitlab"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-orange-400">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Display Name</label>
+                <input type="text" name="display_name" required placeholder="e.g. Trilitech GitLab"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-orange-400">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Personal Access Token</label>
+                <input type="password" name="token" required placeholder="glpat-..."
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-orange-400">
+                <p class="text-xs text-slate-500 mt-1">Needs the <code>api</code> scope for write ops, or <code>read_api</code> for read-only.</p>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Base URL <span class="text-slate-600">(optional)</span></label>
+                <input type="text" name="base_url" placeholder="https://gitlab.com"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-orange-400">
+                <p class="text-xs text-slate-500 mt-1">Override for self-hosted GitLab instances. Leave blank for gitlab.com.</p>
+              </div>
+              <button type="submit"
+                      class="w-full rounded-lg bg-orange-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-orange-400 transition-colors">
+                Connect GitLab
+              </button>
+            </form>
             {{else if eq .Type "slack"}}
             {{/* Slack: three sections.
                  (1) When OAuth is configured: an "Install via OAuth"
