@@ -23,7 +23,13 @@ func newConnectorForTest(t *testing.T, mock *mockslack.Server) (*Connector, *boo
 	terminalFired := new(bool)
 	// Tests dial loopback (mock Slack server on 127.0.0.1) — supply the
 	// outbound allowlist that httpguard requires for non-public IPs.
-	allowlist, _ := httpguard.ParseCIDRs([]string{"127.0.0.0/8"})
+	// Surface a ParseCIDRs failure as a test fatal so a future regression
+	// in the constant list (or in ParseCIDRs itself) can't silently degrade
+	// into a nil/empty allowlist that would change what the test exercises.
+	allowlist, err := httpguard.ParseCIDRs([]string{"127.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("parse loopback allowlist: %v", err)
+	}
 	cli, err := newClient(cfg, mock.URL, func() { *terminalFired = true }, allowlist)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
