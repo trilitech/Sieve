@@ -1,10 +1,10 @@
 package web_test
 
 // Tests for the /connections/{id}/disable and /connections/{id}/enable
-// endpoints (status surfacing) and the rejectIfAgentToken protection.
-//
-// External package so we don't touch the private Server type beyond the
-// public NewServer + Handler() surfaces an admin would actually use.
+// endpoints (status surfacing) and the agent-token rejection enforced
+// by the requireOperatorSession middleware. External package so we
+// don't touch the private Server type beyond the public NewServer +
+// Handler surfaces an admin would actually use.
 
 import (
 	"net/http"
@@ -20,7 +20,7 @@ import (
 
 func newTestWebServer(t *testing.T) (http.Handler, *testenv.Env) {
 	t.Helper()
-	env := testenv.New(t)
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := web.NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles, env.Registry,
@@ -29,14 +29,29 @@ func newTestWebServer(t *testing.T) (http.Handler, *testenv.Env) {
 		env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "",
 	)
+	srv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(func() { srv.Close() })
 	return srv.Handler(), env
 }
 
-// TestServer_DisableConnection_RejectsAgentToken verifies that an agent
-// bearer token cannot disable a connection through the admin UI.
-// rejectIfAgentToken inspects the Authorization header and returns 403
-// before any state mutation.
+// authedPost adds the env's operator session cookie + CSRF token to
+// an outgoing test request so requireOperatorSession lets it through.
+func authedPost(t *testing.T, env *testenv.Env, path string) (*http.Request, *httptest.ResponseRecorder) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	if c := env.SessionCookie(); c != nil {
+		req.AddCookie(c)
+	}
+	if tok := env.CSRFToken(); tok != "" {
+		req.Header.Set("X-CSRF-Token", tok)
+	}
+	return req, httptest.NewRecorder()
+}
+
+// TestServer_DisableConnection_RejectsAgentToken verifies that an
+// agent bearer token cannot disable a connection through the admin UI.
+// The requireOperatorSession middleware inspects the Authorization
+// header and returns 403 before any state mutation.
 func TestServer_DisableConnection_RejectsAgentToken(t *testing.T) {
 	handler, env := newTestWebServer(t)
 
@@ -44,6 +59,9 @@ func TestServer_DisableConnection_RejectsAgentToken(t *testing.T) {
 		t.Fatalf("add: %v", err)
 	}
 
+	// Deliberately NO operator session cookie — the request carries
+	// an agent bearer header which the middleware surfaces as 403
+	// rather than redirecting to /login.
 	req := httptest.NewRequest(http.MethodPost, "/connections/c1/disable", nil)
 	req.Header.Set("Authorization", "Bearer sieve_tok_pretend")
 	rec := httptest.NewRecorder()
@@ -61,9 +79,9 @@ func TestServer_DisableConnection_RejectsAgentToken(t *testing.T) {
 }
 
 // TestServer_EnableConnection_RejectsAgentToken — symmetric guard for
-// the enable endpoint. The mistake of forgetting rejectIfAgentToken on
-// one of the two handlers is the kind of regression the constitution's
-// Principle I is designed to catch.
+// the enable endpoint. Mounting a new admin mutator without routing it
+// through requireOperatorSession is the regression this test is
+// designed to catch (Principle I in the constitution).
 func TestServer_EnableConnection_RejectsAgentToken(t *testing.T) {
 	handler, env := newTestWebServer(t)
 
@@ -98,9 +116,8 @@ func TestServer_DisableEnable_HappyPath(t *testing.T) {
 		t.Fatalf("add: %v", err)
 	}
 
-	// Disable.
-	req := httptest.NewRequest(http.MethodPost, "/connections/c3/disable", nil)
-	rec := httptest.NewRecorder()
+	// Disable — operator session cookie + CSRF attached via authedPost.
+	req, rec := authedPost(t, env, "/connections/c3/disable")
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303 after disable, got %d (body: %s)", rec.Code, rec.Body.String())
@@ -114,8 +131,7 @@ func TestServer_DisableEnable_HappyPath(t *testing.T) {
 	}
 
 	// Enable.
-	req = httptest.NewRequest(http.MethodPost, "/connections/c3/enable", nil)
-	rec = httptest.NewRecorder()
+	req, rec = authedPost(t, env, "/connections/c3/enable")
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303 after enable, got %d", rec.Code)

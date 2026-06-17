@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/trilitech/Sieve/internal/connections"
@@ -95,9 +96,9 @@ var staticHTTPProxyBaselineKeys = []string{
 // shown comes from the connector's declared Editable SetupFields — see
 // connection_form.go and internal/connector/connector.go.
 func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
+	// Agent-token rejection happens upstream via the requireOperatorSession
+	// middleware applied by the admin auth wrapper; per-handler
+	// rejectIfAgentToken calls were removed when the middleware landed.
 
 	id := r.PathValue("id")
 	conn, err := s.connections.GetWithConfig(id)
@@ -119,9 +120,7 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 // the same code path the create handler uses. The handler itself has no
 // per-connector knowledge.
 func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request) {
-	if rejectIfAgentToken(w, r) {
-		return
-	}
+	// Agent-token rejection happens upstream via requireOperatorSession.
 	if !s.checkRotationOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
@@ -177,6 +176,19 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 		s.renderEditErrorWithConfig(w, conn, cfg, "save failed: "+err.Error())
 		return
 	}
+
+	// Audit the field names whose values reached the saved config — never
+	// the values themselves, since Secret fields are present in cfg. The
+	// key name `submitted_keys` matches settings.save for downstream
+	// log-search consistency.
+	submittedKeys := make([]string, 0, len(cfg))
+	for k := range cfg {
+		submittedKeys = append(submittedKeys, k)
+	}
+	sort.Strings(submittedKeys)
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.update_config", id,
+		map[string]any{"connector_type": conn.ConnectorType, "submitted_keys": submittedKeys},
+		"success")
 
 	http.Redirect(w, r, fmt.Sprintf("/connections/%s/edit?saved=1", id), http.StatusSeeOther)
 }

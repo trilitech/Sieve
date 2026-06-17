@@ -1,12 +1,10 @@
 // Package slack implements the Slack connector for Sieve.
-//
 // Authentication: two peer methods.
-//   - "oauth": classic non-rotating Slack bot tokens obtained via the
-//     OAuth v2 install flow (classic scopes only for v1; granular-scope
-//     token rotation deferred).
-//   - "token": admin pastes a pre-existing bot token (xoxb-...) from a
-//     Slack app they own.
-//
+// - "oauth": classic non-rotating Slack bot tokens obtained via the
+// OAuth v2 install flow (classic scopes only for v1; granular-scope
+// token rotation deferred).
+// - "token": admin pastes a pre-existing bot token (xoxb-...) from a
+// Slack app they own.
 // Curated operations cover the most common AI-agent workflows
 // (channels, users, history, threads, search, post). See ops.go for
 // the dispatch table.

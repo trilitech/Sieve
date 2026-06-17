@@ -1,17 +1,14 @@
 // Package connections manages the registry of external service connections
 // (e.g., Gmail accounts) and their live connector instances.
-//
 // Each connection has two representations:
-//   - A database row with ID, connector type, display name, and encrypted config.
-//     This is the durable record.
-//   - A live connector instance (connector.Connector) held in an in-memory cache.
-//     This is the active, authenticated client used to execute operations.
-//
+// - A database row with ID, connector type, display name, and encrypted config.
+// This is the durable record.
+// - A live connector instance (connector.Connector) held in an in-memory cache.
+// This is the active, authenticated client used to execute operations.
 // The live cache avoids re-creating OAuth-authenticated clients on every request.
 // It uses read-write locking with a double-check pattern in GetConnector to
 // safely handle concurrent access without holding a write lock during the
 // (potentially slow) connector creation.
-//
 // Add intentionally does not fail if the live connector cannot be created. This
 // supports the OAuth flow where a connection is saved to the database before
 // OAuth completes — the config may lack valid credentials at that point. The
@@ -265,7 +262,6 @@ func IsReservedConnectionID(id string) bool {
 // SetStatus updates the connection's status. Validates that status is one
 // of the allowed values; returns an error for unknown values without
 // touching the database. Does not require the keyring — status is non-secret.
-//
 // Clears reauth_reason when transitioning to active (the credentials are
 // presumed working again); leaves it intact for other transitions because
 // callers usually pair SetStatus(reauth_required|disabled) with a reason
@@ -413,7 +409,6 @@ func (s *Service) Exists(id string) (bool, error) {
 // persistRefreshedToken merges the refreshed access/refresh-token pair from
 // tok into the connection's stored config and persists it. Returns any
 // error from the read or write step.
-//
 // Exposed as a method (not just a closure body) so the failure path can be
 // exercised in tests — see refresh_test.go.
 func (s *Service) persistRefreshedToken(id string, tok *oauth2.Token) error {
@@ -439,15 +434,13 @@ func (s *Service) persistRefreshedToken(id string, tok *oauth2.Token) error {
 
 // injectRefreshCallback adds two token-lifecycle callbacks to the config map.
 // The connector hands these to its OAuth token source:
-//
-//   - _on_token_refresh: a refresh succeeded. Persist the new access (and
-//     possibly rotated refresh) token to the DB so future server starts
-//     don't immediately burn another refresh.
-//   - _on_token_refresh_failure: a refresh failed irrecoverably. Mark the
-//     connection needs_reauth with the error code as the reason. The web
-//     UI will surface a banner; the API/MCP layers will return 503
-//     connection_reauth_required to anyone trying to use it.
-//
+// - _on_token_refresh: a refresh succeeded. Persist the new access (and
+// possibly rotated refresh) token to the DB so future server starts
+// don't immediately burn another refresh.
+// - _on_token_refresh_failure: a refresh failed irrecoverably. Mark the
+// connection needs_reauth with the error code as the reason. The web
+// UI will surface a banner; the API/MCP layers will return 503
+// connection_reauth_required to anyone trying to use it.
 // Linear, Jira, and Asana rotate refresh tokens — the upstream invalidates
 // the old refresh token the moment the new pair is issued. If the persist
 // of the new pair fails (DB error, decrypt error, keyring unloaded mid-
@@ -456,7 +449,6 @@ func (s *Service) persistRefreshedToken(id string, tok *oauth2.Token) error {
 // reauth_required so the next agent call short-circuits with
 // ErrReauthRequired (mapped to HTTP 403) instead of burning further
 // refresh attempts against a stale refresh token.
-//
 // The status transition is best-effort: if SetStatus itself fails (e.g.,
 // the same DB error that broke UpdateConfig), the original persist error
 // is logged and the next call's auth-error path will transition status
@@ -485,24 +477,22 @@ func (s *Service) injectRefreshCallback(id string, config map[string]any) {
 
 // GetConnector returns the live connector instance for a connection.
 // If not cached, it loads from DB and creates one.
-//
 // Connections whose status is not `active` are short-circuited with a
 // sentinel error: ErrReauthRequired or ErrConnectionDisabled. The check
 // happens before keyring decryption so a non-active connection can be
 // rejected even when the keyring is unloaded. Routers map both sentinels
 // to HTTP 403.
-//
-// Cost note: every call now incurs one keyless `SELECT ... WHERE id = ?`
+// Cost note: every call now incurs one keyless `SELECT... WHERE id = ?`
 // against the connections table to read the current status. Previously
 // the cache-hit path was a single sync.RWMutex.RLock with no DB round
 // trip. We accept the cost because:
-//   - Sieve is positioned for individual-account scale (tens of
-//     connections, not high request rate).
-//   - Every operation is already audit-logged + policy-evaluated, so
-//     one extra SELECT is in the noise.
-//   - Caching status alongside the live connector instance would force
-//     us to invalidate on every SetStatus, re-introducing the
-//     stale-state foot-gun that the gate exists to close.
+// - Sieve is positioned for individual-account scale (tens of
+// connections, not high request rate).
+// - Every operation is already audit-logged + policy-evaluated, so
+// one extra SELECT is in the noise.
+// - Caching status alongside the live connector instance would force
+// us to invalidate on every SetStatus, re-introducing the
+// stale-state foot-gun that the gate exists to close.
 func (s *Service) GetConnector(id string) (connector.Connector, error) {
 	// Reserved-prefix system rows (e.g., _oauth_app:slack) hold per-deployment
 	// state and have no registered factory. Refuse them up front so agent
@@ -529,7 +519,6 @@ func (s *Service) GetConnector(id string) (connector.Connector, error) {
 // status gate. It exists for the background reauth sweeper, which needs to
 // probe a reauth_required connection to see whether the upstream has
 // recovered — GetConnector would short-circuit before Validate could run.
-//
 // Reserved system rows are still rejected. Like GetConnector, it caches
 // the live instance on success. Callers that intend to serve agent traffic
 // must go through GetConnector instead so non-active connections are

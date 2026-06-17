@@ -199,7 +199,6 @@ func (c *Connector) opReadThread(ctx context.Context, params map[string]any) (an
 // opSearchMessages always returns the typed connector.ErrOperationNotEnabled
 // sentinel: search.messages requires a user-token install, which is out
 // of scope for v1 (classic bot scopes only).
-//
 // The connector exposes this op anyway so the operation surface stays
 // stable and policies that mention `search_messages` continue to bind
 // even after v2 unlocks user-token installs. Returning a typed error

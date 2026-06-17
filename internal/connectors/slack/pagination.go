@@ -1,16 +1,13 @@
 package slack
 
 // Slack-side translation for Sieve's normalized pagination shape.
-//
 // Normalized agent-facing input: { cursor: string?, page_size: int? }
 // Normalized agent-facing output: { items: [...], next_cursor: string }
-//
 // Slack's native shape is already cursor-based for paginated Web API
 // methods (conversations.list, conversations.history, users.list, etc.):
-//   - request param `cursor` (opaque, omitted on first call)
-//   - request param `limit` (1-1000; we cap at the Sieve hard cap of 100)
-//   - response.response_metadata.next_cursor (empty string when exhausted)
-//
+// - request param `cursor` (opaque, omitted on first call)
+// - request param `limit` (1-1000; we cap at the Sieve hard cap of 100)
+// - response.response_metadata.next_cursor (empty string when exhausted)
 // So Slack is a near-passthrough: cursor maps verbatim, page_size maps
 // to `limit`, and next_cursor lifts directly from response_metadata.
 

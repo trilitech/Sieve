@@ -1,45 +1,36 @@
 // Command sieve is the production Sieve binary.
-//
 // It serves two HTTP listeners:
-//
-//   - 19816 (web)  — admin UI for human operators
-//   - 19817 (api)  — agent-facing API+MCP, combined behind one listener
-//
+// - 19816 (web) — admin UI for human operators
+// - 19817 (api) — agent-facing API+MCP, combined behind one listener
 // Passphrase intake follows the strict priority documented in
 // docs/credential-encryption.md: TTY prompt → SIEVE_PASSPHRASE_FILE →
 // FD 3 (systemd LoadCredential=). Never an environment variable.
-//
 // Connection configs are envelope-encrypted at rest. The keyring is set
 // up on first run (--setup) and loaded on every start thereafter.
-//
 // Rotation:
-//
-//   - --rotate-passphrase enters offline rotation mode: prompts for the
-//     current passphrase, then twice for the new passphrase, runs an
-//     atomic re-wrap of every per-record DEK, and exits. The binary
-//     does NOT bind any network ports in this mode. Sieve must be
-//     stopped before running rotation against the same DB to avoid a
-//     SQLite write-lock conflict.
-//
-//   - --reset-keyring is the recovery path for a forgotten passphrase.
-//     It deletes every encrypted credential and the keyring metadata,
-//     preserves everything else (policies, roles, tokens, audit log,
-//     settings), and exits. Operator must type RESET at the TTY
-//     confirmation prompt; the flag refuses to run without a TTY. After
-//     reset, run --setup to choose a new passphrase, then re-add
-//     connections.
-//
+// - --rotate-passphrase enters offline rotation mode: prompts for the
+// current passphrase, then twice for the new passphrase, runs an
+// atomic re-wrap of every per-record DEK, and exits. The binary
+// does NOT bind any network ports in this mode. Sieve must be
+// stopped before running rotation against the same DB to avoid a
+// SQLite write-lock conflict.
+// - --reset-keyring is the recovery path for a forgotten passphrase.
+// It deletes every encrypted credential and the keyring metadata,
+// preserves everything else (policies, roles, tokens, audit log,
+// settings), and exits. Operator must type RESET at the TTY
+// confirmation prompt; the flag refuses to run without a TTY. After
+// reset, run --setup to choose a new passphrase, then re-add
+// connections.
 // Exit codes (rotation/reset modes):
-//
-//	  0 — success
-//	  1 — generic / unexpected failure
-//	  2 — wrong current passphrase
-//	  3 — new-passphrase confirmation mismatch (caught by intake layer)
-//	  4 — new passphrase identical to current
-//	  5 — keyring not initialized (run --setup first)
-//	  6 — DB lock conflict (another Sieve process is holding the DB,
-//	      or another rotation is already in progress)
-//	  7 — reset aborted (operator did not type RESET, or no TTY)
+//0 — success
+//1 — generic / unexpected failure
+//2 — wrong current passphrase
+//3 — new-passphrase confirmation mismatch (caught by intake layer)
+//4 — new passphrase identical to current
+//5 — keyring not initialized (run --setup first)
+//6 — DB lock conflict (another Sieve process is holding the DB,
+//or another rotation is already in progress)
+//7 — reset aborted (operator did not type RESET, or no TTY)
 package main
 
 import (
@@ -49,6 +40,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -72,7 +64,11 @@ import (
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
 	"github.com/trilitech/Sieve/internal/database"
 	"github.com/trilitech/Sieve/internal/mcp"
+	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/policies"
+	"github.com/trilitech/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/ratelimit"
+	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
@@ -161,7 +157,6 @@ func main() {
 // the current passphrase, prompts twice for the new passphrase, runs an
 // atomic re-wrap of every per-record DEK, writes one audit row inside the
 // rotation transaction, and exits with one of the documented exit codes.
-//
 // The function does NOT bind any network ports and does NOT start the
 // background goroutines that the normal start path uses — rotation is
 // an offline maintenance operation.
@@ -266,7 +261,7 @@ func isLockConflict(err error) bool {
 		strings.Contains(msg, "database table is locked")
 }
 
-// exclusiveCount returns the number of true values among bs. main() uses
+// exclusiveCount returns the number of true values among bs. main uses
 // this to enforce mutual exclusion between --setup, --rotate-passphrase,
 // and --reset-keyring (each is a top-level mode the binary enters and
 // exits without becoming a network-listening process).
@@ -285,29 +280,22 @@ func exclusiveCount(bs ...bool) int {
 // without the passphrase — this is the same property that protects them
 // from any attacker who steals the database file. The trade-off: a
 // forgotten passphrase means starting over with credentials.
-//
 // What this function deletes:
-//
-//   - every row in the connections table (the encrypted credentials)
-//   - the singleton crypto_meta row (the keyring salt + verifier)
-//
+// - every row in the connections table (the encrypted credentials)
+// - the singleton crypto_meta row (the keyring salt + verifier)
 // Everything else — policies, roles, tokens, audit history, settings —
 // is preserved, so the operator's bindings and tokens keep working as
 // soon as they re-add the underlying connections after running --setup.
-//
 // One audit row (operation = "keyring.reset", surface = "cli") is
 // written inside the same transaction as the deletes so the event is
 // visible in the admin UI's audit page after recovery.
-//
 // Safeguards (per the threat-model discussion in
 // docs/credential-encryption.md):
-//
-//   - stdin must be a TTY. The reset flag refuses to run under piped
-//     input so a script cannot accidentally fire it; running it has to
-//     be a deliberate hands-on operation.
-//   - the operator must type the literal string "RESET" at the
-//     confirmation prompt; anything else aborts.
-//
+// - stdin must be a TTY. The reset flag refuses to run under piped
+// input so a script cannot accidentally fire it; running it has to
+// be a deliberate hands-on operation.
+// - the operator must type the literal string "RESET" at the
+// confirmation prompt; anything else aborts.
 // These are UX safeguards against accidental destruction, not security
 // boundaries: anyone with write access to the DB file can already
 // destroy the credentials by other means (rm, sqlite3 DELETE, etc.).
@@ -500,12 +488,62 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	)
 	defer webSrv.Close()
 
+	// Operator + session services drive the admin-authentication path.
+	// Wiring SetAuth here makes the operator credential MANDATORY on
+	// every admin endpoint not in authExemptPaths/Prefixes (login,
+	// setup, OAuth callback, docs) — the requireOperatorSession
+	// middleware enforces it. See internal/web/auth.go for the gate.
+	opSvc := operator.NewService(db)
+	sessionMgr := session.NewManager(db, settingsSvc.SessionIdleTimeout())
+	// Wire the session-invalidate hook so a credential rotation
+	// terminates every active admin session without the rotate endpoint
+	// having to remember to call DeleteAll itself.
+	opSvc.SetSessionTerminator(sessionMgr)
+	webSrv.SetAuth(opSvc, sessionMgr)
+	// Per-IP rate limiter on POST /login and POST /setup. Without this
+	// the only brake on an online credential guess is argon2's ~150-300 ms
+	// cost, which a determined attacker can amortise across machines.
+	// Shares the agent listener's "failures per window" tuning so both
+	// surfaces respond the same way to abuse.
+	loginLimiter := ratelimit.NewLimiter(
+		settingsSvc.RateLimitFailures(),
+		settingsSvc.RateLimitWindow()/time.Duration(max(settingsSvc.RateLimitFailures(), 1)),
+		0,
+	)
+	webSrv.SetLoginRateLimiter(loginLimiter)
+
+	// Background sweep of expired admin sessions. 5-minute
+	// cadence is the documented default; tests can drive SweepExpired
+	// directly.
+	sessionSweepCtx, sessionSweepCancel := context.WithCancel(context.Background())
+	defer sessionSweepCancel()
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-sessionSweepCtx.Done():
+				return
+			case <-t.C:
+				_, _ = sessionMgr.SweepExpired()
+			}
+		}
+	}()
+
 	// --- API + MCP server (port 19817, agent-facing) ---
 	// Both share one listener; we mux /mcp to the MCP server, everything
 	// else to the API router. Per CLAUDE.md the two-port split (web vs
 	// agent) is structural, not cosmetic — admin endpoints stay on 19816,
 	// agent endpoints stay on 19817.
 	apiRouter := api.NewRouter(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
+	// Per-IP token-bucket on the bearer-token validation path:
+	// failed auth depletes the bucket, success refunds, 429 + Retry-After
+	// on refusal. Settings-tuned; defaults: 10 failures per 60s window.
+	apiRouter.SetRateLimiter(ratelimit.NewLimiter(
+		settingsSvc.RateLimitFailures(),
+		settingsSvc.RateLimitWindow()/time.Duration(max(settingsSvc.RateLimitFailures(), 1)),
+		0, // documented LRU bound
+	))
 	mcpSrv := mcp.NewServer(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
 
 	agentMux := http.NewServeMux()
@@ -515,23 +553,67 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	webHTTP := &http.Server{Addr: webAddr, Handler: webSrv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	apiHTTP := &http.Server{Addr: apiAddr, Handler: agentMux, ReadHeaderTimeout: 10 * time.Second}
 
+	// Wire the command allowlist for script-policy validation. Empty
+	// settings value falls back to the bundled-Python default via
+	// policy.ValidateCommand semantics — see CurrentCommandAllowlist.
+	policy.SetCommandAllowlist(settingsSvc.CommandAllowlist())
+
+	// Per-listener TLS configuration. Both-or-neither per listener;
+	// HSTS automatically set on every TLS response by hstsMiddleware
+	// (inside serveListener).
+	adminTLS := tlsPair{
+		CertPath: settingsSvc.AdminTLSCertPath(),
+		KeyPath:  settingsSvc.AdminTLSKeyPath(),
+	}
+	apiTLS := tlsPair{
+		CertPath: settingsSvc.APITLSCertPath(),
+		KeyPath:  settingsSvc.APITLSKeyPath(),
+	}
+	if _, err := adminTLS.enabled(); err != nil {
+		return fmt.Errorf("admin TLS config: %w", err)
+	}
+	if _, err := apiTLS.enabled(); err != nil {
+		return fmt.Errorf("agent API TLS config: %w", err)
+	}
+	adminTLSOn, _ := adminTLS.enabled()
+	apiTLSOn, _ := apiTLS.enabled()
+
+	// Startup exposure check: the admin UI is documented to bind
+	// 127.0.0.1 in production. When the operator overrides that to a
+	// non-loopback interface WITHOUT TLS, log a prominent warning
+	// naming the exposure. Don't refuse to start — some deployments
+	// are intentional (e.g., WireGuard-tunneled).
+	if host, _, err := net.SplitHostPort(webAddr); err == nil {
+		ip := net.ParseIP(host)
+		nonLoopback := host != "" && host != "localhost" && (ip == nil || !ip.IsLoopback())
+		if nonLoopback && !adminTLSOn {
+			log.Printf("WARNING: admin UI is bound to non-loopback address %q WITHOUT TLS. Anyone who can reach this port can capture admin traffic in cleartext. Configure admin.tls_cert_path / admin.tls_key_path in settings, bind to 127.0.0.1, or restrict reachability at the network layer.", webAddr)
+		}
+	}
+
 	// --- Start ---
 	errCh := make(chan error, 2)
+	scheme := func(on bool) string {
+		if on {
+			return "https"
+		}
+		return "http"
+	}
 	go func() {
-		log.Printf("web UI:  http://%s  (admin only — do not expose to agents)", webAddr)
-		if err := webHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("web UI:  %s://%s  (admin only — do not expose to agents)", scheme(adminTLSOn), webAddr)
+		if err := serveListener(webHTTP, adminTLS); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("web: %w", err)
 		}
 	}()
 	go func() {
-		log.Printf("agent:   http://%s  (REST + MCP at /mcp)", apiAddr)
-		if err := apiHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("agent:   %s://%s  (REST + MCP at /mcp)", scheme(apiTLSOn), apiAddr)
+		if err := serveListener(apiHTTP, apiTLS); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("api: %w", err)
 		}
 	}()
 
 	// --- Hourly reauth sweeper ---
-	// Polls each connection's Validate() so the needs_reauth flag stays
+	// Polls each connection's Validate so the needs_reauth flag stays
 	// fresh without waiting for an agent to hit a dead connection. On
 	// success, clears any stale flag (auto-recovery from transient blips).
 	// The flip-on-failure path is owned by the connector's token source —
@@ -576,23 +658,21 @@ func zero(b []byte) {
 	}
 }
 
-// reauthSweepInterval is the spacing between Validate() rounds. An hour is
+// reauthSweepInterval is the spacing between Validate rounds. An hour is
 // the right magnitude: long enough that we don't pound Google/GitHub for
 // idle Sieves, short enough that a revoked token usually trips the flag
 // before the next agent call. Made small (and overridable) only as needed.
 const reauthSweepInterval = time.Hour
 
-// reauthSweeper runs Validate() against every connection on a periodic
+// reauthSweeper runs Validate against every connection on a periodic
 // loop. The loop honors ctx so a SIGTERM during shutdown stops it.
-//
-//	connector returns ErrNeedsReauth → SetStatusWithReason(reauth_required)
-//	                                   (idempotent if status already reauth_required).
-//	connector returns nil but status==reauth_required → SetStatus(active)
-//	                                                   (auto-recover from blips).
-//	connector returns some other error → leave the status alone (could be a
-//	                                     transient network blip; not our
-//	                                     place to declare it dead).
-//
+//connector returns ErrNeedsReauth → SetStatusWithReason(reauth_required)
+//(idempotent if status already reauth_required).
+//connector returns nil but status==reauth_required → SetStatus(active)
+//(auto-recover from blips).
+//connector returns some other error → leave the status alone (could be a
+//transient network blip; not our
+//place to declare it dead).
 // First sweep runs after one interval, not at startup, so the server isn't
 // hammering external APIs in its first second of life.
 func reauthSweeper(ctx context.Context, connSvc *connections.Service) {

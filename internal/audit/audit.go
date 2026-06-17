@@ -22,6 +22,14 @@ type Entry struct {
 	PolicyResult    string    `json:"policy_result"`
 	ResponseSummary string    `json:"response_summary,omitempty"`
 	DurationMs      int64     `json:"duration_ms"`
+
+	// Actor attribution: every admin mutation produces a row
+	// identifying the operator. Agent rows keep actor_kind="agent" +
+	// empty OperatorDisplayName; operator rows set actor_kind="operator"
+	// and populate the display name captured at credential setup
+	// (operator.Service.DisplayName).
+	ActorKind           string `json:"actor_kind,omitempty"`
+	OperatorDisplayName string `json:"operator_display_name,omitempty"`
 }
 
 // LogRequest contains the fields needed to create an audit log entry.
@@ -34,6 +42,12 @@ type LogRequest struct {
 	PolicyResult    string
 	ResponseSummary string
 	DurationMs      int64
+
+	// ActorKind / OperatorDisplayName populate the columns added by
+	// the 2026-05-22 security-fixes migration. Leaving them empty
+	// preserves the legacy "agent" default for all existing producers.
+	ActorKind           string
+	OperatorDisplayName string
 }
 
 // ListFilter specifies optional filters for querying the audit log.
@@ -79,9 +93,15 @@ func (l *Logger) doInsert(e execer, req *LogRequest) error {
 
 	respSummary := sql.NullString{String: req.ResponseSummary, Valid: req.ResponseSummary != ""}
 
+	actorKind := req.ActorKind
+	if actorKind == "" {
+		actorKind = "agent" // legacy default; matches the migration column default
+	}
+	opName := sql.NullString{String: req.OperatorDisplayName, Valid: req.OperatorDisplayName != ""}
+
 	_, err := e.Exec(`
-		INSERT INTO audit_log (token_id, token_name, connection_id, operation, params, policy_result, response_summary, duration_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO audit_log (token_id, token_name, connection_id, operation, params, policy_result, response_summary, duration_ms, actor_kind, operator_display_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.TokenID,
 		req.TokenName,
 		req.ConnectionID,
@@ -90,6 +110,8 @@ func (l *Logger) doInsert(e execer, req *LogRequest) error {
 		req.PolicyResult,
 		respSummary,
 		req.DurationMs,
+		actorKind,
+		opName,
 	)
 	if err != nil {
 		return fmt.Errorf("insert audit log: %w", err)
@@ -114,7 +136,6 @@ func (l *Logger) LogTx(tx *sql.Tx, req *LogRequest) error {
 // RotationAuditor adapts a Logger to the secrets.RotationAuditor interface
 // so that secrets.Keyring.Rotate can write its audit row inside the
 // rotation transaction without internal/secrets importing internal/audit.
-//
 // The surface ("ui" or "cli") is recorded on every successful rotation row
 // so audit consumers can distinguish operator-initiated UI rotations from
 // scripted CLI rotations.
@@ -167,9 +188,74 @@ func (l *Logger) LogRotationLockout(surface string, threshold int) error {
 	})
 }
 
+// LogOperator is a convenience wrapper around Log for admin mutations.
+// It pre-fills actor_kind="operator", routes the display name into
+// both TokenName (legacy column kept for backward-compatible List
+// output) and OperatorDisplayName (typed column added by the security-
+// fixes migration), redacts sensitive keys from params via
+// RedactSensitive, and tolerates an empty connection ID — entity-level
+// admin rows (token created, role updated, settings changed) are not
+// tied to a connection and pass "" for entityID.
+func (l *Logger) LogOperator(operatorDisplayName, operation, entityID string, params map[string]any, outcome string) error {
+	if params != nil {
+		params = RedactSensitive(params)
+	}
+	return l.Log(&LogRequest{
+		TokenID:             "operator",
+		TokenName:           operatorDisplayName,
+		ConnectionID:        entityID, // entity_id by convention for admin rows
+		Operation:           operation,
+		Params:              params,
+		PolicyResult:        outcome,
+		ActorKind:           "operator",
+		OperatorDisplayName: operatorDisplayName,
+	})
+}
+
+// sensitiveKeys is the set of param keys whose values are stripped
+// before being written to the audit log. Plaintext bearer
+// tokens, OAuth secrets, installation keys, and the like never reach
+// the audit row.
+var sensitiveKeys = map[string]struct{}{
+	"token":             {},
+	"plaintext_token":   {},
+	"bearer_token":      {},
+	"bot_token":         {},
+	"client_secret":     {},
+	"slack_client_secret": {},
+	"oauth_secret":      {},
+	"installation_key":  {},
+	"private_key":       {},
+	"private_key_pem":   {},
+	"credential":        {},
+	"confirm_credential": {},
+	"current_passphrase": {},
+	"new_passphrase":    {},
+	"new_passphrase_confirm": {},
+	"password":          {},
+}
+
+// RedactSensitive returns a shallow copy of params with values for
+// known sensitive keys replaced by "<redacted>". Other keys pass
+// through unchanged. Idempotent; safe to apply repeatedly.
+func RedactSensitive(params map[string]any) map[string]any {
+	if params == nil {
+		return nil
+	}
+	out := make(map[string]any, len(params))
+	for k, v := range params {
+		if _, sensitive := sensitiveKeys[k]; sensitive {
+			out[k] = "<redacted>"
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // List returns audit log entries matching the given filter.
 func (l *Logger) List(filter *ListFilter) ([]Entry, error) {
-	query, args := buildFilterQuery("SELECT id, timestamp, token_id, token_name, connection_id, operation, params, policy_result, response_summary, duration_ms FROM audit_log", filter)
+	query, args := buildFilterQuery("SELECT id, timestamp, token_id, token_name, connection_id, operation, params, policy_result, response_summary, duration_ms, actor_kind, operator_display_name FROM audit_log", filter)
 	query += " ORDER BY timestamp DESC"
 
 	limit := 100
@@ -197,14 +283,18 @@ func (l *Logger) List(filter *ListFilter) ([]Entry, error) {
 	for rows.Next() {
 		var e Entry
 		var ts string
-		var params, respSummary sql.NullString
+		var params, respSummary, operatorName sql.NullString
 		var durationMs sql.NullInt64
 
 		if err := rows.Scan(
 			&e.ID, &ts, &e.TokenID, &e.TokenName, &e.ConnectionID,
 			&e.Operation, &params, &e.PolicyResult, &respSummary, &durationMs,
+			&e.ActorKind, &operatorName,
 		); err != nil {
 			return nil, fmt.Errorf("scan audit log row: %w", err)
+		}
+		if operatorName.Valid {
+			e.OperatorDisplayName = operatorName.String
 		}
 
 		if parsed, err := time.Parse("2006-01-02 15:04:05", ts); err == nil {

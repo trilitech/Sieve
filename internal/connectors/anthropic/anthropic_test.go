@@ -16,14 +16,20 @@ import (
 
 // newTestConnector spins up an httptest.Server with the given handler
 // and returns a Connector wired to it via the base_url override.
+//
+// httptest.Server listens on 127.0.0.1, which httpguard refuses by
+// default — outbound_allowlist opts the loopback CIDR in so the test
+// dial is permitted. Production connections have an empty allowlist;
+// only test wiring sets it.
 func newTestConnector(t *testing.T, handler http.HandlerFunc) *Connector {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
 	c, err := Factory()(map[string]any{
-		"api_key":  "sk-ant-test-key-not-real",
-		"base_url": srv.URL,
+		"api_key":            "sk-ant-test-key-not-real",
+		"base_url":           srv.URL,
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatalf("Factory: %v", err)

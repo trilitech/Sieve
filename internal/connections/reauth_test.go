@@ -32,7 +32,7 @@ func TestReauthSignal_DefaultActive(t *testing.T) {
 }
 
 // TestSetReauthAndRecover exercises the full lifecycle:
-//   active → reauth_required (with reason) → active (reason cleared).
+// active → reauth_required (with reason) → active (reason cleared).
 func TestSetReauthAndRecover(t *testing.T) {
 	svc, _ := setup(t)
 

@@ -1,7 +1,6 @@
 package connections
 
 // Internal-package tests for refresh-token rotation persistence.
-//
 // These tests live in package connections (not connections_test) so they
 // can invoke the unexported injectRefreshCallback / persistRefreshedToken
 // helpers directly and observe the failure-path semantics without going
@@ -124,7 +123,6 @@ func TestInjectRefreshCallback_PersistSuccess_LeavesStatusActive(t *testing.T) {
 // short-circuit with ErrReauthRequired instead of burning further refresh
 // attempts against a stale refresh token that the upstream has already
 // invalidated.
-//
 // The failure is induced by corrupting the encrypted config blob:
 // GetWithConfig then errors at decrypt, but the row itself stays intact
 // so SetStatus can still succeed and the transition is observable.

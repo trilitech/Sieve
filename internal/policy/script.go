@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 )
 
@@ -46,9 +47,43 @@ func NewScriptEvaluator(config map[string]any) (*ScriptEvaluator, error) {
 		return nil, fmt.Errorf("script evaluator: script path is required")
 	}
 
-	if _, err := os.Stat(sc.Script); err != nil {
+	// Command allowlist enforcement. Stored policies that pre-date the
+	// allowlist and reference a disallowed interpreter (anything not in
+	// CurrentCommandAllowlist) MUST fail at evaluation time with the
+	// documented error rather than being silently downgraded — operators
+	// are expected to fix the policy by hand, so this is a hard break.
+	if err := ValidateCommand(sc.Command, CurrentCommandAllowlist()); err != nil {
+		return nil, fmt.Errorf("script evaluator: %w", err)
+	}
+
+	// Resolve symlinks AND make the path absolute so we can reason about
+	// what the interpreter will actually open. filepath.EvalSymlinks
+	// alone preserves a relative input (only an absolute symlink target
+	// promotes it), so we follow with filepath.Abs — this protects
+	// against a later `os.Chdir` in the process redirecting the dial.
+	// We refuse non-regular files (devices, FIFOs, sockets) — the
+	// interpreter would block or read garbage from those — and the
+	// resolved + absolutised path is written into this evaluator's
+	// in-memory config so every Evaluate() call invokes the same file.
+	// This is NOT persisted: the on-disk policy keeps its original
+	// (possibly symlinked / relative) script value, and a fresh
+	// NewScriptEvaluator on the next reload will re-resolve from there.
+	resolved, err := filepath.EvalSymlinks(sc.Script)
+	if err != nil {
 		return nil, fmt.Errorf("script evaluator: script not found: %w", err)
 	}
+	absResolved, err := filepath.Abs(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("script evaluator: script path not absolutisable: %w", err)
+	}
+	info, err := os.Stat(absResolved)
+	if err != nil {
+		return nil, fmt.Errorf("script evaluator: script not readable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("script evaluator: script must be a regular file (got %s)", info.Mode().Type())
+	}
+	sc.Script = absResolved
 
 	return &ScriptEvaluator{config: sc}, nil
 }
@@ -68,7 +103,7 @@ func (s *ScriptEvaluator) Evaluate(ctx context.Context, req *PolicyRequest) (*Po
 	// Derive scriptCtx from the caller ctx when it is still live so that a
 	// client disconnect cancels the script process (saving resources).
 	// When the caller ctx is already done (e.g., already-cancelled context),
-	// fall back to context.Background() so the timeout is honoured in full.
+	// fall back to context.Background so the timeout is honoured in full.
 	baseCtx := ctx
 	if ctx.Err() != nil {
 		baseCtx = context.Background()

@@ -19,7 +19,7 @@ var ErrNeedsReauth = errors.New("connection needs re-authentication")
 // its catalog (so policies can bind against the name) but refuses to
 // execute it in the current Sieve version. Connectors return this —
 // wrapped with %w plus a connector-supplied reason string — from
-// Execute(). The API layer maps errors.Is(err, ErrOperationNotEnabled)
+// Execute. The API layer maps errors.Is(err, ErrOperationNotEnabled)
 // to HTTP 501 Not Implemented; the MCP layer surfaces it as a tool
 // error with the canonical "operation_not_enabled:" text prefix.
 // Distinct from ErrNeedsReauth (403, credential-state problem) and from

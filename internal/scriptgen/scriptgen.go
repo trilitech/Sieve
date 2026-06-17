@@ -194,7 +194,7 @@ func extractLLMText(body string, isAnthropic bool) (string, error) {
 }
 
 // extractScript pulls Python code from the LLM output text. It looks for
-// ```python ... ``` blocks first, falling back to the entire text.
+// ```python... ``` blocks first, falling back to the entire text.
 // It also extracts a one-line explanation if present.
 func extractScript(text string) (script string, explanation string) {
 	// Try to extract a ```python block.

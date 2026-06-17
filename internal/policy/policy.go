@@ -2,7 +2,6 @@
 // engine. The policy engine sits between an AI agent's request and the actual
 // connector execution, deciding whether to allow, deny, require approval, or
 // filter the operation.
-//
 // Multiple evaluator backends are supported (rules, script, LLM, chain,
 // builtin). CreateEvaluator is the factory that dispatches by type string.
 // The most common type is "rules" (see rules.go).
@@ -17,7 +16,6 @@ import (
 )
 
 // PolicyRequest describes the action an AI agent wants to perform.
-//
 // The Phase field is retained for backward compatibility with scripts that
 // check metadata.phase, but the rules evaluator no longer uses it. All rule
 // evaluation happens in a single pre-execution pass; post-execution content
@@ -99,11 +97,46 @@ func CreateEvaluator(policyType string, config map[string]any, providers map[str
 	}
 }
 
+// ResponseFilterError carries a failure to instantiate or run a response
+// filter. Callers SHOULD treat this as a fail-closed signal — the un-redacted
+// response must NOT be returned to the agent when a filter cannot run, since
+// the filter is what enforces secret redaction. Swallowing the error here
+// would silently disable e.g. an SSN redactor that targets a now-removed
+// allowlisted interpreter.
+type ResponseFilterError struct {
+	Filter ResponseFilter
+	Err    error
+}
+
+func (e *ResponseFilterError) Error() string {
+	// Walk a chain of identifiers until we find a non-empty one, so the
+	// audit row stays attributable even when a misconfigured filter
+	// (no Label, no ScriptCommand, no ScriptPath) reaches this point.
+	label := e.Filter.Label
+	if label == "" {
+		label = e.Filter.ScriptCommand
+	}
+	if label == "" {
+		label = e.Filter.ScriptPath
+	}
+	if label == "" {
+		label = "<unknown>"
+	}
+	return fmt.Sprintf("response filter %q failed: %v", label, e.Err)
+}
+
+func (e *ResponseFilterError) Unwrap() error { return e.Err }
+
 // ApplyResponseFilters applies a list of response filters to a JSON response.
 // Returns the (potentially modified) response and a summary of what was done.
-func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte, string) {
+// On a script-filter construction or evaluation failure, returns the original
+// response unchanged and a non-nil *ResponseFilterError so the caller can
+// fail closed (e.g. surface a deny decision) rather than leak un-redacted
+// content. Non-script filter errors (a regex that fails to compile is
+// already best-effort skipped) do NOT raise this error.
+func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte, string, error) {
 	if len(filters) == 0 {
-		return responseJSON, ""
+		return responseJSON, "", nil
 	}
 
 	result := string(responseJSON)
@@ -175,29 +208,35 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte
 			}
 		}
 
-		// Script: run a post-filter script.
+		// Script: run a post-filter script. A failure to construct or run
+		// the evaluator MUST fail closed — silently skipping the filter
+		// would return un-redacted content to the agent.
 		if f.ScriptPath != "" {
 			scriptConfig := map[string]any{
 				"command": f.ScriptCommand,
 				"script":  f.ScriptPath,
 			}
 			eval, err := NewScriptEvaluator(scriptConfig)
-			if err == nil {
-				scriptReq := &PolicyRequest{
-					Phase: "post",
-					Metadata: map[string]any{
-						"phase":    "post",
-						"response": result,
-					},
-				}
-				scriptDec, err := eval.Evaluate(context.Background(), scriptReq)
-				if err == nil && scriptDec.Rewrite != "" {
-					result = scriptDec.Rewrite
-					actions = append(actions, "script-filtered")
-				}
+			if err != nil {
+				return responseJSON, strings.Join(actions, "; "), &ResponseFilterError{Filter: f, Err: err}
+			}
+			scriptReq := &PolicyRequest{
+				Phase: "post",
+				Metadata: map[string]any{
+					"phase":    "post",
+					"response": result,
+				},
+			}
+			scriptDec, err := eval.Evaluate(context.Background(), scriptReq)
+			if err != nil {
+				return responseJSON, strings.Join(actions, "; "), &ResponseFilterError{Filter: f, Err: err}
+			}
+			if scriptDec.Rewrite != "" {
+				result = scriptDec.Rewrite
+				actions = append(actions, "script-filtered")
 			}
 		}
 	}
 
-	return []byte(result), strings.Join(actions, "; ")
+	return []byte(result), strings.Join(actions, "; "), nil
 }

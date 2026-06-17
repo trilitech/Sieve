@@ -222,6 +222,13 @@
     </div>
   </main>
 
+  {{/* Stored policy config travels as JSON text — parsed via JSON.parse on
+       .textContent below. Never embedded inline as JavaScript source: a
+       template.JS(userJSON) sink would let any < or " in stored config
+       break out of its string literal and execute as script. See
+       SECURITY_AUDIT.md for the full XSS chain this closed. */}}
+  <script type="application/json" id="policy-config-data">{{json .Policy.PolicyConfig}}</script>
+
   <script>
     // --- Rule state ---
     let rules = [];
@@ -292,7 +299,7 @@
       }
       empty.classList.add("hidden");
 
-      list.innerHTML = rules.map(function(rule, i) {
+      list.innerHTML = rules.map(function(rule, i) { // xss-safe: every server-derived interpolation inside the map body is wrapped in escHtml(...)
         const c = ACTION_COLORS[rule.action] || ACTION_COLORS.deny;
         var opsText = rule.ops && rule.ops.length > 0 ? rule.ops.join(", ") : "any operation";
         var condParts = [];
@@ -707,9 +714,48 @@
       return true;
     }
 
-    // Load existing rules from the policy config
+    // Load existing rules from the policy config. The config arrives as
+    // text inside a <script type="application/json"> block above and is
+    // parsed via JSON.parse — never embedded inline as JavaScript.
+    // Pre-fix this was the json template helper inlined into a <script>
+    // block, which made the policy config part of the page's JavaScript
+    // source; a stored value containing </script> or " could break out
+    // and execute. The new path keeps user-controlled data as inert text.
     (function() {
-      var existingConfig = {{json .Policy.PolicyConfig}};
+      var configEl = document.getElementById("policy-config-data");
+      var existingConfig = null;
+      var configParseError = null;
+      if (configEl) {
+        try {
+          existingConfig = JSON.parse(configEl.textContent);
+        } catch (err) {
+          // Surface the failure: silently swallowing it would let the
+          // operator save the policy back as `{rules: []}` and wipe
+          // a previously valid stored config. Block the save button
+          // and render a visible banner so the operator can fix the
+          // root cause (corrupt DB row, hand-edited JSON, …) instead.
+          configParseError = err && err.message ? err.message : String(err);
+          existingConfig = null;
+        }
+      }
+      if (configParseError) {
+        var banner = document.createElement("div");
+        banner.style.cssText = "background:#7f1d1d;color:#fee2e2;padding:10px 14px;border-radius:6px;margin:0 0 16px 0;font-family:system-ui;font-size:14px;line-height:1.4";
+        banner.textContent =
+          "Could not parse the stored policy config (" + configParseError + "). " +
+          "Save has been disabled to prevent overwriting the existing rules with an empty set. " +
+          "Inspect the policies.policy_config column for this row before editing.";
+        var form = document.querySelector("form");
+        if (form) {
+          form.insertBefore(banner, form.firstChild);
+          form.querySelectorAll("button[type='submit'], input[type='submit']").forEach(function(btn) {
+            btn.disabled = true;
+            btn.style.opacity = "0.5";
+            btn.style.cursor = "not-allowed";
+          });
+        }
+        return;
+      }
       if (existingConfig && existingConfig.rules) {
         // Transform engine format rules back to UI format
         existingConfig.rules.forEach(function(r) {

@@ -11,7 +11,6 @@ import (
 // admin pastes a token; we refuse to persist until auth.test passes)
 // and as the connector.Connector.Validate implementation for periodic
 // health checks.
-//
 // On success the connector promotes the workspace metadata Slack
 // returns into the Config (TeamID, BotUserID) so subsequent calls can
 // reference them without an extra round trip.

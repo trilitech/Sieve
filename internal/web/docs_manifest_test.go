@@ -161,7 +161,7 @@ func TestBuildIndex_RespectsManifestSlugOrder(t *testing.T) {
 	m := Manifest()
 	idx := BuildIndex(m, realSlugs, fakeTitle)
 
-	// "Connectors" category should list connections-guide first per Manifest().
+	// "Connectors" category should list connections-guide first per Manifest.
 	var connectors *DocCategoryView
 	for i := range idx.Categories {
 		if idx.Categories[i].Category.ID == "connectors" {

@@ -2,12 +2,10 @@
 // with their applicable policies. A role is the reusable template that
 // defines "what can an agent with this role do?" Tokens reference a role
 // rather than specifying connections and policies directly.
-//
 // Each role contains a list of connection bindings. Each binding pairs a
 // connection ID with zero or more policy IDs. A connection with no policies
 // means DENY ALL — the agent can see the connection exists but cannot
 // perform any operations through it.
-//
 // Example role:
 //
 //	{

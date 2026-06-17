@@ -22,7 +22,7 @@ import (
 // connectors so the test can add real connections of those types.
 func newConnectionEditTestServer(t *testing.T) (*httptest.Server, *testenv.Env) {
 	t.Helper()
-	env := testenv.New(t)
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
 
 	env.Registry.Register(httpproxy.Meta, httpproxy.Factory)
 	env.Registry.Register(mcpproxy.Meta, mcpproxy.Factory)
@@ -35,6 +35,7 @@ func newConnectionEditTestServer(t *testing.T) (*httptest.Server, *testenv.Env) 
 		"", env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",
 	)
+	srv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(srv.Close)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -72,19 +73,13 @@ func addGithubConnection(t *testing.T, env *testenv.Env, id string) {
 	}
 }
 
-func httpClientNoRedirect() *http.Client {
-	return &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-}
-
 // --- GET edit page rendering ---
 
 func TestEditPageRendersHTTPProxy(t *testing.T) {
 	ts, env := newConnectionEditTestServer(t)
 	addHTTPProxyConnection(t, env, "h1")
 
-	resp, err := http.Get(ts.URL + "/connections/h1/edit")
+	resp, err := env.AdminClient().Get(ts.URL + "/connections/h1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +113,7 @@ func TestEditSavePersistsAuthQueryParam(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +139,7 @@ func TestEditSaveRejectsInvalidAuthQueryParam(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +167,7 @@ func TestEditSaveClearsAuthQueryParam(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +182,7 @@ func TestEditSaveClearsAuthQueryParam(t *testing.T) {
 	req2, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form2.Encode()))
 	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req2.Header.Set("Origin", ts.URL)
-	resp2, err := httpClientNoRedirect().Do(req2)
+	resp2, err := env.AdminClient().Do(req2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +205,7 @@ func TestEditSaveTrimsAuthQueryParamWhitespace(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +223,7 @@ func TestEditPageRendersMCPProxy(t *testing.T) {
 	ts, env := newConnectionEditTestServer(t)
 	addMCPProxyConnection(t, env, "m1")
 
-	resp, err := http.Get(ts.URL + "/connections/m1/edit")
+	resp, err := env.AdminClient().Get(ts.URL + "/connections/m1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +247,7 @@ func TestEditPageRendersGitHub(t *testing.T) {
 	ts, env := newConnectionEditTestServer(t)
 	addGithubConnection(t, env, "g1")
 
-	resp, err := http.Get(ts.URL + "/connections/g1/edit")
+	resp, err := env.AdminClient().Get(ts.URL + "/connections/g1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +267,7 @@ func TestEditPageRendersUnsupportedConnectorPlaceholder(t *testing.T) {
 	if err := env.Connections.Add("mock-1", "mock", "Mock", map[string]any{}); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.Get(ts.URL + "/connections/mock-1/edit")
+	resp, err := env.AdminClient().Get(ts.URL + "/connections/mock-1/edit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,13 +287,20 @@ func TestEditPageRejectsAgentToken(t *testing.T) {
 	ts, env := newConnectionEditTestServer(t)
 	addHTTPProxyConnection(t, env, "h1")
 
+	// Deliberately NOT using env.AdminClient — the request must NOT
+	// carry an operator session. The middleware sees the agent bearer
+	// header and surfaces 403 instead of 401/redirect, giving
+	// a confused agent client a clearer "wrong port" signal.
+	bareClient := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	for _, method := range []string{"GET", "POST"} {
 		t.Run(method, func(t *testing.T) {
 			req, _ := http.NewRequest(method, ts.URL+"/connections/h1/edit", strings.NewReader(""))
 			req.Header.Set("Authorization", "Bearer sieve_tok_test")
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			req.Header.Set("Origin", ts.URL)
-			resp, err := httpClientNoRedirect().Do(req)
+			resp, err := bareClient.Do(req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -318,7 +320,7 @@ func TestEditSaveRejectsCrossOrigin(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", "http://evil.example")
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +342,7 @@ func TestEditSavePersistsHTTPProxyChanges(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +376,7 @@ func TestEditSavePersistsMCPProxyCap(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/m1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +411,7 @@ func TestEditSaveValidatesNonPositiveCap(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/m1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +438,7 @@ func TestEditSavePersistsGithubAllowlist(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/g1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +472,7 @@ func TestBaselineDenylistCannotBeReducedViaForm(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +538,7 @@ func TestEditSaveErrorPreservesOperatorInputs(t *testing.T) {
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/h1/edit", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Origin", ts.URL)
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +670,7 @@ func TestHandleConnectionAdd_RejectsGithub(t *testing.T) {
 	}
 	req, _ := http.NewRequest("POST", ts.URL+"/connections/add", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := httpClientNoRedirect().Do(req)
+	resp, err := env.AdminClient().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

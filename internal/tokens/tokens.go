@@ -1,12 +1,10 @@
 // Package tokens manages API tokens that authenticate AI agents to Sieve.
-//
 // Each token is a capability handle bound to a role. The role determines
 // which connections and policies apply. The token itself is a random
 // 32-byte secret with a "sieve_tok_" prefix.
-//
 // Security design:
-//   - Only the SHA-256 hash is stored. Plaintext returned once at creation.
-//   - All failure modes return generic "invalid token" to prevent enumeration.
+// - Only the SHA-256 hash is stored. Plaintext returned once at creation.
+// - All failure modes return generic "invalid token" to prevent enumeration.
 package tokens
 
 import (

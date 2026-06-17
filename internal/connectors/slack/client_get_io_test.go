@@ -51,7 +51,7 @@ func (f transportFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // TestClient_Get_PropagatesIOReadError injects a body reader that errors
 // after a partial read and asserts the wrapped I/O cause surfaces from
-// client.get(). The legacy code dropped the error via `body, _ :=
+// client.get. The legacy code dropped the error via `body, _ :=
 // io.ReadAll(...)` and then handed the partial body to json.Unmarshal,
 // producing a confusing "invalid character" decode error instead of the
 // real network failure.

@@ -1,10 +1,8 @@
 // Package secrets implements envelope encryption for stored credentials.
-//
 // Sieve holds the real credentials for upstream services (OAuth refresh
 // tokens, API keys, client secrets) in connections.config. Without
 // encryption, anyone with the SQLite file — through theft, backup leak,
 // snapshot, or SQLi read — gets full credential compromise.
-//
 // This package centralizes the crypto: a passphrase-derived KEK held only
 // in process memory, per-record DEKs wrapped under the KEK, AES-256-GCM
 // for both. The KEK never lands on disk — stop the process and the only
@@ -41,7 +39,6 @@ type EncryptedBlob struct {
 
 // Encrypt generates a fresh DEK, encrypts plaintext with it under
 // AES-256-GCM, and wraps the DEK under kek (also AES-256-GCM).
-//
 // kek must be exactly 32 bytes (AES-256). A new DEK is drawn for every
 // call — we never reuse a DEK across records, so a single compromise
 // stays scoped to one record and key rotation can re-wrap DEKs without

@@ -6,7 +6,6 @@ package web_test
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/trilitech/Sieve/internal/connections"
@@ -17,7 +16,7 @@ import (
 
 func newEnableTestServer(t *testing.T) (http.Handler, *testenv.Env) {
 	t.Helper()
-	env := testenv.New(t)
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := web.NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles, env.Registry,
@@ -26,6 +25,7 @@ func newEnableTestServer(t *testing.T) (http.Handler, *testenv.Env) {
 		env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "",
 	)
+	srv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(func() { srv.Close() })
 	if err := env.Connections.Add("c", "mock", "C", map[string]any{}); err != nil {
 		t.Fatalf("add: %v", err)
@@ -43,8 +43,7 @@ func TestEnable_DisabledWithEmptyReason_GoesActive(t *testing.T) {
 		t.Fatalf("seed disabled: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/connections/c/enable", nil)
-	rec := httptest.NewRecorder()
+	req, rec := authedPost(t, env, "/connections/c/enable")
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303 redirect, got %d (body: %s)", rec.Code, rec.Body.String())
@@ -78,8 +77,7 @@ func TestEnable_DisabledWithReauthReason_GoesReauthRequired(t *testing.T) {
 		t.Fatal("precondition: reauth_reason should be preserved on disable")
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/connections/c/enable", nil)
-	rec := httptest.NewRecorder()
+	req, rec := authedPost(t, env, "/connections/c/enable")
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303 redirect, got %d (body: %s)", rec.Code, rec.Body.String())

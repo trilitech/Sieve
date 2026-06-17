@@ -1,23 +1,20 @@
 // Package approval implements a human-in-the-loop approval queue for Sieve.
-//
 // When a policy evaluates to "approval_required", the operation is submitted
 // to this queue and waits for a human to approve or reject it via the web UI.
-//
 // The queue uses a listener pattern for blocking waits: callers (like the REST
 // API's executeOperation) call WaitForResolution which blocks on a channel.
-// When a human approves/rejects via the web UI, resolve() updates the database
+// When a human approves/rejects via the web UI, resolve updates the database
 // and sends the resolved item through the channel, unblocking the caller.
-//
 // Key design decisions:
-//   - Channels are buffered with capacity 1 so the notify side never blocks
-//     even if the waiting goroutine has already timed out and stopped listening.
-//   - Listeners are cleaned up in a defer in WaitForResolution, so timeout
-//     always removes the channel from the map — no leaked goroutines or channels.
-//   - The MCP server does NOT use WaitForResolution (it returns immediately
-//     with an approval ID). Only the synchronous REST API blocks. This avoids
-//     tying up MCP connections while waiting for human action.
-//   - The resolve() method uses a conditional UPDATE (WHERE status = 'pending')
-//     to prevent double-resolution races.
+// - Channels are buffered with capacity 1 so the notify side never blocks
+// even if the waiting goroutine has already timed out and stopped listening.
+// - Listeners are cleaned up in a defer in WaitForResolution, so timeout
+// always removes the channel from the map — no leaked goroutines or channels.
+// - The MCP server does NOT use WaitForResolution (it returns immediately
+// with an approval ID). Only the synchronous REST API blocks. This avoids
+// tying up MCP connections while waiting for human action.
+// - The resolve method uses a conditional UPDATE (WHERE status = 'pending')
+// to prevent double-resolution races.
 package approval
 
 import (
@@ -138,7 +135,7 @@ func (q *Queue) WaitForResolution(id string, timeout time.Duration) (*Item, erro
 	}
 
 	// Buffered channel (cap 1): if the item is resolved after timeout but
-	// before GC, the notify() send won't block or panic.
+	// before GC, the notify send won't block or panic.
 	ch := make(chan *Item, 1)
 
 	q.mu.Lock()

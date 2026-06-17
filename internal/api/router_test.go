@@ -813,9 +813,10 @@ func setupProxyFull(t *testing.T) (serverURL, token string, setHandler func(http
 	env.Registry.Register(httpproxyconn.Meta, httpproxyconn.Factory)
 
 	err := env.Connections.Add("proxy-conn", "http_proxy", "Test Proxy", map[string]any{
-		"target_url":  upstream.URL,
-		"auth_header": "x-api-key",
-		"auth_value":  "real-secret",
+		"target_url":         upstream.URL,
+		"auth_header":        "x-api-key",
+		"auth_value":         "real-secret",
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatalf("add proxy connection: %v", err)
@@ -937,9 +938,10 @@ func TestProxyResponseFiltersApplied(t *testing.T) {
 	env.Registry.Register(httpproxyconn.Meta, httpproxyconn.Factory)
 
 	err := env.Connections.Add("filter-conn", "http_proxy", "Filter Proxy", map[string]any{
-		"target_url":  upstream.URL,
-		"auth_header": "x-api-key",
-		"auth_value":  "real-secret",
+		"target_url":         upstream.URL,
+		"auth_header":        "x-api-key",
+		"auth_value":         "real-secret",
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	})
 	if err != nil {
 		t.Fatalf("add connection: %v", err)
@@ -1297,18 +1299,15 @@ func TestExecuteDeniedReturnsErrorBody(t *testing.T) {
 }
 
 // Story 431: Token re-validation after approval.
-//
 // After WaitForResolution returns an approved status, executeOperation proceeds
 // directly to conn.Execute without re-validating the token. This means that if
 // an admin revokes the token during the approval wait, the operation will still
 // execute. This test documents this as EXPECTED BEHAVIOR (not a bug):
-//
-//   - The token was valid at the time of the original request.
-//   - The approval itself is a separate authorization gate.
-//   - An admin who approves the request is explicitly authorizing execution.
-//   - Re-validating would create a race condition where approved operations
-//     fail unexpectedly if the token is revoked between approval and execution.
-//
+// - The token was valid at the time of the original request.
+// - The approval itself is a separate authorization gate.
+// - An admin who approves the request is explicitly authorizing execution.
+// - Re-validating would create a race condition where approved operations
+// fail unexpectedly if the token is revoked between approval and execution.
 // If this behavior changes in the future and re-validation is added, this test
 // should be updated to expect 401 instead of 200.
 func TestStory431_TokenNotRevalidatedAfterApproval(t *testing.T) {
@@ -1464,7 +1463,11 @@ func TestStory63_AgentSelfApproveProtection(t *testing.T) {
 		t.Fatalf("submit approval: %v", err)
 	}
 
-	// Create the web server (needed to test rejectIfAgentToken).
+	// Create the web server (needed to test the agent-bearer 403 path
+	// under requireOperatorSession — the agent-token rejection that
+	// used to live in per-handler rejectIfAgentToken calls now lives in
+	// the auth middleware, and this test exercises that path).
+	env.WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	webSrv := web.NewServer(
 		env.Tokens, env.Connections, env.Policies, env.Roles,
@@ -1474,6 +1477,7 @@ func TestStory63_AgentSelfApproveProtection(t *testing.T) {
 		scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",
 	)
+	webSrv.SetAuth(env.Operator, env.Session)
 	t.Cleanup(webSrv.Close)
 	ts := httptest.NewServer(webSrv.Handler())
 	t.Cleanup(ts.Close)
@@ -2047,9 +2051,10 @@ func setupProxyWithAuthQueryParam(t *testing.T, queryParam, authValue string) (s
 	env.Registry.Register(httpproxyconn.Meta, httpproxyconn.Factory)
 
 	cfg := map[string]any{
-		"target_url":  upstream.URL,
-		"auth_header": "x-api-key",
-		"auth_value":  authValue,
+		"target_url":         upstream.URL,
+		"auth_header":        "x-api-key",
+		"auth_value":         authValue,
+		"outbound_allowlist": []string{"127.0.0.0/8"},
 	}
 	if queryParam != "" {
 		cfg["auth_query_param"] = queryParam

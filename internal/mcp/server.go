@@ -1,22 +1,17 @@
 // Package mcp implements the Model Context Protocol (MCP) server for Sieve.
-//
 // MCP is the protocol AI agents (e.g., Claude) use to discover and invoke tools.
 // This server exposes connector operations as MCP tools, with every tool call
 // passing through the policy pipeline:
-//
-//  1. Pre-execution check: Before the connector runs, the policy evaluator
-//     decides whether the operation is allowed, denied, or requires human
-//     approval. This is the primary access-control gate.
-//
-//  2. Response filtering: After the connector returns data, any ResponseFilter
-//     objects collected during evaluation are applied to the response. This
-//     enables content filtering and redaction without a second evaluation pass.
-//
+// 1. Pre-execution check: Before the connector runs, the policy evaluator
+// decides whether the operation is allowed, denied, or requires human
+// approval. This is the primary access-control gate.
+// 2. Response filtering: After the connector returns data, any ResponseFilter
+// objects collected during evaluation are applied to the response. This
+// enables content filtering and redaction without a second evaluation pass.
 // The approval flow is non-blocking for MCP clients: when approval is required,
 // the server returns immediately with an approval ID and URL. The agent can
 // poll for resolution. This differs from the REST API which blocks with
 // WaitForResolution (suitable for synchronous HTTP clients).
-//
 // Tool naming handles multi-connection scenarios by prefixing tool names with
 // the connector type (e.g., "google_list_emails") when a token has access to
 // multiple connections. Single-connection tokens get unprefixed names.
@@ -590,9 +585,26 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	}
 
 	// Apply response filters collected during pre-execution evaluation.
+	// A filter that fails to construct (e.g. its script_command no longer
+	// passes the allowlist) must fail closed — the un-redacted result MUST
+	// NOT reach the agent.
 	var reason string
 	if len(decision.Filters) > 0 {
-		resultJSON, reason = policy.ApplyResponseFilters(resultJSON, decision.Filters)
+		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
+		if ferr != nil {
+			// Log the detailed failure server-side; keep the
+			// agent-facing message generic so internal details (script
+			// paths, command allowlist entries, evaluator stderr) don't
+			// leak through the JSON-RPC error envelope.
+			s.logAudit(tok, connID, opName, call.Arguments, "response_filter_failed", ferr.Error(), durationMs)
+			return &JSONRPCResponse{
+				JSONRPC: "2.0",
+				ID:      id,
+				Error:   &JSONRPCError{Code: -32000, Message: "response filter failed"},
+			}
+		}
+		resultJSON = filtered
+		reason = summary
 	}
 
 	s.logAudit(tok, connID, opName, call.Arguments, "allow", reason, durationMs)
@@ -1083,7 +1095,6 @@ func (s *Server) logAudit(tok *tokens.Token, connID, operation string, params ma
 }
 
 // writeError writes a JSON-RPC error response directly to the http.ResponseWriter.
-//
 // JSON-RPC 2.0 says id MUST be null when the request id can't be detected
 // (parse errors, transport-level rejections like missing auth). However,
 // the MCP TypeScript SDK's response Zod schema rejects id=null — it
@@ -1091,7 +1102,6 @@ func (s *Server) logAudit(tok *tokens.Token, connID, operation string, params ma
 // makes Claude Code (and any other MCP client built on the official SDK)
 // fail to parse the error envelope, masking the real problem (e.g.
 // "missing bearer token") behind a confusing union-type error.
-//
 // To stay compatible with strict MCP clients we coerce id=nil to id=0
 // (numeric). Strict JSON-RPC 2.0 callers see a non-null id and ignore it
 // (id correlation only matters for matched request/response pairs); MCP
@@ -1129,10 +1139,8 @@ func mcpReauthRequiredText(connID, reason string) string {
 // result (MCP's mechanism for tool-level errors, distinct from JSON-RPC
 // transport errors). Returns nil for unrecognised errors so callers can
 // fall through to their existing handling.
-//
 // Agents must receive a stable error code without leaking credentials
 // or upstream response details.
-//
 // connID is needed so the reauth text matches the post-execution path.
 // When unknown (caller doesn't have an id in scope), pass "".
 func connectionStateError(id any, connID string, reason string, err error) *JSONRPCResponse {

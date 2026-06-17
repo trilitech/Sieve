@@ -4,7 +4,6 @@ package database
 // legacy (needs_reauth=1, status='active') rows to status='reauth_required'
 // and then drops the needs_reauth column entirely (pre-launch, no
 // deprecation window).
-//
 // To exercise the migration realistically, the test stands up a raw
 // SQLite DB with the *old* schema shape (needs_reauth column present
 // + populated), then calls migrateNeedsReauthToStatus directly.

@@ -75,14 +75,13 @@ const saltSize = 16
 
 // Keyring holds the in-memory KEK. The zero value is unloaded — IsLoaded
 // returns false and KEK panics.
-//
 // Concurrency model:
-//   - mu guards reads/writes of kek so credential operations and Rotate cannot
-//     observe a torn key. WithKEK acquires mu for the duration of one call.
-//   - rotating is set true at the entry of Rotate and cleared on its return.
-//     New WithKEK callers see the flag and fail-fast with ErrKeyringRotating
-//     instead of waiting on mu (hard-fail in-flight credential ops; agents
-//     retry).
+// - mu guards reads/writes of kek so credential operations and Rotate cannot
+// observe a torn key. WithKEK acquires mu for the duration of one call.
+// - rotating is set true at the entry of Rotate and cleared on its return.
+// New WithKEK callers see the flag and fail-fast with ErrKeyringRotating
+// instead of waiting on mu (hard-fail in-flight credential ops; agents
+// retry).
 type Keyring struct {
 	mu       sync.Mutex
 	kek      []byte // 32 bytes when loaded; nil when not.
@@ -111,7 +110,6 @@ func (k *Keyring) IsLoaded() bool {
 // KEK returns the in-memory KEK. Panics if the keyring is not loaded —
 // callers must check IsLoaded (or rely on ErrKeyringNotLoaded surfaced
 // by services) before reaching for the bytes.
-//
 // Deprecated: prefer WithKEK so concurrent rotation is observed safely.
 // The bare KEK accessor remains for callers that already coordinate
 // access externally (Setup/Load lifecycle code in cmd/sieve).
@@ -129,7 +127,6 @@ func (k *Keyring) KEK() []byte {
 // ErrKeyringRotating when a rotation is currently in progress in this
 // process. Callers MUST NOT retain the kek slice past the call; the keyring
 // may zero or replace it after WithKEK returns.
-//
 // The fast-path check of the rotating flag (without the mutex) is the
 // load-bearing piece: it lets concurrent reads fail-fast instead of
 // blocking behind the rotation. The re-check after acquiring the mutex
@@ -202,7 +199,6 @@ func (k *Keyring) Load(db *sql.DB, passphrase []byte) error {
 // Setup performs first-run initialization: generates a random salt, derives
 // the KEK, encrypts the verifier sentinel, and persists crypto_meta. After
 // Setup the keyring is loaded and ready for use.
-//
 // Setup refuses to run if a crypto_meta row already exists — that would
 // silently orphan every existing ciphertext blob. Use Rotate to change
 // the passphrase.
@@ -251,17 +247,14 @@ func (k *Keyring) Setup(db *sql.DB, passphrase []byte) error {
 // Returns the count of credential records that were re-wrapped (for the
 // operator-facing success message and for the audit row written inside
 // the same transaction).
-//
 // Ciphertext blobs themselves are untouched — only the wrapped DEKs need
 // to be re-wrapped under the new KEK.
-//
 // Concurrency: while Rotate is running, the rotating flag is set so any
 // concurrent WithKEK caller fails fast with ErrKeyringRotating. The slow
 // argon2 derivations run outside the keyring mutex so they do not block
 // in-flight credential operations any longer than necessary; the SQL
 // transaction and the in-memory KEK swap run inside the mutex so the swap
 // is atomic with the on-disk commit.
-//
 // auditor is optional. When non-nil, Rotate calls auditor.LogRotation
 // inside the rotation transaction (between the rewrap loop and the
 // commit) so a rolled-back rotation never leaves a stray audit row.
