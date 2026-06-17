@@ -554,6 +554,11 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 				if cat == "http_proxy" || c.ConnectorType == "mcp_proxy" {
 					conns = append(conns, c)
 				}
+			} else if connType == "version_control" {
+				// "version_control" tab groups github + gitlab.
+				if cat == "github" || cat == "gitlab" {
+					conns = append(conns, c)
+				}
 			} else if cat == connType {
 				conns = append(conns, c)
 			}
@@ -572,6 +577,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 				// "proxy" tab shows both http_proxy and mcp_proxy connectors
 				if connType == "proxy" {
 					match = m.Type == "http_proxy" || m.Type == "mcp_proxy"
+				}
+				// "version_control" tab shows both github and gitlab connectors
+				if connType == "version_control" {
+					match = m.Type == "github" || m.Type == "gitlab"
 				}
 				if match {
 					filtered[category] = append(filtered[category], m)
@@ -1434,10 +1443,15 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 
 	// Filter policies by scope. A policy's scope is stored in its config.
 	// Policies without a scope (legacy/presets) show under all tabs.
+	// The synthetic "version_control" scope groups github + gitlab policies.
 	var pols []policies.Policy
 	for _, p := range allPols {
 		pScope, _ := p.PolicyConfig["scope"].(string)
-		if scope == "" || pScope == "" || pScope == scope {
+		match := scope == "" || pScope == "" || pScope == scope
+		if scope == "version_control" && (pScope == "github" || pScope == "gitlab") {
+			match = true
+		}
+		if match {
 			pols = append(pols, p)
 		}
 	}
