@@ -67,9 +67,16 @@ var defaultCommandInterpreter = policy.DefaultCommand
 // flows. Defaults to the documented production localhost binding.
 // The host portion is NEVER derived from inbound request headers — operators
 // who run Sieve behind a reverse proxy must set this explicitly so that a
-// forged Host header cannot redirect OAuth callbacks to an attacker
+// forged Host header cannot redirect OAuth callbacks to an attacker.
+//
+// The stored value is normalised on read: leading/trailing whitespace is
+// stripped (common when copy-pasting from a docs page) and a single
+// trailing "/" is removed, so downstream callers can join their own paths
+// with a leading "/" without producing a double-slash URL.
 func (s *Service) PublicBaseURL() string {
 	v, _ := s.Get(KeyPublicBaseURL)
+	v = strings.TrimSpace(v)
+	v = strings.TrimRight(v, "/")
 	if v == "" {
 		return defaultPublicBaseURL
 	}

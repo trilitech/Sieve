@@ -62,10 +62,12 @@ func NewScriptEvaluator(config map[string]any) (*ScriptEvaluator, error) {
 	// promotes it), so we follow with filepath.Abs — this protects
 	// against a later `os.Chdir` in the process redirecting the dial.
 	// We refuse non-regular files (devices, FIFOs, sockets) — the
-	// interpreter would block or read garbage from those — and surface
-	// the resolved + absolutised path back into the stored config so
-	// subsequent re-runs of this evaluator see the same file even if a
-	// symlink further up the chain is replaced.
+	// interpreter would block or read garbage from those — and the
+	// resolved + absolutised path is written into this evaluator's
+	// in-memory config so every Evaluate() call invokes the same file.
+	// This is NOT persisted: the on-disk policy keeps its original
+	// (possibly symlinked / relative) script value, and a fresh
+	// NewScriptEvaluator on the next reload will re-resolve from there.
 	resolved, err := filepath.EvalSymlinks(sc.Script)
 	if err != nil {
 		return nil, fmt.Errorf("script evaluator: script not found: %w", err)

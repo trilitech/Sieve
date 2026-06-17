@@ -1,3 +1,11 @@
+//go:build !windows
+
+// The non-regular-file test uses syscall.Mkfifo, which is not defined on
+// Windows; the symlink test uses os.Symlink, which on Windows requires
+// Developer Mode / admin and is irrelevant to the Unix-y deployments
+// Sieve actually targets. Keeping the whole file POSIX-only avoids a
+// hard compile failure on Windows builders.
+
 package policy_test
 
 import (
@@ -37,9 +45,10 @@ func TestNewScriptEvaluator_RefusesNonRegularFile(t *testing.T) {
 
 // TestNewScriptEvaluator_ResolvesSymlinkToRegularFile confirms a
 // symlink to a regular script is accepted (we still need to support
-// e.g. NixOS-style symlink-farm deployments) and that the stored
-// config carries the resolved path — so a later swap of the symlink
-// target wouldn't redirect the evaluator transparently.
+// e.g. NixOS-style symlink-farm deployments) and that the evaluator's
+// in-memory config carries the resolved path — so the script that
+// Evaluate() invokes can't be redirected by a later swap of the
+// symlink target without going through a fresh NewScriptEvaluator call.
 func TestNewScriptEvaluator_ResolvesSymlinkToRegularFile(t *testing.T) {
 	t.Cleanup(func() { policy.SetCommandAllowlist(nil) })
 	policy.SetCommandAllowlist([]string{"/bin/sh"})
