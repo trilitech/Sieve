@@ -109,9 +109,18 @@ type ResponseFilterError struct {
 }
 
 func (e *ResponseFilterError) Error() string {
+	// Walk a chain of identifiers until we find a non-empty one, so the
+	// audit row stays attributable even when a misconfigured filter
+	// (no Label, no ScriptCommand, no ScriptPath) reaches this point.
 	label := e.Filter.Label
 	if label == "" {
 		label = e.Filter.ScriptCommand
+	}
+	if label == "" {
+		label = e.Filter.ScriptPath
+	}
+	if label == "" {
+		label = "<unknown>"
 	}
 	return fmt.Sprintf("response filter %q failed: %v", label, e.Err)
 }
