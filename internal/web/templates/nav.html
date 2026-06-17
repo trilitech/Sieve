@@ -9,6 +9,13 @@
       </div>
       <span class="text-xl font-bold text-white tracking-tight">Sieve</span>
     </a>
+    <button onclick="openCmdK()" class="mt-4 w-full flex items-center justify-between px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 hover:border-slate-500 text-xs text-slate-400 transition-colors" title="Open command palette">
+      <span class="flex items-center gap-2">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        Jump to…
+      </span>
+      <kbd class="text-[10px] text-slate-500 border border-slate-600 rounded px-1.5 py-0.5 font-mono"><span id="cmdk-mod">Ctrl</span>+K</kbd>
+    </button>
   </div>
   <div class="flex-1 py-4 overflow-y-auto">
     <ul class="space-y-1 px-3">
@@ -219,6 +226,202 @@ function toggleSub(id) {
       toggleSub('policy-vcs-sub');
     }
   }
+})();
+</script>
+
+<!-- Command palette (Ctrl/Cmd + K) -->
+<div id="cmdk-overlay" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" onclick="cmdkOverlayClick(event)">
+  <div class="max-w-xl mx-auto mt-32 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+    <div class="border-b border-slate-700 px-4 py-3 flex items-center gap-3">
+      <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <input id="cmdk-input" type="text" placeholder="Jump to a page or sub-section…" class="flex-1 bg-transparent text-white text-sm focus:outline-none placeholder-slate-500" autocomplete="off" spellcheck="false" />
+      <kbd class="text-[10px] text-slate-500 border border-slate-600 rounded px-1.5 py-0.5 font-mono">ESC</kbd>
+    </div>
+    <ul id="cmdk-results" class="max-h-80 overflow-y-auto py-2"></ul>
+    <div class="border-t border-slate-700 px-4 py-2 text-[10px] text-slate-500 flex items-center gap-4">
+      <span><kbd class="border border-slate-600 rounded px-1 font-mono">↑</kbd><kbd class="border border-slate-600 rounded px-1 font-mono ml-0.5">↓</kbd> navigate</span>
+      <span><kbd class="border border-slate-600 rounded px-1 font-mono">↵</kbd> open</span>
+      <span><kbd class="border border-slate-600 rounded px-1 font-mono">esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// Static index of navigable destinations. Keep in sync with the sidebar above.
+// keywords boost matches for common aliases / abbreviations.
+var CMDK_ITEMS = [
+  // Top-level pages
+  {label: "Connections",              href: "/connections",                       keywords: "services credentials"},
+  {label: "Roles",                    href: "/roles",                             keywords: "bindings permissions"},
+  {label: "Tokens",                   href: "/tokens",                            keywords: "agents bearer"},
+  {label: "Policies",                 href: "/policies",                          keywords: "rules"},
+  {label: "Approvals",                href: "/approvals",                         keywords: "pending"},
+  {label: "Audit Log",                href: "/audit",                             keywords: "history events"},
+  {label: "Settings",                 href: "/settings",                          keywords: "passphrase rotation llm"},
+  {label: "Documentation",            href: "/docs",                              keywords: "help guide"},
+  // Connections sub-tabs
+  {label: "Connections / Google",          href: "/connections?type=google",          keywords: "gmail drive calendar oauth"},
+  {label: "Connections / Cloud",           href: "/connections?type=cloud",           keywords: "aws hyperstack"},
+  {label: "Connections / LLM API",         href: "/connections?type=llm",             keywords: "anthropic openai gemini bedrock"},
+  {label: "Connections / HTTP Proxy",      href: "/connections?type=http_proxy",      keywords: "rest"},
+  {label: "Connections / MCP Proxy",       href: "/connections?type=mcp_proxy",       keywords: "mcp"},
+  {label: "Connections / Version Control", href: "/connections?type=version_control", keywords: "git github gitlab vcs"},
+  {label: "Connections / GitHub",          href: "/connections?type=github",          keywords: "git vcs pat app"},
+  {label: "Connections / GitLab",          href: "/connections?type=gitlab",          keywords: "git vcs"},
+  {label: "Connections / Slack",           href: "/connections?type=slack",           keywords: "chat messaging"},
+  // Policies sub-tabs (mirror)
+  {label: "Policies / Google",             href: "/policies?scope=google",            keywords: "gmail drive"},
+  {label: "Policies / Gmail",              href: "/policies?scope=gmail",             keywords: "email"},
+  {label: "Policies / Drive",              href: "/policies?scope=drive",             keywords: "google files"},
+  {label: "Policies / Calendar",           href: "/policies?scope=calendar",          keywords: "google events"},
+  {label: "Policies / People",             href: "/policies?scope=people",            keywords: "google contacts"},
+  {label: "Policies / Sheets",             href: "/policies?scope=sheets",            keywords: "google spreadsheet"},
+  {label: "Policies / Docs",               href: "/policies?scope=docs",              keywords: "google document"},
+  {label: "Policies / Cloud",              href: "/policies?scope=cloud",             keywords: "aws hyperstack"},
+  {label: "Policies / AWS EC2",            href: "/policies?scope=aws-ec2",           keywords: "compute"},
+  {label: "Policies / AWS S3",             href: "/policies?scope=aws-s3",            keywords: "storage bucket"},
+  {label: "Policies / AWS Lambda",         href: "/policies?scope=aws-lambda",        keywords: "functions"},
+  {label: "Policies / AWS SES",            href: "/policies?scope=aws-ses",           keywords: "email"},
+  {label: "Policies / AWS DynamoDB",       href: "/policies?scope=aws-dynamodb",      keywords: "database nosql"},
+  {label: "Policies / Hyperstack",         href: "/policies?scope=hyperstack",        keywords: "gpu"},
+  {label: "Policies / LLM API",            href: "/policies?scope=llm",               keywords: "anthropic openai"},
+  {label: "Policies / HTTP Proxy",         href: "/policies?scope=http_proxy",        keywords: "rest"},
+  {label: "Policies / MCP Proxy",          href: "/policies?scope=mcp_proxy",         keywords: "mcp"},
+  {label: "Policies / Version Control",    href: "/policies?scope=version_control",   keywords: "git github gitlab vcs"},
+  {label: "Policies / GitHub",             href: "/policies?scope=github",            keywords: "git vcs"},
+  {label: "Policies / GitLab",             href: "/policies?scope=gitlab",            keywords: "git vcs"},
+  {label: "Policies / Slack",              href: "/policies?scope=slack",             keywords: "chat"}
+];
+
+var cmdkSelected = 0;
+var cmdkVisible = [];
+
+function openCmdK() {
+  document.getElementById('cmdk-overlay').classList.remove('hidden');
+  var input = document.getElementById('cmdk-input');
+  input.value = '';
+  cmdkSelected = 0;
+  renderCmdK('');
+  input.focus();
+}
+
+function closeCmdK() {
+  document.getElementById('cmdk-overlay').classList.add('hidden');
+}
+
+function cmdkOverlayClick(ev) {
+  // Click on the backdrop (not the inner card) closes.
+  if (ev.target.id === 'cmdk-overlay') closeCmdK();
+}
+
+// Score a single item against a query string. 0 means "no match".
+function cmdkScore(query, item) {
+  if (!query) return 1;
+  var q = query.toLowerCase().trim();
+  var label = item.label.toLowerCase();
+  var hay = label + ' ' + (item.keywords || '').toLowerCase();
+  // Exact label prefix wins.
+  if (label.indexOf(q) === 0) return 100;
+  // Substring in label.
+  if (label.indexOf(q) >= 0) return 50;
+  // Substring in keywords/full haystack.
+  if (hay.indexOf(q) >= 0) return 20;
+  // Subsequence fuzzy match — every char of q appears in order in hay.
+  var i = 0;
+  for (var c = 0; c < q.length; c++) {
+    var j = hay.indexOf(q[c], i);
+    if (j < 0) return 0;
+    i = j + 1;
+  }
+  return 5;
+}
+
+function renderCmdK(query) {
+  var ul = document.getElementById('cmdk-results');
+  cmdkVisible = CMDK_ITEMS
+    .map(function(it) { return {it: it, s: cmdkScore(query, it)}; })
+    .filter(function(x) { return x.s > 0; })
+    .sort(function(a, b) { return b.s - a.s; })
+    .map(function(x) { return x.it; });
+
+  if (cmdkSelected >= cmdkVisible.length) cmdkSelected = 0;
+  if (!cmdkVisible.length) {
+    ul.innerHTML = '<li class="px-4 py-3 text-xs text-slate-500">No matches</li>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < cmdkVisible.length; i++) {
+    var it = cmdkVisible[i];
+    var active = i === cmdkSelected ? 'bg-slate-700/60' : '';
+    // Defense in depth: items come from the static list above, but encode
+    // anyway so a future dynamic feed can't smuggle HTML into the palette.
+    var labelTxt = it.label.replace(/[&<>"']/g, function(ch) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+    var hrefTxt = it.href.replace(/[&<>"']/g, function(ch) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+    html += '<li><a href="' + hrefTxt + '" data-cmdk-i="' + i + '" class="cmdk-item flex items-center justify-between px-4 py-2 text-sm hover:bg-slate-700/50 ' + active + '">' +
+            '<span class="text-slate-200">' + labelTxt + '</span>' +
+            '<span class="text-[10px] text-slate-500 font-mono">' + hrefTxt + '</span>' +
+            '</a></li>';
+  }
+  ul.innerHTML = html; // xss-safe: labelTxt/hrefTxt are HTML-escaped above via replace(/[&<>"']/g, …)
+}
+
+document.getElementById('cmdk-input').addEventListener('input', function(e) {
+  cmdkSelected = 0;
+  renderCmdK(e.target.value);
+});
+
+document.addEventListener('keydown', function(e) {
+  var isOpen = !document.getElementById('cmdk-overlay').classList.contains('hidden');
+  // Toggle open: Ctrl+K / Cmd+K
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    if (isOpen) closeCmdK(); else openCmdK();
+    return;
+  }
+  if (!isOpen) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeCmdK();
+    return;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (cmdkVisible.length) {
+      cmdkSelected = Math.min(cmdkSelected + 1, cmdkVisible.length - 1);
+      renderCmdK(document.getElementById('cmdk-input').value);
+      var el = document.querySelector('[data-cmdk-i="' + cmdkSelected + '"]');
+      if (el) el.scrollIntoView({block: 'nearest'});
+    }
+    return;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (cmdkVisible.length) {
+      cmdkSelected = Math.max(cmdkSelected - 1, 0);
+      renderCmdK(document.getElementById('cmdk-input').value);
+      var el = document.querySelector('[data-cmdk-i="' + cmdkSelected + '"]');
+      if (el) el.scrollIntoView({block: 'nearest'});
+    }
+    return;
+  }
+  if (e.key === 'Enter') {
+    if (cmdkVisible.length) {
+      e.preventDefault();
+      window.location.href = cmdkVisible[cmdkSelected].href;
+    }
+    return;
+  }
+});
+
+// Show the right modifier label for the chip in the sidebar.
+(function() {
+  var isMac = /Mac|iPhone|iPad/i.test(navigator.platform || '');
+  var lbl = document.getElementById('cmdk-mod');
+  if (lbl) lbl.textContent = isMac ? '⌘' : 'Ctrl';
 })();
 </script>
 {{end}}
