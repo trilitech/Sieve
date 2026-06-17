@@ -58,7 +58,7 @@ func Meta() connector.ConnectorMeta {
 		Type:        ConnectorType,
 		Name:        "GitHub",
 		Description: "Read and write GitHub repos, issues, PRs, and more via PAT or GitHub App.",
-		Category:    "Developer",
+		Category:    "Version Control",
 		SetupFields: []connector.Field{
 			{Name: "cross_fork_pr_allowlist", Label: "Cross-fork PR allow-list", Type: "textarea", EditOnly: true, Editable: true, Placeholder: "alice\nbob",
 				HelpText: "GitHub user logins (one per line; case-insensitive) whose forks Sieve accepts as cross-fork PR heads via github_create_pr. Empty = deny all cross-fork heads. Wildcards are NOT honoured. The escape-hatch github_request op is unaffected."},

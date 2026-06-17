@@ -61,7 +61,7 @@ func Meta() connector.ConnectorMeta {
 		Type:        ConnectorType,
 		Name:        "GitLab",
 		Description: "Read and write GitLab projects, files, issues, and merge requests via personal access token.",
-		Category:    "Developer",
+		Category:    "Version Control",
 		SetupFields: []connector.Field{
 			{
 				Name:        "token",
