@@ -44,11 +44,12 @@ func TestNewScriptEvaluator_RefusesNonRegularFile(t *testing.T) {
 }
 
 // TestNewScriptEvaluator_ResolvesSymlinkToRegularFile confirms a
-// symlink to a regular script is accepted (we still need to support
-// e.g. NixOS-style symlink-farm deployments) and that the evaluator's
-// in-memory config carries the resolved path — so the script that
-// Evaluate() invokes can't be redirected by a later swap of the
-// symlink target without going through a fresh NewScriptEvaluator call.
+// symlink to a regular script is accepted at construction time (we
+// still need to support e.g. NixOS-style symlink-farm deployments).
+// The construction-time symlink resolution is what enables the
+// "in-memory config carries the resolved path" guarantee documented
+// on NewScriptEvaluator; verifying that resolved path is opaque to
+// callers and is left to the constructor's own internal invariants.
 func TestNewScriptEvaluator_ResolvesSymlinkToRegularFile(t *testing.T) {
 	t.Cleanup(func() { policy.SetCommandAllowlist(nil) })
 	policy.SetCommandAllowlist([]string{"/bin/sh"})
