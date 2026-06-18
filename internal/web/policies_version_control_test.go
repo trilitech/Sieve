@@ -28,6 +28,11 @@ func TestPoliciesPage_VersionControlScope(t *testing.T) {
 	mustSeedPolicy(t, env, "gitlab-allow", "gitlab")
 	mustSeedPolicy(t, env, "slack-allow", "slack")
 	mustSeedPolicy(t, env, "legacy-no-scope", "") // empty scope — shows under all tabs
+	// Hand-crafted "version_control"-scoped policy stands in for a
+	// DB row that slipped past the create-time block in
+	// handlePolicyCreate. The version_control filter MUST NOT
+	// surface it (scope is a browse-only filter, not a real scope).
+	mustSeedPolicy(t, env, "vcs-stamped", "version_control")
 
 	t.Run("version_control includes github + gitlab, excludes slack", func(t *testing.T) {
 		rec := getRequest(handler, env, "/policies?scope=version_control")
@@ -42,6 +47,9 @@ func TestPoliciesPage_VersionControlScope(t *testing.T) {
 		}
 		if strings.Contains(body, "slack-allow") {
 			t.Errorf("version_control scope incorrectly includes slack policy")
+		}
+		if strings.Contains(body, "vcs-stamped") {
+			t.Errorf("version_control scope incorrectly includes a policy literally stamped scope=version_control (this scope is browse-only and such a policy is nonsense)")
 		}
 	})
 

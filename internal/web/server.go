@@ -1443,13 +1443,20 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 
 	// Filter policies by scope. A policy's scope is stored in its config.
 	// Policies without a scope (legacy/presets) show under all tabs.
-	// The synthetic "version_control" scope groups github + gitlab policies.
+	// The synthetic "version_control" scope is strictly defined as
+	// github + gitlab + unscoped. A policy literally stamped with
+	// scope=version_control would be nonsense (creation is blocked in
+	// handlePolicyCreate); excluding it here keeps the filter honest
+	// against any hand-crafted DB row that slipped through, and keeps
+	// the handlePolicyCreate comment accurate.
 	var pols []policies.Policy
 	for _, p := range allPols {
 		pScope, _ := p.PolicyConfig["scope"].(string)
-		match := scope == "" || pScope == "" || pScope == scope
-		if scope == "version_control" && (pScope == "github" || pScope == "gitlab") {
-			match = true
+		var match bool
+		if scope == "version_control" {
+			match = pScope == "" || pScope == "github" || pScope == "gitlab"
+		} else {
+			match = scope == "" || pScope == "" || pScope == scope
 		}
 		if match {
 			pols = append(pols, p)
