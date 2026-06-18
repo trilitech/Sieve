@@ -1,3 +1,11 @@
+//go:build !windows
+
+// Build-tagged off Windows because the FD 3 manipulation below uses
+// syscall.Dup / syscall.Dup2, which aren't available on the Windows
+// syscall package. The same pattern is used by other POSIX-only test
+// files in this repo (cmd/sieve/rotate_test.go's reset-keyring TTY
+// guard, internal/policy/script_path_test.go's mkfifo test).
+
 package secrets_test
 
 // Source-selection contract for Acquire. The intake priority (file →

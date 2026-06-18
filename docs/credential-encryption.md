@@ -103,7 +103,7 @@ When Sieve starts, it looks for the passphrase in this order:
 3. **TTY** — if stdin is an interactive terminal, prompt with echo off. First-run setup prompts twice and verifies the entries match. (Only consulted if neither of the above is configured.)
 4. **No source** → startup fails with a clear error. Sieve refuses to run without a key.
 
-When the passphrase comes from a file or FD 3, the "confirm" step that the TTY uses during first-run setup is skipped — there's nothing to confirm against a static source.
+Note that routine startup (`./sieve` with no flags) consults the sources in the order above; the file/FD 3 sources do not have a "confirm" step. **First-run setup (`./sieve --setup`) and `--rotate-passphrase`'s second prompt are different**: they force the TTY path and refuse to read the file/FD 3 sources at all (so that an unattended source cannot silently satisfy a confirmation or rotation new-passphrase prompt). The next subsection covers the operational consequences.
 
 ### Setup and rotation flows require a TTY
 

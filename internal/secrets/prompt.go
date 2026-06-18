@@ -90,9 +90,9 @@ func Acquire(opts PromptOptions) ([]byte, error) {
 			return nil, errors.New("this passphrase prompt requires a TTY: " +
 				"stdin is not interactive (--setup and --rotate-passphrase's " +
 				"new-passphrase prompt only accept a typed value). Re-run " +
-				"from an interactive shell. " + PassphraseFileEnv + " and " +
-				"FD 3 do not influence this branch — even when configured, " +
-				"these sources are skipped here so that an unattended file " +
+				"from an interactive shell. Neither " + PassphraseFileEnv + " " +
+				"nor FD 3 influences this branch — even when configured, " +
+				"those sources are skipped here so that an unattended file " +
 				"source cannot silently satisfy a confirmation or rotation " +
 				"new-passphrase prompt.")
 		}
