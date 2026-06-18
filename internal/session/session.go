@@ -321,8 +321,11 @@ func NewCSRFCookie(plaintext string, secure bool) *http.Cookie {
 	}
 }
 
-// ClearCSRFCookie returns a Max-Age=0 cookie used by /logout to clear
-// the plaintext CSRF cookie alongside the session cookie.
+// ClearCSRFCookie returns a deletion cookie for the plaintext CSRF
+// cookie. Used by /logout alongside ClearCookie() for the session.
+// Implementation note: Go's net/http maps MaxAge < 0 to a
+// "Max-Age=0" Set-Cookie attribute, which is the wire-level signal
+// browsers treat as immediate deletion. The Go field value isn't 0.
 func ClearCSRFCookie(secure bool) *http.Cookie {
 	c := NewCSRFCookie("", secure)
 	c.MaxAge = -1

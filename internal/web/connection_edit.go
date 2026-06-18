@@ -145,7 +145,7 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 
 	meta, ok := s.registry.Meta(conn.ConnectorType)
 	if !ok {
-		s.renderEditError(w, conn, "unknown connector type "+conn.ConnectorType)
+		s.renderEditError(w, r, conn, "unknown connector type "+conn.ConnectorType)
 		return
 	}
 
@@ -160,7 +160,7 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 		// Render from cfg (the in-progress config carrying every
 		// field parsed successfully so far) so the operator's typed
 		// values are preserved in the form.
-		s.renderEditErrorWithConfig(w, conn, cfg, msg)
+		s.renderEditErrorWithConfig(w, r, conn, cfg, msg)
 		return
 	}
 
@@ -170,7 +170,7 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	// here gives a clearer banner that preserves the rest of the form.
 	if conn.ConnectorType == "http_proxy" {
 		if aqp, _ := cfg["auth_query_param"].(string); aqp != "" && !authQueryParamPattern.MatchString(aqp) {
-			s.renderEditErrorWithConfig(w, conn, cfg,
+			s.renderEditErrorWithConfig(w, r, conn, cfg,
 				"auth_query_param must contain only letters, digits, _, -, or . (got "+aqp+")")
 			return
 		}
@@ -179,7 +179,7 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	if err := s.connections.UpdateConfig(id, cfg); err != nil {
 		// Render from cfg so the operator's attempted values are
 		// preserved on the retry.
-		s.renderEditErrorWithConfig(w, conn, cfg, "save failed: "+err.Error())
+		s.renderEditErrorWithConfig(w, r, conn, cfg, "save failed: "+err.Error())
 		return
 	}
 
@@ -331,8 +331,8 @@ func joinStringSliceField(v any) string {
 // Use this only when the in-progress config isn't meaningful (e.g.,
 // unknown connector type, where there's nothing successfully parsed
 // to preserve).
-func (s *Server) renderEditError(w http.ResponseWriter, conn *connections.Connection, msg string) {
-	s.renderEditErrorWithConfig(w, conn, conn.Config, msg)
+func (s *Server) renderEditError(w http.ResponseWriter, r *http.Request, conn *connections.Connection, msg string) {
+	s.renderEditErrorWithConfig(w, r, conn, conn.Config, msg)
 }
 
 // renderEditErrorWithConfig re-renders the edit page using a specific
@@ -344,10 +344,16 @@ func (s *Server) renderEditError(w http.ResponseWriter, conn *connections.Connec
 // Sets Content-Type and the 400 status on the ResponseWriter directly
 // rather than calling s.render's helper, so we don't trip the
 // "superfluous WriteHeader" warning when render writes its own
-// content-type header.
-func (s *Server) renderEditErrorWithConfig(w http.ResponseWriter, conn *connections.Connection, cfg map[string]any, msg string) {
+// content-type header. The CSRFToken is injected manually here too,
+// since we bypass s.render — without it, the rendered error page
+// would carry an empty window.SIEVE_CSRF and the operator's retry
+// POST would 403 at the middleware.
+func (s *Server) renderEditErrorWithConfig(w http.ResponseWriter, r *http.Request, conn *connections.Connection, cfg map[string]any, msg string) {
 	data := s.connectionEditViewFromConfig(conn, cfg)
 	data.Error = msg
+	if sess := sessionFromContext(r); sess != nil {
+		data.CSRFToken = sess.CSRFToken
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
 	t, ok := s.templates["connection_edit"]
