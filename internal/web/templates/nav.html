@@ -198,6 +198,37 @@
 </nav>
 
 <script>
+// CSRF token injected by the server (render() pulls it from the
+// session-in-context). Empty string means the operator's session was
+// issued before the CSRF cookie existed or the cookie was lost — the
+// next POST will fail closed at the middleware and the operator can
+// re-log in. Templates do not echo it back into forms by hand; the
+// delegated submit handler below adds a hidden `csrf_token` input
+// at submit time, and any fetch-style admin JS callers should read
+// `window.SIEVE_CSRF` and pass it as the X-CSRF-Token header.
+window.SIEVE_CSRF = {{.CSRFToken}};
+
+// Delegated form-submit handler. Capture phase so it runs even if a
+// deeper listener calls stopPropagation. For every same-origin POST
+// form (GET forms don't need CSRF, off-site forms — none today —
+// would leak the token cross-origin so are explicitly skipped) we
+// inject a hidden `csrf_token` input carrying the token from
+// window.SIEVE_CSRF. Idempotent: if a hand-crafted form already has
+// a `csrf_token` input we leave it alone.
+document.addEventListener("submit", function(e) {
+  var form = e.target;
+  if (!form || form.tagName !== "FORM") return;
+  if ((form.method || "get").toLowerCase() !== "post") return;
+  if (form.querySelector('input[name="csrf_token"]')) return;
+  var token = window.SIEVE_CSRF || "";
+  if (!token) return;
+  var input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "csrf_token";
+  input.value = token;
+  form.appendChild(input);
+}, true);
+
 function toggleSub(id) {
   var el = document.getElementById(id);
   var chevron = document.getElementById(id + '-chevron');

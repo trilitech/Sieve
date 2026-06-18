@@ -43,6 +43,12 @@ type connectionEditData struct {
 	// HTTPProxyBaseline carries the static deny-list info displayed
 	// alongside the http_proxy edit form. Read-only; not a form field.
 	HTTPProxyBaseline *httpProxyBaselineView
+
+	// CSRFToken is the plaintext token used by nav.html to seed
+	// window.SIEVE_CSRF, which the delegated submit handler echoes
+	// back into every POST form as `csrf_token`. Populated by render()
+	// from the session-in-context — handlers don't set it directly.
+	CSRFToken string
 }
 
 // editFieldView is the template-friendly projection of a single editable
@@ -111,7 +117,7 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 	if r.URL.Query().Get("saved") == "1" {
 		data.Success = true
 	}
-	s.render(w, "connection_edit", data)
+	s.render(w, r, "connection_edit", data)
 }
 
 // handleConnectionEditSave validates and persists the edit form.
