@@ -37,12 +37,16 @@
           <li><a href="/connections?type=llm" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-llm"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">LLM API</a></li>
           <li><a href="/connections?type=http_proxy" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-http_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">HTTP Proxy</a></li>
           <li><a href="/connections?type=mcp_proxy" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-mcp_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">MCP Proxy</a></li>
-          <!-- Version Control (collapsible sub-group: GitHub + GitLab) -->
+          <!-- Version Control (collapsible sub-group: GitHub + GitLab).
+               Link + toggle are sibling elements so we don't nest an <a>
+               inside a <button> (invalid interactive-in-interactive HTML). -->
           <li>
-            <button onclick="toggleSub('conn-vcs-sub'); event.stopPropagation()" class="w-full flex items-center justify-between px-3 py-1 rounded-lg text-xs transition-colors {{if or (eq .Active "connections-version_control") (eq .Active "connections-github") (eq .Active "connections-gitlab")}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">
-              <a href="/connections?type=version_control" class="flex-1 text-left hover:underline" onclick="event.stopPropagation()">Version Control</a>
-              <svg id="conn-vcs-sub-chevron" class="w-3 h-3 transition-transform ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-            </button>
+            <div class="flex items-stretch rounded-lg transition-colors {{if or (eq .Active "connections-version_control") (eq .Active "connections-github") (eq .Active "connections-gitlab")}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">
+              <a href="/connections?type=version_control" class="flex-1 px-3 py-1 text-xs text-left">Version Control</a>
+              <button type="button" onclick="toggleSub('conn-vcs-sub')" aria-label="Toggle Version Control sub-items" class="px-2 py-1 flex items-center">
+                <svg id="conn-vcs-sub-chevron" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+              </button>
+            </div>
             <ul id="conn-vcs-sub" class="ml-3 space-y-0.5 hidden">
               <li><a href="/connections?type=github" class="block px-3 py-0.5 rounded-lg text-xs transition-colors {{if eq .Active "connections-github"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitHub</a></li>
               <li><a href="/connections?type=gitlab" class="block px-3 py-0.5 rounded-lg text-xs transition-colors {{if eq .Active "connections-gitlab"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitLab</a></li>
@@ -132,12 +136,16 @@
           <li><a href="/policies?scope=llm" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-llm"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">LLM API</a></li>
           <li><a href="/policies?scope=http_proxy" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-http_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">HTTP Proxy</a></li>
           <li><a href="/policies?scope=mcp_proxy" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-mcp_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">MCP Proxy</a></li>
-          <!-- Version Control (collapsible sub-group: GitHub + GitLab) -->
+          <!-- Version Control (collapsible sub-group: GitHub + GitLab).
+               Link + toggle are sibling elements so we don't nest an <a>
+               inside a <button> (invalid interactive-in-interactive HTML). -->
           <li>
-            <button onclick="toggleSub('policy-vcs-sub'); event.stopPropagation()" class="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs transition-colors {{if or (eq .Active "policies-version_control") (eq .Active "policies-github") (eq .Active "policies-gitlab")}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">
-              <a href="/policies?scope=version_control" class="flex-1 text-left hover:underline" onclick="event.stopPropagation()">Version Control</a>
-              <svg id="policy-vcs-sub-chevron" class="w-3 h-3 transition-transform ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-            </button>
+            <div class="flex items-stretch rounded-lg transition-colors {{if or (eq .Active "policies-version_control") (eq .Active "policies-github") (eq .Active "policies-gitlab")}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">
+              <a href="/policies?scope=version_control" class="flex-1 px-3 py-1.5 text-xs text-left">Version Control</a>
+              <button type="button" onclick="toggleSub('policy-vcs-sub')" aria-label="Toggle Version Control sub-items" class="px-2 py-1.5 flex items-center">
+                <svg id="policy-vcs-sub-chevron" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+              </button>
+            </div>
             <ul id="policy-vcs-sub" class="ml-3 space-y-0.5 hidden">
               <li><a href="/policies?scope=github" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-github"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitHub</a></li>
               <li><a href="/policies?scope=gitlab" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-gitlab"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitLab</a></li>
@@ -269,21 +277,22 @@ var CMDK_ITEMS = [
   {label: "Connections / GitHub",          href: "/connections?type=github",          keywords: "git vcs pat app"},
   {label: "Connections / GitLab",          href: "/connections?type=gitlab",          keywords: "git vcs"},
   {label: "Connections / Slack",           href: "/connections?type=slack",           keywords: "chat messaging"},
-  // Policies sub-tabs (mirror)
-  {label: "Policies / Google",             href: "/policies?scope=google",            keywords: "gmail drive"},
-  {label: "Policies / Gmail",              href: "/policies?scope=gmail",             keywords: "email"},
+  // Policies sub-tabs (mirror). Only leaf scopes that the operations
+  // picker recognises are listed — "google" and "cloud" are sidebar
+  // group labels, not real scopes, so they're omitted to avoid landing
+  // the operator on a page with no operations picker.
+  {label: "Policies / Gmail",              href: "/policies?scope=gmail",             keywords: "email google"},
   {label: "Policies / Drive",              href: "/policies?scope=drive",             keywords: "google files"},
   {label: "Policies / Calendar",           href: "/policies?scope=calendar",          keywords: "google events"},
   {label: "Policies / People",             href: "/policies?scope=people",            keywords: "google contacts"},
   {label: "Policies / Sheets",             href: "/policies?scope=sheets",            keywords: "google spreadsheet"},
   {label: "Policies / Docs",               href: "/policies?scope=docs",              keywords: "google document"},
-  {label: "Policies / Cloud",              href: "/policies?scope=cloud",             keywords: "aws hyperstack"},
-  {label: "Policies / AWS EC2",            href: "/policies?scope=aws-ec2",           keywords: "compute"},
-  {label: "Policies / AWS S3",             href: "/policies?scope=aws-s3",            keywords: "storage bucket"},
-  {label: "Policies / AWS Lambda",         href: "/policies?scope=aws-lambda",        keywords: "functions"},
-  {label: "Policies / AWS SES",            href: "/policies?scope=aws-ses",           keywords: "email"},
-  {label: "Policies / AWS DynamoDB",       href: "/policies?scope=aws-dynamodb",      keywords: "database nosql"},
-  {label: "Policies / Hyperstack",         href: "/policies?scope=hyperstack",        keywords: "gpu"},
+  {label: "Policies / AWS EC2",            href: "/policies?scope=aws-ec2",           keywords: "compute cloud"},
+  {label: "Policies / AWS S3",             href: "/policies?scope=aws-s3",            keywords: "storage bucket cloud"},
+  {label: "Policies / AWS Lambda",         href: "/policies?scope=aws-lambda",        keywords: "functions cloud"},
+  {label: "Policies / AWS SES",            href: "/policies?scope=aws-ses",           keywords: "email cloud"},
+  {label: "Policies / AWS DynamoDB",       href: "/policies?scope=aws-dynamodb",      keywords: "database nosql cloud"},
+  {label: "Policies / Hyperstack",         href: "/policies?scope=hyperstack",        keywords: "gpu cloud"},
   {label: "Policies / LLM API",            href: "/policies?scope=llm",               keywords: "anthropic openai"},
   {label: "Policies / HTTP Proxy",         href: "/policies?scope=http_proxy",        keywords: "rest"},
   {label: "Policies / MCP Proxy",          href: "/policies?scope=mcp_proxy",         keywords: "mcp"},
@@ -376,8 +385,15 @@ document.getElementById('cmdk-input').addEventListener('input', function(e) {
 
 document.addEventListener('keydown', function(e) {
   var isOpen = !document.getElementById('cmdk-overlay').classList.contains('hidden');
-  // Toggle open: Ctrl+K / Cmd+K
+  // Toggle open: Ctrl+K / Cmd+K. Skip when the user is typing in an
+  // editable element and the palette is closed — otherwise we'd steal
+  // the keystroke from a connection-alias / token input the user is
+  // filling in. When the palette is open, Ctrl+K closes it regardless
+  // of focus (escape hatch).
   if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    var t = e.target;
+    var editable = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || (t.isContentEditable === true));
+    if (editable && !isOpen) return;
     e.preventDefault();
     if (isOpen) closeCmdK(); else openCmdK();
     return;
