@@ -1,22 +1,27 @@
 package web_test
 
-// Regression test for the end-to-end CSRF token plumbing on admin POST
-// forms. Background: connections form templates (gitlab, http_proxy,
-// slack, etc.) historically didn't include a csrf_token hidden input
-// and the render path didn't expose the plaintext token to nav.html, so
-// every basic Add-Connection POST failed at the middleware with
-// "csrf token missing or invalid". This test pins three properties:
+// Regression tests for the end-to-end CSRF token plumbing on admin
+// POST forms. Background: connections form templates (gitlab,
+// http_proxy, slack, etc.) historically didn't include a csrf_token
+// hidden input and the render path didn't expose the plaintext token
+// to nav.html, so every basic Add-Connection POST failed at the
+// middleware with "csrf token missing or invalid".
 //
-//   - GET /connections sets a non-HttpOnly sieve_csrf cookie carrying
-//     the plaintext token (so the page script can read it).
-//   - The rendered page exposes the token to nav.html's
-//     window.SIEVE_CSRF script tag.
-//   - A POST to /connections/add carrying the csrf_token form field
-//     (the value the nav.html submit handler echoes back) is accepted
-//     by the middleware and reaches the handler. We check for a 303
-//     redirect (success) or a 400 (request rejected for a NON-CSRF
-//     reason, e.g. unknown connector type in the smoke seed) — both
-//     prove CSRF was satisfied. A 403 fails the test.
+// This file pins two properties:
+//
+//   - TestPOSTConnectionsAddPassesCSRF: a POST to /connections/add
+//     carrying the csrf_token form field (the value the nav.html
+//     submit handler echoes back from window.SIEVE_CSRF) is accepted
+//     by the middleware and reaches the handler. We assert the
+//     documented 303 redirect on success.
+//   - TestPOSTConnectionsAddMissingCSRFRejected: the negative control
+//     — the same POST without any CSRF token still 403s with a
+//     csrf-themed body. Pins that the new plumbing didn't accidentally
+//     relax the gate.
+//
+// The new sieve_csrf cookie's set/clear lifecycle is covered alongside
+// the session cookie in auth_test.go (TestLogin_HappyPath,
+// TestLogin_WrongCredential, TestLogout_DeletesCookieAndSession).
 
 import (
 	"net/http"

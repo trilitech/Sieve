@@ -210,11 +210,20 @@ window.SIEVE_CSRF = {{.CSRFToken}};
 
 // Delegated form-submit handler. Capture phase so it runs even if a
 // deeper listener calls stopPropagation. For every same-origin POST
-// form (GET forms don't need CSRF, off-site forms — none today —
-// would leak the token cross-origin so are explicitly skipped) we
-// inject a hidden `csrf_token` input carrying the token from
-// window.SIEVE_CSRF. Idempotent: if a hand-crafted form already has
-// a `csrf_token` input we leave it alone.
+// form (GET forms don't need CSRF; off-site forms would leak the
+// token cross-origin so are explicitly skipped) we inject a hidden
+// `csrf_token` input carrying the token from window.SIEVE_CSRF.
+// Idempotent: if a hand-crafted form already has a `csrf_token`
+// input we leave it alone.
+//
+// The same-origin check is intentionally strict: we resolve the
+// form's action against the current document and require the
+// resulting origin to equal window.location.origin. A form with no
+// action attribute (action == "") submits to the current document
+// URL, so it resolves to the same origin and passes. A form whose
+// action points off-site, or whose action becomes invalid for any
+// reason, is skipped — better to let an off-site POST fail at the
+// destination than to leak the token cross-origin.
 document.addEventListener("submit", function(e) {
   var form = e.target;
   if (!form || form.tagName !== "FORM") return;
@@ -222,6 +231,13 @@ document.addEventListener("submit", function(e) {
   if (form.querySelector('input[name="csrf_token"]')) return;
   var token = window.SIEVE_CSRF || "";
   if (!token) return;
+  try {
+    var resolved = new URL(form.getAttribute("action") || "", window.location.href);
+    if (resolved.origin !== window.location.origin) return;
+  } catch (err) {
+    // Malformed action — don't risk it.
+    return;
+  }
   var input = document.createElement("input");
   input.type = "hidden";
   input.name = "csrf_token";

@@ -507,8 +507,12 @@ func (s *Server) adminAuthWrapper(next http.Handler) http.Handler {
 
 // injectCSRFToken sets data["CSRFToken"] (for maps) or data.CSRFToken
 // (for structs that declare the field) when the value is currently
-// zero. Used by render() to surface the token to nav.html. Reflection
-// is fine here — admin renders are not on a hot path.
+// unset/zero. Used by render() to surface the token to nav.html.
+// Reflection is fine here — admin renders are not on a hot path. The
+// caller passes "" when no session is present; we still need to set
+// the key so the template renders a valid JS string literal rather
+// than the bare `;` that an absent map key produces inside
+// `{{.CSRFToken}}`.
 func injectCSRFToken(data any, token string) {
 	if m, ok := data.(map[string]any); ok {
 		if _, present := m["CSRFToken"]; !present {
@@ -527,7 +531,7 @@ func injectCSRFToken(data any, token string) {
 	if !f.IsValid() || !f.CanSet() || f.Kind() != reflect.String {
 		return
 	}
-	if f.String() == "" {
+	if f.String() == "" && token != "" {
 		f.SetString(token)
 	}
 }
@@ -547,11 +551,18 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 	//     set via reflection when zero. Typed view-models like
 	//     connectionEditData declare the field so the same nav.html
 	//     access works uniformly.
-	// Handlers that have already populated CSRFToken (manually or by
-	// other means) are left alone.
-	if sess := sessionFromContext(r); sess != nil && sess.CSRFToken != "" {
-		injectCSRFToken(data, sess.CSRFToken)
+	// Always set the key — even to "" when the session is missing the
+	// CSRF cookie (older session, lost cookie). nav.html embeds the
+	// value as a JS string literal (`window.SIEVE_CSRF = "{{...}}";`);
+	// leaving the key absent would produce invalid JS (`= ;`) and
+	// break every script on the page. The empty string is harmless:
+	// the form-submit handler skips injecting when SIEVE_CSRF is
+	// falsy, and the middleware fails closed at the next POST anyway.
+	var token string
+	if sess := sessionFromContext(r); sess != nil {
+		token = sess.CSRFToken
 	}
+	injectCSRFToken(data, token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.ExecuteTemplate(w, page, data); err != nil {
 		http.Error(w, fmt.Sprintf("render error: %v", err), http.StatusInternalServerError)
