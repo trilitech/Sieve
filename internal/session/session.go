@@ -21,6 +21,16 @@ import (
 // see that helper for the Lax-vs-Strict rationale.
 const CookieName = "sieve_session"
 
+// CSRFCookieName carries the plaintext CSRF token. Unlike the session
+// cookie this one is intentionally NOT HttpOnly: the page-side script
+// has to read it to inject `csrf_token` form fields into POST forms
+// and `X-CSRF-Token` headers into fetch calls. The plaintext is only
+// useful if the attacker already has the session cookie (the server
+// verifies token+session as a pair), so cookie-readability adds no
+// new surface. SameSite=Lax matches the session cookie so the OAuth
+// callback flow still receives both.
+const CSRFCookieName = "sieve_csrf"
+
 // DefaultIdleTimeout is the documented sliding-window expiry. Settings
 // can override via the session.idle_timeout_minutes key.
 const DefaultIdleTimeout = 8 * time.Hour
@@ -289,6 +299,35 @@ func NewCookie(plaintext string, secure bool) *http.Cookie {
 // (Max-Age=0). Used by the logout handler.
 func ClearCookie(secure bool) *http.Cookie {
 	c := NewCookie("", secure)
+	c.MaxAge = -1
+	return c
+}
+
+// NewCSRFCookie returns the http.Cookie that carries the plaintext CSRF
+// token to the browser so admin templates can echo it back into
+// state-changing requests. HttpOnly is deliberately false — the page-
+// side script reads this cookie to inject the `csrf_token` hidden input
+// into every form before submit and to set the `X-CSRF-Token` header on
+// fetch calls. SameSite=Lax matches the session cookie so the OAuth
+// callback flow still receives both.
+func NewCSRFCookie(plaintext string, secure bool) *http.Cookie {
+	return &http.Cookie{
+		Name:     CSRFCookieName,
+		Value:    plaintext,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+	}
+}
+
+// ClearCSRFCookie returns a deletion cookie for the plaintext CSRF
+// cookie. Used by /logout alongside ClearCookie() for the session.
+// Implementation note: Go's net/http maps MaxAge < 0 to a
+// "Max-Age=0" Set-Cookie attribute, which is the wire-level signal
+// browsers treat as immediate deletion. The Go field value isn't 0.
+func ClearCSRFCookie(secure bool) *http.Cookie {
+	c := NewCSRFCookie("", secure)
 	c.MaxAge = -1
 	return c
 }

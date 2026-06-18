@@ -36,6 +36,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -504,12 +505,67 @@ func (s *Server) adminAuthWrapper(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) render(w http.ResponseWriter, page string, data any) {
+// injectCSRFToken sets data["CSRFToken"] (for maps) or data.CSRFToken
+// (for structs that declare the field) when the value is currently
+// unset/zero. Used by render() to surface the token to nav.html.
+// Reflection is fine here — admin renders are not on a hot path. The
+// caller passes "" when no session is present; we still need to set
+// the key so the template renders a valid JS string literal rather
+// than the bare `;` that an absent map key produces inside
+// `{{.CSRFToken}}`.
+func injectCSRFToken(data any, token string) {
+	if m, ok := data.(map[string]any); ok {
+		if _, present := m["CSRFToken"]; !present {
+			m["CSRFToken"] = token
+		}
+		return
+	}
+	v := reflect.ValueOf(data)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		return
+	}
+	f := v.FieldByName("CSRFToken")
+	if !f.IsValid() || !f.CanSet() || f.Kind() != reflect.String {
+		return
+	}
+	if f.String() == "" && token != "" {
+		f.SetString(token)
+	}
+}
+
+func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, data any) {
 	t, ok := s.templates[page]
 	if !ok {
 		http.Error(w, "template not found", http.StatusInternalServerError)
 		return
 	}
+	// Inject the plaintext CSRF token into the template data so
+	// nav.html (included on every admin page) can expose it to the
+	// page script that injects `csrf_token` hidden inputs into every
+	// POST form on submit. Two shapes are supported:
+	//   - map[string]any: set m["CSRFToken"] when missing.
+	//   - struct (or *struct) with a settable CSRFToken string field:
+	//     set via reflection when zero. Typed view-models like
+	//     connectionEditData declare the field so the same nav.html
+	//     access works uniformly.
+	// Always set the key — even to "" when the session is missing the
+	// CSRF cookie (older session, lost cookie). nav.html writes the
+	// value as `window.SIEVE_CSRF = {{.CSRFToken}};` and relies on
+	// html/template's JS-context escaping to emit a valid quoted
+	// string (or `""` when the value is empty). Leaving the key
+	// absent from the data map would produce invalid JS (`= ;`) and
+	// break every script on the page. The empty-string case is
+	// harmless: the form-submit handler and fetch wrapper both skip
+	// injecting when SIEVE_CSRF is falsy, and the middleware fails
+	// closed at the next POST anyway.
+	var token string
+	if sess := sessionFromContext(r); sess != nil {
+		token = sess.CSRFToken
+	}
+	injectCSRFToken(data, token)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.ExecuteTemplate(w, page, data); err != nil {
 		http.Error(w, fmt.Sprintf("render error: %v", err), http.StatusInternalServerError)
@@ -659,7 +715,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		// flag and runtime behavior never diverge.
 		"SlackOAuthConfigured": s.slackOAuthIsConfigured(),
 	}
-	s.render(w, "connections", data)
+	s.render(w, r, "connections", data)
 }
 
 // pendingOAuth holds info for a connection being added via OAuth.
@@ -1205,7 +1261,7 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
 		"RoleNames": roleNames,
 		"Filter":    filter,
 	}
-	s.render(w, "tokens", data)
+	s.render(w, r, "tokens", data)
 }
 
 func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
@@ -1281,7 +1337,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		"PlaintextToken": result.PlaintextToken,
 		"CreatedToken":   result.Token,
 	}
-	s.render(w, "tokens", data)
+	s.render(w, r, "tokens", data)
 }
 
 func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {
@@ -1321,7 +1377,7 @@ func (s *Server) handleRoles(w http.ResponseWriter, r *http.Request) {
 		"Connections": conns,
 		"Policies":    pols,
 	}
-	s.render(w, "roles", data)
+	s.render(w, r, "roles", data)
 }
 
 func (s *Server) handleRoleCreate(w http.ResponseWriter, r *http.Request) {
@@ -1393,7 +1449,7 @@ func (s *Server) handleRoleEdit(w http.ResponseWriter, r *http.Request) {
 		"Connections": conns,
 		"Policies":    pols,
 	}
-	s.render(w, "role_edit", data)
+	s.render(w, r, "role_edit", data)
 }
 
 func (s *Server) handleRoleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -1474,7 +1530,7 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 		"Policies": pols,
 		"Scope":    scope,
 	}
-	s.render(w, "policies", data)
+	s.render(w, r, "policies", data)
 }
 
 func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
@@ -1605,7 +1661,7 @@ func (s *Server) handlePolicyEdit(w http.ResponseWriter, r *http.Request) {
 		"Policy": pol,
 		"Scope":  scope,
 	}
-	s.render(w, "policy_edit", data)
+	s.render(w, r, "policy_edit", data)
 }
 
 // inferPolicyScope guesses a policy's connector scope from the shape of its
@@ -1902,7 +1958,7 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 		"Approvals":  items,
 		"TokenNames": tokenNames,
 	}
-	s.render(w, "approvals", data)
+	s.render(w, r, "approvals", data)
 }
 
 // The historical rejectIfAgentToken helper has been removed. The
@@ -2030,7 +2086,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		"After":        r.URL.Query().Get("after"),
 		"Before":       r.URL.Query().Get("before"),
 	}
-	s.render(w, "audit", data)
+	s.render(w, r, "audit", data)
 }
 
 // --- Settings handlers ---
@@ -2107,7 +2163,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"RotationSuccess": rotationSuccess,
 		"RotationCount":   rotationCount,
 	}
-	s.render(w, "settings", data)
+	s.render(w, r, "settings", data)
 }
 
 func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
@@ -2522,7 +2578,7 @@ func (s *Server) handleDocsIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	idx.Breadcrumbs = []Breadcrumb{{Label: "Documentation"}}
-	s.render(w, "docs", map[string]any{
+	s.render(w, r, "docs", map[string]any{
 		"Active": "docs",
 		"Index":  idx,
 	})
@@ -2586,7 +2642,7 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request) {
 		{Label: title},
 	}
 
-	s.render(w, "docs", map[string]any{
+	s.render(w, r, "docs", map[string]any{
 		"Active": "docs",
 		"Index":  idx,
 	})
@@ -2610,7 +2666,7 @@ func (s *Server) handleDocsCategory(w http.ResponseWriter, r *http.Request) {
 		{Label: "Documentation", Href: "/docs"},
 		{Label: cat.Title},
 	}
-	s.render(w, "docs", map[string]any{
+	s.render(w, r, "docs", map[string]any{
 		"Active": "docs",
 		"Index":  idx,
 	})

@@ -158,6 +158,21 @@ func (s *Server) requireOperatorSession(next http.Handler) http.Handler {
 			}
 		}
 
+		// Surface the plaintext CSRF token from its cookie onto the
+		// session-in-context so handlers/templates can echo it into
+		// forms. Lookup() returns the session with CSRFToken empty
+		// (only the hash is in the DB); the plaintext lives in the
+		// CSRFCookieName cookie set at Issue time. Missing cookie is
+		// not fatal here — the cookie is independent of the session
+		// cookie and may legitimately be absent on older sessions
+		// issued before this code was deployed; templates render with
+		// an empty CSRFToken in that case and the next form submit
+		// will fail closed at the verify gate above. Operator just
+		// re-logs in.
+		if csrfCookie, err := r.Cookie(session.CSRFCookieName); err == nil && csrfCookie.Value != "" {
+			sess.CSRFToken = csrfCookie.Value
+		}
+
 		ctx := context.WithValue(r.Context(), sessionCtxKey{}, sess)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -307,6 +322,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	// so the cookie is still sent on plaintext loopback.
 	secure := r.TLS != nil
 	http.SetCookie(w, session.NewCookie(sess.Plaintext, secure))
+	http.SetCookie(w, session.NewCSRFCookie(sess.CSRFToken, secure))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -332,6 +348,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	secure := r.TLS != nil
 	http.SetCookie(w, session.ClearCookie(secure))
+	http.SetCookie(w, session.ClearCSRFCookie(secure))
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
@@ -420,6 +437,7 @@ func (s *Server) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 	s.logLoginAttempt(name, "setup.ok", ip)
 	secure := r.TLS != nil
 	http.SetCookie(w, session.NewCookie(sess.Plaintext, secure))
+	http.SetCookie(w, session.NewCSRFCookie(sess.CSRFToken, secure))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

@@ -168,7 +168,7 @@ func (s *Server) renderRotationError(w http.ResponseWriter, r *http.Request, sta
 	// machine.
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	s.render(w, "settings", data)
+	s.render(w, r, "settings", data)
 }
 
 // checkRotationOrigin verifies that the request's Origin header (or

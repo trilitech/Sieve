@@ -135,16 +135,28 @@ func TestLogin_HappyPath(t *testing.T) {
 		body := readAll(t, resp.Body)
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
-	// Session cookie set; redirect to /.
-	hasCookie := false
+	// Session cookie + sieve_csrf cookie set; redirect to /.
+	var sessionCookie, csrfCookie *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == session.CookieName {
-			hasCookie = true
-			break
+		switch c.Name {
+		case session.CookieName:
+			sessionCookie = c
+		case session.CSRFCookieName:
+			csrfCookie = c
 		}
 	}
-	if !hasCookie {
+	if sessionCookie == nil {
 		t.Error("login did not set session cookie")
+	}
+	if csrfCookie == nil {
+		t.Error("login did not set sieve_csrf cookie")
+	} else {
+		if csrfCookie.HttpOnly {
+			t.Error("sieve_csrf cookie must be non-HttpOnly (page script needs to read it)")
+		}
+		if csrfCookie.Value == "" {
+			t.Error("sieve_csrf cookie value must not be empty after a successful login")
+		}
 	}
 	if resp.Header.Get("Location") != "/" {
 		t.Errorf("Location = %q, want /", resp.Header.Get("Location"))
@@ -168,6 +180,9 @@ func TestLogin_WrongCredential(t *testing.T) {
 	for _, c := range resp.Cookies() {
 		if c.Name == session.CookieName {
 			t.Error("failed login must NOT set session cookie")
+		}
+		if c.Name == session.CSRFCookieName {
+			t.Error("failed login must NOT set sieve_csrf cookie")
 		}
 	}
 }
@@ -207,6 +222,29 @@ func TestLogout_DeletesCookieAndSession(t *testing.T) {
 	// Lookup on the old cookie should fail.
 	if _, err := env.Session.Lookup(cookie.Value); err == nil {
 		t.Error("logout did not delete the session row")
+	}
+	// Both the session cookie and the sieve_csrf cookie should carry
+	// a deletion directive (MaxAge<0 / empty value) so the browser
+	// drops them. Without clearing sieve_csrf, a subsequent login
+	// would race against the stale cookie still being sent up.
+	var sessionCleared, csrfCleared bool
+	for _, c := range resp.Cookies() {
+		switch c.Name {
+		case session.CookieName:
+			if c.MaxAge < 0 || c.Value == "" {
+				sessionCleared = true
+			}
+		case session.CSRFCookieName:
+			if c.MaxAge < 0 || c.Value == "" {
+				csrfCleared = true
+			}
+		}
+	}
+	if !sessionCleared {
+		t.Error("logout did not clear the session cookie")
+	}
+	if !csrfCleared {
+		t.Error("logout did not clear the sieve_csrf cookie")
 	}
 }
 
