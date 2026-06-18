@@ -556,7 +556,13 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 				}
 			} else if connType == "version_control" {
 				// "version_control" tab groups github + gitlab.
-				if cat == "github" || cat == "gitlab" {
+				// Match the immutable ConnectorType directly so an
+				// http_proxy that happens to carry config.category =
+				// "github" / "gitlab" (a legitimate generic-LLM /
+				// generic-proxy override) does NOT slip into the VCS
+				// filter. `cat` reflects the http_proxy override and
+				// would do that here; ConnectorType cannot be forged.
+				if c.ConnectorType == "github" || c.ConnectorType == "gitlab" {
 					conns = append(conns, c)
 				}
 			} else if cat == connType {

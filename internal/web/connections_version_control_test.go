@@ -36,23 +36,29 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 		return gitlabconn.Factory()(raw)
 	})
 
-	// Seed one connection per connector type. The mock connection
-	// stands in for "any other connector" — it must not appear in the
-	// version_control filter.
-	if err := env.Connections.Add("my-github", "github", "My GitHub", map[string]any{
-		"credentials": []any{map[string]any{
-			"id": "primary", "kind": "pat", "token": "ghp_x", "default": true,
-		}},
-	}); err != nil {
+	// Seed one connection per connector type. Config payloads are
+	// intentionally empty: the filter under test keys off
+	// ConnectorType + display name, not the connector's typed config
+	// schema, and a too-specific seed would tie the test to a
+	// schema that may evolve.
+	if err := env.Connections.Add("my-github", "github", "My GitHub", map[string]any{}); err != nil {
 		t.Fatalf("add github connection: %v", err)
 	}
-	if err := env.Connections.Add("my-gitlab", "gitlab", "My GitLab", map[string]any{
-		"token": "glpat-x",
-	}); err != nil {
+	if err := env.Connections.Add("my-gitlab", "gitlab", "My GitLab", map[string]any{}); err != nil {
 		t.Fatalf("add gitlab connection: %v", err)
 	}
 	if err := env.Connections.Add("my-mock", "mock", "My Mock", map[string]any{}); err != nil {
 		t.Fatalf("add mock connection: %v", err)
+	}
+	// Negative control: an http_proxy whose config.category is set to
+	// "github" must NOT appear under ?type=version_control. The filter
+	// keys off ConnectorType (immutable) rather than the per-connection
+	// category override, so this stays excluded.
+	if err := env.Connections.Add("fake-vcs-proxy", "http_proxy", "Fake VCS Proxy", map[string]any{
+		"target_url": "https://example.com",
+		"category":   "github",
+	}); err != nil {
+		t.Fatalf("add fake-vcs proxy: %v", err)
 	}
 
 	t.Run("version_control tab shows both catalog cards + both connections", func(t *testing.T) {
@@ -82,6 +88,12 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 		}
 		if strings.Contains(body, "My Mock") {
 			t.Errorf("version_control tab incorrectly includes non-VCS connection 'My Mock'")
+		}
+		// An http_proxy with config.category="github" must NOT slip
+		// into the version_control tab — the filter keys off the
+		// immutable ConnectorType, not the per-connection override.
+		if strings.Contains(body, "Fake VCS Proxy") {
+			t.Errorf("version_control tab incorrectly includes an http_proxy whose config.category is forged to 'github'")
 		}
 	})
 
