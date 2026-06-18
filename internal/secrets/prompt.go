@@ -24,11 +24,24 @@ const passphraseSourceFD3 = 3
 type PromptOptions struct {
 	// Confirm, when true, prompts twice and verifies the two entries match.
 	// First-run setup uses this; routine startup does not.
+	// Confirm=true implies RequireTTY=true (you can't "confirm" a value
+	// read from a static file or FD).
 	Confirm bool
 
 	// Prompt is the human-facing label printed before the read. Defaults
 	// to "Sieve passphrase: ".
 	Prompt string
+
+	// RequireTTY, when true, skips SIEVE_PASSPHRASE_FILE and FD 3 and
+	// reads only from the TTY. The CLI flows that capture a *new*
+	// passphrase (--setup, --rotate-passphrase's second prompt) set
+	// this. Without it, running --rotate-passphrase with the file
+	// source configured would re-read the same file twice (current
+	// and new), make rotation a no-op, and trip the
+	// "new identical to current" guard. Acquire errors out if stdin
+	// is not a TTY rather than falling back. Confirm=true implies
+	// RequireTTY=true.
+	RequireTTY bool
 }
 
 // IsStdinTerminal reports whether stdin is connected to a TTY. Centralized
@@ -42,24 +55,47 @@ func IsStdinTerminal() bool {
 }
 
 // Acquire reads a passphrase using the documented priority order:
-// 1. If stdin is a TTY → prompt with echo off (golang.org/x/term).
-// 2. Else if SIEVE_PASSPHRASE_FILE is set → read that file. If the path
-// starts with /run/secrets or is otherwise an ephemeral mount the
-// operator manages, the file is *not* deleted; it's the operator's
-// responsibility. Reading it once into memory is enough.
-// 3. Else if FD 3 is open → read until EOF (matches systemd LoadCredential).
+// 1. If SIEVE_PASSPHRASE_FILE is set → read that file. Takes precedence
+// over the TTY prompt so that operators who've wired up a credential
+// file (systemd LoadCredential=, container secret mount, etc.) aren't
+// re-prompted on every start. If the path starts with /run/secrets or
+// is otherwise an ephemeral mount the operator manages, the file is
+// *not* deleted; it's the operator's responsibility. Reading it once
+// into memory is enough.
+// 2. Else if FD 3 is open → read until EOF (matches systemd LoadCredential).
+// 3. Else if stdin is a TTY → prompt with echo off (golang.org/x/term).
 // 4. Else → return an error so startup fails loudly.
 // Environment variables (other than the file pointer) are deliberately
 // not supported — env leaks through /proc/<pid>/environ, ps, and crash
 // dumps. If you need to plumb a passphrase from CI, write it to a file
 // and point SIEVE_PASSPHRASE_FILE at it.
+// Note: opts.Confirm is only meaningful when the read happens on a TTY.
+// Confirm=true implies opts.RequireTTY=true (below), so when Confirm is
+// set Acquire never reaches the file or FD 3 branches.
+//
+// opts.RequireTTY (implied by opts.Confirm) forces the TTY path: file
+// and FD 3 are skipped and Acquire errors out if stdin is not a TTY.
+// Callers capturing a *new* passphrase (--setup, --rotate-passphrase's
+// second prompt) must set this; otherwise a configured file source
+// would silently feed both the "current" and "new" reads in rotation,
+// making the operation a no-op. See cmd/sieve/main.go for the wiring.
 func Acquire(opts PromptOptions) ([]byte, error) {
 	prompt := opts.Prompt
 	if prompt == "" {
 		prompt = "Sieve passphrase: "
 	}
 
-	if IsStdinTerminal() {
+	if opts.RequireTTY || opts.Confirm {
+		if !IsStdinTerminal() {
+			return nil, errors.New("this passphrase prompt requires a TTY: " +
+				"stdin is not interactive (both --setup and " +
+				"--rotate-passphrase's new-passphrase prompt only accept a " +
+				"typed value). Re-run from an interactive shell. " +
+				"Neither " + PassphraseFileEnv + " nor FD 3 influences this " +
+				"branch — even when configured, those sources are skipped " +
+				"here so that an unattended file source cannot silently " +
+				"satisfy a confirmation or rotation new-passphrase prompt.")
+		}
 		return acquireTTY(prompt, opts.Confirm)
 	}
 
@@ -71,8 +107,12 @@ func Acquire(opts PromptOptions) ([]byte, error) {
 		return acquireFD3()
 	}
 
-	return nil, errors.New("no passphrase source available: stdin is not a TTY, " +
-		PassphraseFileEnv + " is unset, and FD 3 is closed")
+	if IsStdinTerminal() {
+		return acquireTTY(prompt, opts.Confirm)
+	}
+
+	return nil, errors.New("no passphrase source available: " +
+		PassphraseFileEnv + " is unset, FD 3 is closed, and stdin is not a TTY")
 }
 
 func acquireTTY(prompt string, confirm bool) ([]byte, error) {

@@ -3,8 +3,11 @@
 // - 19816 (web) — admin UI for human operators
 // - 19817 (api) — agent-facing API+MCP, combined behind one listener
 // Passphrase intake follows the strict priority documented in
-// docs/credential-encryption.md: TTY prompt → SIEVE_PASSPHRASE_FILE →
-// FD 3 (systemd LoadCredential=). Never an environment variable.
+// docs/credential-encryption.md: SIEVE_PASSPHRASE_FILE → FD 3 (systemd
+// LoadCredential=) → TTY prompt. Never an environment variable
+// (other than the file pointer). The file/FD3 sources take precedence
+// over the TTY prompt so operators with wired-up credential plumbing
+// aren't re-prompted on every start.
 // Connection configs are envelope-encrypted at rest. The keyring is set
 // up on first run (--setup) and loaded on every start thereafter.
 // Rotation:
@@ -181,6 +184,13 @@ func runRotate(dbPath string) int {
 	defer db.Close()
 
 	// Acquire current passphrase. Confirm=false: only one prompt.
+	// The current passphrase may come from SIEVE_PASSPHRASE_FILE or
+	// FD 3 — operators rotating an unattended deployment shouldn't
+	// have to type their existing passphrase by hand. The *new*
+	// passphrase below sets Confirm=true, which implies
+	// RequireTTY=true inside secrets.Acquire, so this current-reads-
+	// from-file branch can't be abused to silently rotate a file
+	// source onto itself.
 	current, err := secrets.Acquire(secrets.PromptOptions{
 		Confirm: false,
 		Prompt:  "Current passphrase: ",
@@ -191,7 +201,11 @@ func runRotate(dbPath string) int {
 	}
 	defer zero(current)
 
-	// Acquire new passphrase. Confirm=true: prompt twice and verify match.
+	// Acquire new passphrase. Confirm=true implies RequireTTY=true:
+	// confirming a value against a static file source is meaningless,
+	// and silently reading the same file twice ("current" then "new")
+	// would make rotation a no-op and trip the
+	// "new identical to current" guard. Force the TTY here.
 	newPP, err := secrets.Acquire(secrets.PromptOptions{
 		Confirm: true,
 		Prompt:  "New passphrase: ",
