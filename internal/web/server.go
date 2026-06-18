@@ -1491,14 +1491,15 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 
 	// "version_control" is a synthetic browse-only scope used in the
 	// sidebar grouping; it isn't a real connector scope. The
-	// /policies?scope=version_control filter pulls policies whose
-	// pScope is github or gitlab (plus unscoped legacies). Persisting
-	// scope=version_control would orphan the policy from both the
-	// github and gitlab tabs while only matching the version_control
-	// tab — almost certainly an accident, so refuse it loudly. The
-	// policies.html template hides the create form under this scope;
-	// the server-side reject is defence-in-depth against a hand-crafted
-	// POST or an out-of-date browser tab.
+	// /policies?scope=version_control list-filter (handlePolicies)
+	// pulls policies whose stored scope is github or gitlab (plus
+	// unscoped legacies). Persisting scope=version_control on a new
+	// policy would orphan it from both the github and gitlab tabs
+	// while only matching the synthetic group — almost certainly an
+	// accident, so refuse it loudly. The policies.html template
+	// hides the create form under this scope; this server-side
+	// reject is defence-in-depth against a hand-crafted POST or an
+	// out-of-date browser tab.
 	if sc, _ := policyConfig["scope"].(string); sc == "version_control" {
 		http.Error(w, "scope \"version_control\" is a browse-only filter; pick github or gitlab for a real policy", http.StatusBadRequest)
 		return

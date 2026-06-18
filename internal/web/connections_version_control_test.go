@@ -56,26 +56,27 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 	}
 
 	t.Run("version_control tab shows both catalog cards + both connections", func(t *testing.T) {
-		rec := getRequest(handler, env,"/connections?type=version_control")
+		rec := getRequest(handler, env, "/connections?type=version_control")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
 		}
 		body := rec.Body.String()
-		// Catalog cards (Description text from each connector's Meta()).
+		// Catalog cards: the page renders each connector card by
+		// emitting both the connector's Meta().Name (in an h4) and its
+		// Meta().Description (in a sibling p). Pin both Name strings —
+		// the Name is the load-bearing label and is stable text.
+		// "GitLab" alone is too soft a probe (it also appears in the
+		// connection-row display name), so we also pin a Description
+		// substring per connector so a regression that removed the
+		// catalog cards while leaving the connection list intact would
+		// fail.
 		for _, want := range []string{
-			"My GitHub",                // existing connection name
-			"My GitLab",                // existing connection name
-			"PAT or GitHub App",        // GitHub meta Description substring
-			"personal-access-token",    // GitLab meta Description substring (case-sensitive — sanity).
+			"My GitHub",       // existing connection display name
+			"My GitLab",       // existing connection display name
+			"PAT or GitHub App", // GitHub Meta() Description substring
+			"merge requests",    // GitLab Meta() Description substring
 		} {
 			if !strings.Contains(body, want) {
-				// "personal-access-token" is a fallback probe — the
-				// gitlab Meta() Description may evolve; treat just the
-				// "GitLab" name + the existing connection name as the
-				// hard contract.
-				if want == "personal-access-token" || want == "PAT or GitHub App" {
-					continue
-				}
 				t.Errorf("version_control tab missing %q", want)
 			}
 		}
