@@ -14,6 +14,7 @@ import (
 	"github.com/trilitech/Sieve/internal/connector"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
 	gitlabconn "github.com/trilitech/Sieve/internal/connectors/gitlab"
+	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 )
 
 // TestConnectionsPage_VersionControlTab asserts:
@@ -35,6 +36,8 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 	env.Registry.Register(gitlabconn.Meta(), func(raw map[string]any) (connector.Connector, error) {
 		return gitlabconn.Factory()(raw)
 	})
+	// http_proxy is needed for the "forged category" negative control below.
+	env.Registry.Register(httpproxy.Meta, httpproxy.Factory)
 
 	// Seed one connection per connector type. Config payloads are
 	// intentionally empty: the filter under test keys off
