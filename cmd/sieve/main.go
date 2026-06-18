@@ -184,6 +184,11 @@ func runRotate(dbPath string) int {
 	defer db.Close()
 
 	// Acquire current passphrase. Confirm=false: only one prompt.
+	// The current passphrase may come from SIEVE_PASSPHRASE_FILE or
+	// FD 3 — operators rotating an unattended deployment shouldn't
+	// have to type their existing passphrase by hand. The *new*
+	// passphrase below has RequireTTY=true so this branch can't be
+	// abused to silently rotate a file source onto itself.
 	current, err := secrets.Acquire(secrets.PromptOptions{
 		Confirm: false,
 		Prompt:  "Current passphrase: ",
@@ -194,7 +199,11 @@ func runRotate(dbPath string) int {
 	}
 	defer zero(current)
 
-	// Acquire new passphrase. Confirm=true: prompt twice and verify match.
+	// Acquire new passphrase. Confirm=true implies RequireTTY=true:
+	// confirming a value against a static file source is meaningless,
+	// and silently reading the same file twice ("current" then "new")
+	// would make rotation a no-op and trip the
+	// "new identical to current" guard. Force the TTY here.
 	newPP, err := secrets.Acquire(secrets.PromptOptions{
 		Confirm: true,
 		Prompt:  "New passphrase: ",

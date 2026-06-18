@@ -24,11 +24,24 @@ const passphraseSourceFD3 = 3
 type PromptOptions struct {
 	// Confirm, when true, prompts twice and verifies the two entries match.
 	// First-run setup uses this; routine startup does not.
+	// Confirm=true implies RequireTTY=true (you can't "confirm" a value
+	// read from a static file or FD).
 	Confirm bool
 
 	// Prompt is the human-facing label printed before the read. Defaults
 	// to "Sieve passphrase: ".
 	Prompt string
+
+	// RequireTTY, when true, skips SIEVE_PASSPHRASE_FILE and FD 3 and
+	// reads only from the TTY. The CLI flows that capture a *new*
+	// passphrase (--setup, --rotate-passphrase's second prompt) set
+	// this. Without it, running --rotate-passphrase with the file
+	// source configured would re-read the same file twice (current
+	// and new), make rotation a no-op, and trip the
+	// "new identical to current" guard. Acquire errors out if stdin
+	// is not a TTY rather than falling back. Confirm=true implies
+	// RequireTTY=true.
+	RequireTTY bool
 }
 
 // IsStdinTerminal reports whether stdin is connected to a TTY. Centralized
@@ -58,10 +71,28 @@ func IsStdinTerminal() bool {
 // and point SIEVE_PASSPHRASE_FILE at it.
 // Note: when the passphrase comes from a file or FD 3, opts.Confirm is
 // ignored — there's nothing to confirm against a static source.
+//
+// opts.RequireTTY (implied by opts.Confirm) forces the TTY path: file
+// and FD 3 are skipped and Acquire errors out if stdin is not a TTY.
+// Callers capturing a *new* passphrase (--setup, --rotate-passphrase's
+// second prompt) must set this; otherwise a configured file source
+// would silently feed both the "current" and "new" reads in rotation,
+// making the operation a no-op. See cmd/sieve/main.go for the wiring.
 func Acquire(opts PromptOptions) ([]byte, error) {
 	prompt := opts.Prompt
 	if prompt == "" {
 		prompt = "Sieve passphrase: "
+	}
+
+	if opts.RequireTTY || opts.Confirm {
+		if !IsStdinTerminal() {
+			return nil, errors.New("this passphrase prompt requires a TTY " +
+				"(running --setup or --rotate-passphrase under a piped " +
+				"stdin or with " + PassphraseFileEnv + " set is not " +
+				"supported — unset the env var and re-run from an " +
+				"interactive shell)")
+		}
+		return acquireTTY(prompt, opts.Confirm)
 	}
 
 	if path := os.Getenv(PassphraseFileEnv); path != "" {
