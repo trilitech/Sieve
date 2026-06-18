@@ -187,8 +187,10 @@ func runRotate(dbPath string) int {
 	// The current passphrase may come from SIEVE_PASSPHRASE_FILE or
 	// FD 3 — operators rotating an unattended deployment shouldn't
 	// have to type their existing passphrase by hand. The *new*
-	// passphrase below has RequireTTY=true so this branch can't be
-	// abused to silently rotate a file source onto itself.
+	// passphrase below sets Confirm=true, which implies
+	// RequireTTY=true inside secrets.Acquire, so this current-reads-
+	// from-file branch can't be abused to silently rotate a file
+	// source onto itself.
 	current, err := secrets.Acquire(secrets.PromptOptions{
 		Confirm: false,
 		Prompt:  "Current passphrase: ",

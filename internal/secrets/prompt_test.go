@@ -41,9 +41,9 @@ func TestAcquire_FileSource_WinsOverFD3(t *testing.T) {
 
 	t.Setenv(secrets.PassphraseFileEnv, path)
 
-	// Also open FD 3 so both sources are available.
-	fd3 := openFD3Pipe(t, "from-fd3-source\n")
-	defer fd3.Close()
+	// Also open FD 3 so both sources are available. openFD3Pipe
+	// registers its own t.Cleanup; no explicit Close needed.
+	openFD3Pipe(t, "from-fd3-source\n")
 
 	got, err := secrets.Acquire(secrets.PromptOptions{})
 	if err != nil {
@@ -61,8 +61,8 @@ func TestAcquire_FD3_UsedWhenFileEnvUnset(t *testing.T) {
 	t.Setenv(secrets.PassphraseFileEnv, "")
 	os.Unsetenv(secrets.PassphraseFileEnv)
 
-	fd3 := openFD3Pipe(t, "from-fd3\n")
-	defer fd3.Close()
+	// openFD3Pipe registers its own t.Cleanup; no explicit Close needed.
+	openFD3Pipe(t, "from-fd3\n")
 
 	got, err := secrets.Acquire(secrets.PromptOptions{})
 	if err != nil {
@@ -158,10 +158,11 @@ func TestAcquire_FilePathEmpty_FailsLoudly(t *testing.T) {
 // --- test helpers ---
 
 // openFD3Pipe creates a pipe, dups its read end onto file descriptor 3
-// (the slot Acquire probes), writes `content` into the write end, and
-// returns the read end so the test can close it via t.Cleanup. The
-// caller does not need to close it explicitly.
-func openFD3Pipe(t *testing.T, content string) *os.File {
+// (the slot Acquire probes), and writes `content` into the write end.
+// All cleanup (closing the read end, restoring any previous FD 3) is
+// registered via t.Cleanup, so the caller does not need to close
+// anything.
+func openFD3Pipe(t *testing.T, content string) {
 	t.Helper()
 	rEnd, wEnd, err := os.Pipe()
 	if err != nil {
@@ -191,7 +192,6 @@ func openFD3Pipe(t *testing.T, content string) *os.File {
 		}
 		_ = rEnd.Close()
 	})
-	return rEnd
 }
 
 // closeFD3IfOpen makes sure FD 3 is closed before a test that expects
