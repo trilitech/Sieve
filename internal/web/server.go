@@ -552,12 +552,15 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 	//     connectionEditData declare the field so the same nav.html
 	//     access works uniformly.
 	// Always set the key — even to "" when the session is missing the
-	// CSRF cookie (older session, lost cookie). nav.html embeds the
-	// value as a JS string literal (`window.SIEVE_CSRF = "{{...}}";`);
-	// leaving the key absent would produce invalid JS (`= ;`) and
-	// break every script on the page. The empty string is harmless:
-	// the form-submit handler skips injecting when SIEVE_CSRF is
-	// falsy, and the middleware fails closed at the next POST anyway.
+	// CSRF cookie (older session, lost cookie). nav.html writes the
+	// value as `window.SIEVE_CSRF = {{.CSRFToken}};` and relies on
+	// html/template's JS-context escaping to emit a valid quoted
+	// string (or `""` when the value is empty). Leaving the key
+	// absent from the data map would produce invalid JS (`= ;`) and
+	// break every script on the page. The empty-string case is
+	// harmless: the form-submit handler and fetch wrapper both skip
+	// injecting when SIEVE_CSRF is falsy, and the middleware fails
+	// closed at the next POST anyway.
 	var token string
 	if sess := sessionFromContext(r); sess != nil {
 		token = sess.CSRFToken

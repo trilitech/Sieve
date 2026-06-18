@@ -245,6 +245,46 @@ document.addEventListener("submit", function(e) {
   form.appendChild(input);
 }, true);
 
+// fetch() wrapper. Admin pages also drive POST requests through
+// fetch() (e.g. /api/generate-script, /api/save-script), and those
+// don't go through the form-submit path above. Intercept window.fetch
+// and inject the X-CSRF-Token header on every same-origin
+// state-changing request. Idempotent: if a caller already set
+// X-CSRF-Token we leave it alone. Cross-origin requests are left
+// untouched so the token never leaks off-site.
+(function() {
+  if (typeof window.fetch !== "function") return;
+  var origFetch = window.fetch.bind(window);
+  window.fetch = function(input, init) {
+    init = init || {};
+    var method = (init.method || (input && input.method) || "GET").toUpperCase();
+    // Skip non-state-changing methods.
+    if (method !== "POST" && method !== "PUT" && method !== "PATCH" && method !== "DELETE") {
+      return origFetch(input, init);
+    }
+    var token = window.SIEVE_CSRF || "";
+    if (!token) return origFetch(input, init);
+    // Same-origin gate: resolve the request URL against the current
+    // document and refuse to add the token to cross-origin requests.
+    var urlStr = (typeof input === "string") ? input : (input && input.url) || "";
+    try {
+      var resolved = new URL(urlStr, window.location.href);
+      if (resolved.origin !== window.location.origin) return origFetch(input, init);
+    } catch (err) {
+      return origFetch(input, init);
+    }
+    // Build a Headers object so case-insensitive lookup works, and
+    // copy any existing init.headers into it before checking for an
+    // operator-supplied X-CSRF-Token (which we leave alone).
+    var headers = new Headers(init.headers || (input && input.headers) || {});
+    if (!headers.has("X-CSRF-Token")) {
+      headers.set("X-CSRF-Token", token);
+    }
+    init.headers = headers;
+    return origFetch(input, init);
+  };
+})();
+
 function toggleSub(id) {
   var el = document.getElementById(id);
   var chevron = document.getElementById(id + '-chevron');
