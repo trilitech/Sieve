@@ -554,6 +554,17 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 				if cat == "http_proxy" || c.ConnectorType == "mcp_proxy" {
 					conns = append(conns, c)
 				}
+			} else if connType == "version_control" {
+				// "version_control" tab groups github + gitlab.
+				// Match the immutable ConnectorType directly so an
+				// http_proxy that happens to carry config.category =
+				// "github" / "gitlab" (a legitimate generic-LLM /
+				// generic-proxy override) does NOT slip into the VCS
+				// filter. `cat` reflects the http_proxy override and
+				// would do that here; ConnectorType cannot be forged.
+				if c.ConnectorType == "github" || c.ConnectorType == "gitlab" {
+					conns = append(conns, c)
+				}
 			} else if cat == connType {
 				conns = append(conns, c)
 			}
@@ -572,6 +583,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 				// "proxy" tab shows both http_proxy and mcp_proxy connectors
 				if connType == "proxy" {
 					match = m.Type == "http_proxy" || m.Type == "mcp_proxy"
+				}
+				// "version_control" tab shows both github and gitlab connectors
+				if connType == "version_control" {
+					match = m.Type == "github" || m.Type == "gitlab"
 				}
 				if match {
 					filtered[category] = append(filtered[category], m)
@@ -1434,10 +1449,22 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 
 	// Filter policies by scope. A policy's scope is stored in its config.
 	// Policies without a scope (legacy/presets) show under all tabs.
+	// The synthetic "version_control" scope is strictly defined as
+	// github + gitlab + unscoped. A policy literally stamped with
+	// scope=version_control would be nonsense (creation is blocked in
+	// handlePolicyCreate); excluding it here keeps the filter honest
+	// against any hand-crafted DB row that slipped through, and keeps
+	// the handlePolicyCreate comment accurate.
 	var pols []policies.Policy
 	for _, p := range allPols {
 		pScope, _ := p.PolicyConfig["scope"].(string)
-		if scope == "" || pScope == "" || pScope == scope {
+		var match bool
+		if scope == "version_control" {
+			match = pScope == "" || pScope == "github" || pScope == "gitlab"
+		} else {
+			match = scope == "" || pScope == "" || pScope == scope
+		}
+		if match {
 			pols = append(pols, p)
 		}
 	}
@@ -1473,6 +1500,22 @@ func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		policyConfig = make(map[string]any)
+	}
+
+	// "version_control" is a synthetic browse-only scope used in the
+	// sidebar grouping; it isn't a real connector scope. The
+	// /policies?scope=version_control list-filter (handlePolicies)
+	// pulls policies whose stored scope is github or gitlab (plus
+	// unscoped legacies). Persisting scope=version_control on a new
+	// policy would orphan it from both the github and gitlab tabs
+	// while only matching the synthetic group — almost certainly an
+	// accident, so refuse it loudly. The policies.html template
+	// hides the create form under this scope; this server-side
+	// reject is defence-in-depth against a hand-crafted POST or an
+	// out-of-date browser tab.
+	if sc, _ := policyConfig["scope"].(string); sc == "version_control" {
+		http.Error(w, "scope \"version_control\" is a browse-only filter; pick github or gitlab for a real policy", http.StatusBadRequest)
+		return
 	}
 
 	// Validate the policy rules against known operations.

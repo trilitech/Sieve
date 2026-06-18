@@ -301,6 +301,69 @@
                             <label class="flex items-center gap-1.5 cursor-not-allowed opacity-60"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="search_messages" disabled><span class="text-xs text-slate-400">search_messages</span></label>
                           </div>
                         </div>
+                        {{else if eq .Scope "github"}}
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_list_repos"><span class="text-xs text-slate-300">github_list_repos</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_get_file"><span class="text-xs text-slate-300">github_get_file</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_list_issues"><span class="text-xs text-slate-300">github_list_issues</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_list_prs"><span class="text-xs text-slate-300">github_list_prs</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_get_pr"><span class="text-xs text-slate-300">github_get_pr</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_search_code"><span class="text-xs text-slate-300">github_search_code</span></label>
+                          </div>
+                        </div>
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_put_file"><span class="text-xs text-slate-300">github_put_file</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_create_issue"><span class="text-xs text-slate-300">github_create_issue</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_comment_issue"><span class="text-xs text-slate-300">github_comment_issue</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_create_pr"><span class="text-xs text-slate-300">github_create_pr</span></label>
+                          </div>
+                        </div>
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Escape hatch <span class="text-slate-600 font-normal">(any GitHub REST path)</span></p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="github_request"><span class="text-xs text-slate-300">github_request</span></label>
+                          </div>
+                        </div>
+                        {{else if eq .Scope "gitlab"}}
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Read</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_list_projects"><span class="text-xs text-slate-300">gitlab_list_projects</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_get_file"><span class="text-xs text-slate-300">gitlab_get_file</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_list_issues"><span class="text-xs text-slate-300">gitlab_list_issues</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_list_mrs"><span class="text-xs text-slate-300">gitlab_list_mrs</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_get_mr"><span class="text-xs text-slate-300">gitlab_get_mr</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_search_blobs"><span class="text-xs text-slate-300">gitlab_search_blobs</span></label>
+                          </div>
+                        </div>
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Write</p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_put_file"><span class="text-xs text-slate-300">gitlab_put_file</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_create_issue"><span class="text-xs text-slate-300">gitlab_create_issue</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_comment_issue"><span class="text-xs text-slate-300">gitlab_comment_issue</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_create_mr"><span class="text-xs text-slate-300">gitlab_create_mr</span></label>
+                          </div>
+                        </div>
+                        <div>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Escape hatch <span class="text-slate-600 font-normal">(any GitLab REST path)</span></p>
+                          <div class="grid grid-cols-2 gap-1.5">
+                            <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="gitlab_request"><span class="text-xs text-slate-300">gitlab_request</span></label>
+                          </div>
+                        </div>
+                        {{else if eq .Scope "version_control"}}
+                        <div class="rounded-lg bg-slate-700/30 border border-slate-600 px-3 py-2.5">
+                          <p class="text-xs font-semibold text-slate-200 mb-1">Pick a connector to write rules</p>
+                          <p class="text-xs text-slate-400 leading-relaxed mb-2">&ldquo;Version Control&rdquo; is a browse filter that lists GitHub and GitLab policies together. Each connector exposes a different operation namespace, so rule authoring happens per-connector:</p>
+                          <div class="flex gap-2">
+                            <a href="/policies?scope=github" class="inline-flex items-center rounded-md bg-slate-700 px-2.5 py-1 text-xs text-slate-200 hover:bg-slate-600">Author for GitHub →</a>
+                            <a href="/policies?scope=gitlab" class="inline-flex items-center rounded-md bg-slate-700 px-2.5 py-1 text-xs text-slate-200 hover:bg-slate-600">Author for GitLab →</a>
+                          </div>
+                        </div>
                         {{else}}
                         <div class="rounded-lg bg-amber-500/5 border border-amber-500/20 px-3 py-2.5">
                           <p class="text-xs font-semibold text-amber-400 mb-1">No operations picker for scope &ldquo;{{.Scope}}&rdquo;</p>

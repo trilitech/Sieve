@@ -9,6 +9,13 @@
       </div>
       <span class="text-xl font-bold text-white tracking-tight">Sieve</span>
     </a>
+    <button type="button" onclick="openCmdK()" class="mt-4 w-full flex items-center justify-between px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 hover:border-slate-500 text-xs text-slate-400 transition-colors" title="Open command palette">
+      <span class="flex items-center gap-2">
+        <svg class="w-3.5 h-3.5" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        Jump to…
+      </span>
+      <kbd class="text-[10px] text-slate-500 border border-slate-600 rounded px-1.5 py-0.5 font-mono"><span id="cmdk-mod">Ctrl</span>+K</kbd>
+    </button>
   </div>
   <div class="flex-1 py-4 overflow-y-auto">
     <ul class="space-y-1 px-3">
@@ -28,8 +35,23 @@
           <li><a href="/connections?type=google" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-google"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Google</a></li>
           <li><a href="/connections?type=cloud" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-cloud"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Cloud</a></li>
           <li><a href="/connections?type=llm" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-llm"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">LLM API</a></li>
-          <li><a href="/connections?type=proxy" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Proxy (HTTP &amp; MCP)</a></li>
-          <li><a href="/connections?type=github" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-github"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitHub</a></li>
+          <li><a href="/connections?type=http_proxy" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-http_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">HTTP Proxy</a></li>
+          <li><a href="/connections?type=mcp_proxy" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-mcp_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">MCP Proxy</a></li>
+          <!-- Version Control (collapsible sub-group: GitHub + GitLab).
+               Link + toggle are sibling elements so we don't nest an <a>
+               inside a <button> (invalid interactive-in-interactive HTML). -->
+          <li>
+            <div class="flex items-stretch rounded-lg transition-colors {{if or (eq .Active "connections-version_control") (eq .Active "connections-github") (eq .Active "connections-gitlab")}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">
+              <a href="/connections?type=version_control" class="flex-1 px-3 py-1 text-xs text-left">Version Control</a>
+              <button type="button" onclick="toggleSub('conn-vcs-sub')" aria-label="Toggle Version Control sub-items" aria-controls="conn-vcs-sub" aria-expanded="false" class="px-2 py-1 flex items-center">
+                <svg id="conn-vcs-sub-chevron" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+              </button>
+            </div>
+            <ul id="conn-vcs-sub" class="ml-3 space-y-0.5 hidden">
+              <li><a href="/connections?type=github" class="block px-3 py-0.5 rounded-lg text-xs transition-colors {{if eq .Active "connections-github"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitHub</a></li>
+              <li><a href="/connections?type=gitlab" class="block px-3 py-0.5 rounded-lg text-xs transition-colors {{if eq .Active "connections-gitlab"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitLab</a></li>
+            </ul>
+          </li>
           <li><a href="/connections?type=slack" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-slack"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Slack</a></li>
           <li class="pt-1.5 mt-1.5 border-t border-slate-700/50">
             <span class="block px-3 py-0.5 text-[10px] text-slate-600 uppercase tracking-wider">Coming Soon</span>
@@ -114,6 +136,21 @@
           <li><a href="/policies?scope=llm" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-llm"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">LLM API</a></li>
           <li><a href="/policies?scope=http_proxy" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-http_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">HTTP Proxy</a></li>
           <li><a href="/policies?scope=mcp_proxy" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-mcp_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">MCP Proxy</a></li>
+          <!-- Version Control (collapsible sub-group: GitHub + GitLab).
+               Link + toggle are sibling elements so we don't nest an <a>
+               inside a <button> (invalid interactive-in-interactive HTML). -->
+          <li>
+            <div class="flex items-stretch rounded-lg transition-colors {{if or (eq .Active "policies-version_control") (eq .Active "policies-github") (eq .Active "policies-gitlab")}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">
+              <a href="/policies?scope=version_control" class="flex-1 px-3 py-1.5 text-xs text-left">Version Control</a>
+              <button type="button" onclick="toggleSub('policy-vcs-sub')" aria-label="Toggle Version Control sub-items" aria-controls="policy-vcs-sub" aria-expanded="false" class="px-2 py-1.5 flex items-center">
+                <svg id="policy-vcs-sub-chevron" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+              </button>
+            </div>
+            <ul id="policy-vcs-sub" class="ml-3 space-y-0.5 hidden">
+              <li><a href="/policies?scope=github" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-github"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitHub</a></li>
+              <li><a href="/policies?scope=gitlab" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-gitlab"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitLab</a></li>
+            </ul>
+          </li>
           <li><a href="/policies?scope=slack" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-slack"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Slack</a></li>
         </ul>
       </li>
@@ -164,12 +201,22 @@
 function toggleSub(id) {
   var el = document.getElementById(id);
   var chevron = document.getElementById(id + '-chevron');
-  if (el.classList.contains('hidden')) {
+  var nowOpen = el.classList.contains('hidden');
+  if (nowOpen) {
     el.classList.remove('hidden');
     if (chevron) chevron.style.transform = 'rotate(180deg)';
   } else {
     el.classList.add('hidden');
     if (chevron) chevron.style.transform = '';
+  }
+  // Keep the disclosure button's aria-expanded in sync with the
+  // submenu's visibility so screen-reader announcements match what's
+  // on screen. Only buttons that declared aria-controls={id} on the
+  // surrounding markup are updated; older toggles that haven't been
+  // migrated remain a no-op here.
+  var btns = document.querySelectorAll('button[aria-controls="' + id + '"]');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
   }
 }
 
@@ -178,6 +225,9 @@ function toggleSub(id) {
   var active = "{{.Active}}";
   if (active.startsWith("connections-")) {
     toggleSub('conn-sub');
+    if (active === "connections-github" || active === "connections-gitlab" || active === "connections-version_control") {
+      toggleSub('conn-vcs-sub');
+    }
   }
   if (active.startsWith("policies-")) {
     toggleSub('policy-sub');
@@ -190,7 +240,274 @@ function toggleSub(id) {
         toggleSub('aws-sub');
       }
     }
+    if (active === "policies-github" || active === "policies-gitlab" || active === "policies-version_control") {
+      toggleSub('policy-vcs-sub');
+    }
   }
+})();
+</script>
+
+<!-- Command palette (Ctrl/Cmd + K). The outer div is the backdrop; the
+     inner div carries the dialog semantics so assistive tech announces
+     the modal correctly. -->
+<div id="cmdk-overlay" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" onclick="cmdkOverlayClick(event)">
+  <div role="dialog" aria-modal="true" aria-labelledby="cmdk-title" class="max-w-xl mx-auto mt-32 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+    <h2 id="cmdk-title" class="sr-only">Jump to page</h2>
+    <div class="border-b border-slate-700 px-4 py-3 flex items-center gap-3">
+      <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <input id="cmdk-input" type="text" placeholder="Jump to a page or sub-section…" aria-label="Search for a page" aria-controls="cmdk-results" class="flex-1 bg-transparent text-white text-sm focus:outline-none placeholder-slate-500" autocomplete="off" spellcheck="false" />
+      <kbd class="text-[10px] text-slate-500 border border-slate-600 rounded px-1.5 py-0.5 font-mono">ESC</kbd>
+    </div>
+    <ul id="cmdk-results" role="listbox" aria-label="Suggested pages" class="max-h-80 overflow-y-auto py-2"></ul>
+    <div class="border-t border-slate-700 px-4 py-2 text-[10px] text-slate-500 flex items-center gap-4">
+      <span><kbd class="border border-slate-600 rounded px-1 font-mono">↑</kbd><kbd class="border border-slate-600 rounded px-1 font-mono ml-0.5">↓</kbd> navigate</span>
+      <span><kbd class="border border-slate-600 rounded px-1 font-mono">↵</kbd> open</span>
+      <span><kbd class="border border-slate-600 rounded px-1 font-mono">esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// Static index of navigable destinations. Keep in sync with the sidebar above.
+// keywords boost matches for common aliases / abbreviations.
+var CMDK_ITEMS = [
+  // Top-level pages
+  {label: "Connections",              href: "/connections",                       keywords: "services credentials"},
+  {label: "Roles",                    href: "/roles",                             keywords: "bindings permissions"},
+  {label: "Tokens",                   href: "/tokens",                            keywords: "agents bearer"},
+  {label: "Policies",                 href: "/policies",                          keywords: "rules"},
+  {label: "Approvals",                href: "/approvals",                         keywords: "pending"},
+  {label: "Audit Log",                href: "/audit",                             keywords: "history events"},
+  {label: "Settings",                 href: "/settings",                          keywords: "passphrase rotation llm"},
+  {label: "Documentation",            href: "/docs",                              keywords: "help guide"},
+  // Connections sub-tabs
+  {label: "Connections / Google",          href: "/connections?type=google",          keywords: "gmail drive calendar oauth"},
+  {label: "Connections / Cloud",           href: "/connections?type=cloud",           keywords: "aws hyperstack"},
+  {label: "Connections / LLM API",         href: "/connections?type=llm",             keywords: "anthropic openai gemini bedrock"},
+  {label: "Connections / HTTP Proxy",      href: "/connections?type=http_proxy",      keywords: "rest"},
+  {label: "Connections / MCP Proxy",       href: "/connections?type=mcp_proxy",       keywords: "mcp"},
+  {label: "Connections / Version Control", href: "/connections?type=version_control", keywords: "git github gitlab vcs"},
+  {label: "Connections / GitHub",          href: "/connections?type=github",          keywords: "git vcs pat app"},
+  {label: "Connections / GitLab",          href: "/connections?type=gitlab",          keywords: "git vcs"},
+  {label: "Connections / Slack",           href: "/connections?type=slack",           keywords: "chat messaging"},
+  // Policies sub-tabs (mirror). Only leaf scopes that the operations
+  // picker recognises are listed — "google" and "cloud" are sidebar
+  // group labels, not real scopes, so they're omitted to avoid landing
+  // the operator on a page with no operations picker.
+  {label: "Policies / Gmail",              href: "/policies?scope=gmail",             keywords: "email google"},
+  {label: "Policies / Drive",              href: "/policies?scope=drive",             keywords: "google files"},
+  {label: "Policies / Calendar",           href: "/policies?scope=calendar",          keywords: "google events"},
+  {label: "Policies / People",             href: "/policies?scope=people",            keywords: "google contacts"},
+  {label: "Policies / Sheets",             href: "/policies?scope=sheets",            keywords: "google spreadsheet"},
+  {label: "Policies / Docs",               href: "/policies?scope=docs",              keywords: "google document"},
+  {label: "Policies / AWS EC2",            href: "/policies?scope=aws-ec2",           keywords: "compute cloud"},
+  {label: "Policies / AWS S3",             href: "/policies?scope=aws-s3",            keywords: "storage bucket cloud"},
+  {label: "Policies / AWS Lambda",         href: "/policies?scope=aws-lambda",        keywords: "functions cloud"},
+  {label: "Policies / AWS SES",            href: "/policies?scope=aws-ses",           keywords: "email cloud"},
+  {label: "Policies / AWS DynamoDB",       href: "/policies?scope=aws-dynamodb",      keywords: "database nosql cloud"},
+  {label: "Policies / Hyperstack",         href: "/policies?scope=hyperstack",        keywords: "gpu cloud"},
+  {label: "Policies / LLM API",            href: "/policies?scope=llm",               keywords: "anthropic openai"},
+  {label: "Policies / HTTP Proxy",         href: "/policies?scope=http_proxy",        keywords: "rest"},
+  {label: "Policies / MCP Proxy",          href: "/policies?scope=mcp_proxy",         keywords: "mcp"},
+  {label: "Policies / Version Control",    href: "/policies?scope=version_control",   keywords: "git github gitlab vcs"},
+  {label: "Policies / GitHub",             href: "/policies?scope=github",            keywords: "git vcs"},
+  {label: "Policies / GitLab",             href: "/policies?scope=gitlab",            keywords: "git vcs"},
+  {label: "Policies / Slack",              href: "/policies?scope=slack",             keywords: "chat"}
+];
+
+var cmdkSelected = 0;
+var cmdkVisible = [];
+
+// Element that had focus immediately before openCmdK was called.
+// Captured so closeCmdK can restore focus to the trigger (chip button,
+// keyboard shortcut origin, etc.) instead of dropping the user back at
+// <body>, which is an a11y / keyboard-navigation regression.
+var cmdkPrevFocus = null;
+
+function openCmdK() {
+  cmdkPrevFocus = document.activeElement;
+  document.getElementById('cmdk-overlay').classList.remove('hidden');
+  var input = document.getElementById('cmdk-input');
+  input.value = '';
+  cmdkSelected = 0;
+  renderCmdK('');
+  input.focus();
+}
+
+function closeCmdK() {
+  document.getElementById('cmdk-overlay').classList.add('hidden');
+  // Restore focus to whatever owned it before open. Guard against the
+  // captured element having been removed from the DOM (htmx, route
+  // change, etc.) — fall back to <body> in that case.
+  if (cmdkPrevFocus && document.contains(cmdkPrevFocus) && typeof cmdkPrevFocus.focus === 'function') {
+    cmdkPrevFocus.focus();
+  }
+  cmdkPrevFocus = null;
+}
+
+function cmdkOverlayClick(ev) {
+  // Click on the backdrop (not the inner card) closes.
+  if (ev.target.id === 'cmdk-overlay') closeCmdK();
+}
+
+// Score a single item against a query string. 0 means "no match".
+function cmdkScore(query, item) {
+  if (!query) return 1;
+  var q = query.toLowerCase().trim();
+  var label = item.label.toLowerCase();
+  var hay = label + ' ' + (item.keywords || '').toLowerCase();
+  // Exact label prefix wins.
+  if (label.indexOf(q) === 0) return 100;
+  // Substring in label.
+  if (label.indexOf(q) >= 0) return 50;
+  // Substring in keywords/full haystack.
+  if (hay.indexOf(q) >= 0) return 20;
+  // Subsequence fuzzy match — every char of q appears in order in hay.
+  var i = 0;
+  for (var c = 0; c < q.length; c++) {
+    var j = hay.indexOf(q[c], i);
+    if (j < 0) return 0;
+    i = j + 1;
+  }
+  return 5;
+}
+
+function renderCmdK(query) {
+  var ul = document.getElementById('cmdk-results');
+  cmdkVisible = CMDK_ITEMS
+    .map(function(it) { return {it: it, s: cmdkScore(query, it)}; })
+    .filter(function(x) { return x.s > 0; })
+    .sort(function(a, b) { return b.s - a.s; })
+    .map(function(x) { return x.it; });
+
+  if (cmdkSelected >= cmdkVisible.length) cmdkSelected = 0;
+  if (!cmdkVisible.length) {
+    // Empty-state row carries option semantics + aria-disabled so the
+    // listbox's child structure stays valid for assistive tech.
+    ul.innerHTML = '<li role="option" aria-disabled="true" aria-selected="false" class="px-4 py-3 text-xs text-slate-500">No matches</li>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < cmdkVisible.length; i++) {
+    var it = cmdkVisible[i];
+    var active = i === cmdkSelected ? 'bg-slate-700/60' : '';
+    // Defense in depth: items come from the static list above, but encode
+    // anyway so a future dynamic feed can't smuggle HTML into the palette.
+    var labelTxt = it.label.replace(/[&<>"']/g, function(ch) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+    var hrefTxt = it.href.replace(/[&<>"']/g, function(ch) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+    // role="option" + aria-selected complete the listbox ARIA widget
+    // structure (the parent ul has role="listbox"). Without these the
+    // composite is invalid and screen readers can't announce the
+    // selected item correctly.
+    var ariaSel = i === cmdkSelected ? 'true' : 'false';
+    html += '<li role="option" aria-selected="' + ariaSel + '"><a href="' + hrefTxt + '" data-cmdk-i="' + i + '" class="cmdk-item flex items-center justify-between px-4 py-2 text-sm hover:bg-slate-700/50 ' + active + '">' +
+            '<span class="text-slate-200">' + labelTxt + '</span>' +
+            '<span class="text-[10px] text-slate-500 font-mono">' + hrefTxt + '</span>' +
+            '</a></li>';
+  }
+  ul.innerHTML = html; // xss-safe: labelTxt/hrefTxt are HTML-escaped above via replace(/[&<>"']/g, …)
+}
+
+document.getElementById('cmdk-input').addEventListener('input', function(e) {
+  cmdkSelected = 0;
+  renderCmdK(e.target.value);
+});
+
+document.addEventListener('keydown', function(e) {
+  var isOpen = !document.getElementById('cmdk-overlay').classList.contains('hidden');
+  // Toggle open: Ctrl+K / Cmd+K. Skip when the user is typing in an
+  // editable element and the palette is closed — otherwise we'd steal
+  // the keystroke from a connection-alias / token input the user is
+  // filling in. When the palette is open, Ctrl+K closes it regardless
+  // of focus (escape hatch).
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    var t = e.target;
+    var editable = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || (t.isContentEditable === true));
+    if (editable && !isOpen) return;
+    e.preventDefault();
+    if (isOpen) closeCmdK(); else openCmdK();
+    return;
+  }
+  if (!isOpen) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeCmdK();
+    return;
+  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!cmdkVisible.length) return;
+    if (e.key === 'ArrowDown') {
+      cmdkSelected = Math.min(cmdkSelected + 1, cmdkVisible.length - 1);
+    } else {
+      cmdkSelected = Math.max(cmdkSelected - 1, 0);
+    }
+    // renderCmdK rebuilds #cmdk-results via innerHTML, which removes
+    // the currently-focused element if the user had tab-walked to a
+    // row. Pull focus back to the input *before* the rerender so
+    // there's no transient "focus on body" state and so subsequent
+    // arrow presses keep working from the input. The arrow cursor +
+    // Enter from the input is the canonical flow; Tab + Enter on a
+    // specific row is still supported but mutually exclusive with
+    // arrow-key navigation.
+    var input = document.getElementById('cmdk-input');
+    if (document.activeElement !== input) input.focus();
+    renderCmdK(input.value);
+    var el = document.querySelector('[data-cmdk-i="' + cmdkSelected + '"]');
+    if (el) el.scrollIntoView({block: 'nearest'});
+    return;
+  }
+  if (e.key === 'Enter') {
+    // If the user has tab-walked focus onto a result anchor, let the
+    // browser activate that link normally. Only handle Enter from the
+    // input (or anywhere else inside the dialog that isn't a
+    // result-link) — otherwise we'd preventDefault and jump to the
+    // arrow-key cursor, ignoring where focus actually is.
+    var t = e.target;
+    if (t && t.tagName === 'A' && t.classList && t.classList.contains('cmdk-item')) {
+      return;
+    }
+    if (cmdkVisible.length) {
+      e.preventDefault();
+      window.location.href = cmdkVisible[cmdkSelected].href;
+    }
+    return;
+  }
+  // Focus trap: keep Tab / Shift+Tab inside the modal so focus can't
+  // wander to the underlying page (which is hidden behind the
+  // backdrop but still keyboard-reachable without this trap, even
+  // with aria-modal="true").
+  if (e.key === 'Tab') {
+    var modal = document.getElementById('cmdk-overlay').querySelector('[role="dialog"]');
+    if (!modal) return;
+    var focusables = modal.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first || !modal.contains(document.activeElement)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    return;
+  }
+});
+
+// Show the right modifier label for the chip in the sidebar.
+(function() {
+  var isMac = /Mac|iPhone|iPad/i.test(navigator.platform || '');
+  var lbl = document.getElementById('cmdk-mod');
+  if (lbl) lbl.textContent = isMac ? '⌘' : 'Ctrl';
 })();
 </script>
 {{end}}
