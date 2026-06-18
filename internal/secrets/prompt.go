@@ -88,13 +88,13 @@ func Acquire(opts PromptOptions) ([]byte, error) {
 	if opts.RequireTTY || opts.Confirm {
 		if !IsStdinTerminal() {
 			return nil, errors.New("this passphrase prompt requires a TTY: " +
-				"stdin is not interactive (--setup and --rotate-passphrase's " +
-				"new-passphrase prompt only accept a typed value). Re-run " +
-				"from an interactive shell. Neither " + PassphraseFileEnv + " " +
-				"nor FD 3 influences this branch — even when configured, " +
-				"those sources are skipped here so that an unattended file " +
-				"source cannot silently satisfy a confirmation or rotation " +
-				"new-passphrase prompt.")
+				"stdin is not interactive (both --setup and " +
+				"--rotate-passphrase's new-passphrase prompt only accept a " +
+				"typed value). Re-run from an interactive shell. " +
+				"Neither " + PassphraseFileEnv + " nor FD 3 influences this " +
+				"branch — even when configured, those sources are skipped " +
+				"here so that an unattended file source cannot silently " +
+				"satisfy a confirmation or rotation new-passphrase prompt.")
 		}
 		return acquireTTY(prompt, opts.Confirm)
 	}
