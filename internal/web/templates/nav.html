@@ -43,7 +43,7 @@
           <li>
             <div class="flex items-stretch rounded-lg transition-colors {{if or (eq .Active "connections-version_control") (eq .Active "connections-github") (eq .Active "connections-gitlab")}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">
               <a href="/connections?type=version_control" class="flex-1 px-3 py-1 text-xs text-left">Version Control</a>
-              <button type="button" onclick="toggleSub('conn-vcs-sub')" aria-label="Toggle Version Control sub-items" class="px-2 py-1 flex items-center">
+              <button type="button" onclick="toggleSub('conn-vcs-sub')" aria-label="Toggle Version Control sub-items" aria-controls="conn-vcs-sub" aria-expanded="false" class="px-2 py-1 flex items-center">
                 <svg id="conn-vcs-sub-chevron" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
               </button>
             </div>
@@ -142,7 +142,7 @@
           <li>
             <div class="flex items-stretch rounded-lg transition-colors {{if or (eq .Active "policies-version_control") (eq .Active "policies-github") (eq .Active "policies-gitlab")}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">
               <a href="/policies?scope=version_control" class="flex-1 px-3 py-1.5 text-xs text-left">Version Control</a>
-              <button type="button" onclick="toggleSub('policy-vcs-sub')" aria-label="Toggle Version Control sub-items" class="px-2 py-1.5 flex items-center">
+              <button type="button" onclick="toggleSub('policy-vcs-sub')" aria-label="Toggle Version Control sub-items" aria-controls="policy-vcs-sub" aria-expanded="false" class="px-2 py-1.5 flex items-center">
                 <svg id="policy-vcs-sub-chevron" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
               </button>
             </div>
@@ -201,12 +201,22 @@
 function toggleSub(id) {
   var el = document.getElementById(id);
   var chevron = document.getElementById(id + '-chevron');
-  if (el.classList.contains('hidden')) {
+  var nowOpen = el.classList.contains('hidden');
+  if (nowOpen) {
     el.classList.remove('hidden');
     if (chevron) chevron.style.transform = 'rotate(180deg)';
   } else {
     el.classList.add('hidden');
     if (chevron) chevron.style.transform = '';
+  }
+  // Keep the disclosure button's aria-expanded in sync with the
+  // submenu's visibility so screen-reader announcements match what's
+  // on screen. Only buttons that declared aria-controls={id} on the
+  // surrounding markup are updated; older toggles that haven't been
+  // migrated remain a no-op here.
+  var btns = document.querySelectorAll('button[aria-controls="' + id + '"]');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
   }
 }
 
@@ -449,6 +459,15 @@ document.addEventListener('keydown', function(e) {
     return;
   }
   if (e.key === 'Enter') {
+    // If the user has tab-walked focus onto a result anchor, let the
+    // browser activate that link normally. Only handle Enter from the
+    // input (or anywhere else inside the dialog that isn't a
+    // result-link) — otherwise we'd preventDefault and jump to the
+    // arrow-key cursor, ignoring where focus actually is.
+    var t = e.target;
+    if (t && t.tagName === 'A' && t.classList && t.classList.contains('cmdk-item')) {
+      return;
+    }
     if (cmdkVisible.length) {
       e.preventDefault();
       window.location.href = cmdkVisible[cmdkSelected].href;
