@@ -237,15 +237,18 @@ function toggleSub(id) {
 })();
 </script>
 
-<!-- Command palette (Ctrl/Cmd + K) -->
+<!-- Command palette (Ctrl/Cmd + K). The outer div is the backdrop; the
+     inner div carries the dialog semantics so assistive tech announces
+     the modal correctly. -->
 <div id="cmdk-overlay" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" onclick="cmdkOverlayClick(event)">
-  <div class="max-w-xl mx-auto mt-32 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+  <div role="dialog" aria-modal="true" aria-labelledby="cmdk-title" class="max-w-xl mx-auto mt-32 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+    <h2 id="cmdk-title" class="sr-only">Jump to page</h2>
     <div class="border-b border-slate-700 px-4 py-3 flex items-center gap-3">
-      <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-      <input id="cmdk-input" type="text" placeholder="Jump to a page or sub-section…" class="flex-1 bg-transparent text-white text-sm focus:outline-none placeholder-slate-500" autocomplete="off" spellcheck="false" />
+      <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <input id="cmdk-input" type="text" placeholder="Jump to a page or sub-section…" aria-label="Search for a page" aria-controls="cmdk-results" class="flex-1 bg-transparent text-white text-sm focus:outline-none placeholder-slate-500" autocomplete="off" spellcheck="false" />
       <kbd class="text-[10px] text-slate-500 border border-slate-600 rounded px-1.5 py-0.5 font-mono">ESC</kbd>
     </div>
-    <ul id="cmdk-results" class="max-h-80 overflow-y-auto py-2"></ul>
+    <ul id="cmdk-results" role="listbox" aria-label="Suggested pages" class="max-h-80 overflow-y-auto py-2"></ul>
     <div class="border-t border-slate-700 px-4 py-2 text-[10px] text-slate-500 flex items-center gap-4">
       <span><kbd class="border border-slate-600 rounded px-1 font-mono">↑</kbd><kbd class="border border-slate-600 rounded px-1 font-mono ml-0.5">↓</kbd> navigate</span>
       <span><kbd class="border border-slate-600 rounded px-1 font-mono">↵</kbd> open</span>
@@ -305,7 +308,14 @@ var CMDK_ITEMS = [
 var cmdkSelected = 0;
 var cmdkVisible = [];
 
+// Element that had focus immediately before openCmdK was called.
+// Captured so closeCmdK can restore focus to the trigger (chip button,
+// keyboard shortcut origin, etc.) instead of dropping the user back at
+// <body>, which is an a11y / keyboard-navigation regression.
+var cmdkPrevFocus = null;
+
 function openCmdK() {
+  cmdkPrevFocus = document.activeElement;
   document.getElementById('cmdk-overlay').classList.remove('hidden');
   var input = document.getElementById('cmdk-input');
   input.value = '';
@@ -316,6 +326,13 @@ function openCmdK() {
 
 function closeCmdK() {
   document.getElementById('cmdk-overlay').classList.add('hidden');
+  // Restore focus to whatever owned it before open. Guard against the
+  // captured element having been removed from the DOM (htmx, route
+  // change, etc.) — fall back to <body> in that case.
+  if (cmdkPrevFocus && document.contains(cmdkPrevFocus) && typeof cmdkPrevFocus.focus === 'function') {
+    cmdkPrevFocus.focus();
+  }
+  cmdkPrevFocus = null;
 }
 
 function cmdkOverlayClick(ev) {

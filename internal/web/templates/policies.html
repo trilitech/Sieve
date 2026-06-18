@@ -66,7 +66,21 @@
         </table>
       </div>
 
-      {{if .Scope}}
+      {{if eq .Scope "version_control"}}
+      <!-- Browse-only filter: hide the create form so operators can't
+           accidentally persist scope=version_control into a policy
+           config (that value would orphan the policy from the
+           github/gitlab tabs, since the synthetic filter only pulls
+           those two leaf scopes). -->
+      <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+        <h2 class="text-lg font-semibold text-white mb-2">Browse-only view</h2>
+        <p class="text-sm text-slate-400 mb-4">&ldquo;Version Control&rdquo; groups existing GitHub and GitLab policies under one tab for review. New policies are authored per-connector because each has its own operation namespace.</p>
+        <div class="flex gap-2">
+          <a href="/policies?scope=github" class="inline-flex items-center rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-600 transition-colors">New GitHub policy →</a>
+          <a href="/policies?scope=gitlab" class="inline-flex items-center rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-600 transition-colors">New GitLab policy →</a>
+        </div>
+      </div>
+      {{else if .Scope}}
       <!-- Create Policy Form -->
       <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
         <h2 class="text-lg font-semibold text-white mb-4">Create Policy</h2>
