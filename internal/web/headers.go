@@ -41,10 +41,21 @@ func WriteSensitive(w http.ResponseWriter) {
 // connect-src also names these hosts because tailwindcss.com's runtime
 // fetches its CSS via XHR; without that, the page loads but stays
 // unstyled.
+//
+// form-action also names the OAuth-provider hosts the admin templates
+// redirect form submissions to. CSP's form-action directive covers both
+// the initial form target AND any redirects from that submission, so a
+// POST to /connections/{id}/reauth (same-origin, allowed) that gets a
+// 302 → accounts.google.com would otherwise be blocked at the redirect.
+// Same applies to Slack OAuth (slack.com) and the GitHub App install /
+// manifest flows (github.com). The list is intentionally minimal —
+// adding a connector that POSTs to a new OAuth host requires updating
+// this directive.
 func writeSecurityHeaders(w http.ResponseWriter) {
 	const cdnScripts = "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
 	const cdnStyles = "https://fonts.googleapis.com"
 	const cdnFonts = "https://fonts.gstatic.com"
+	const oauthHosts = "https://accounts.google.com https://slack.com https://github.com"
 	h := w.Header()
 	h.Set("Content-Security-Policy",
 		"default-src 'self'; "+
@@ -56,7 +67,7 @@ func writeSecurityHeaders(w http.ResponseWriter) {
 			"object-src 'none'; "+
 			"frame-ancestors 'none'; "+
 			"base-uri 'none'; "+
-			"form-action 'self'")
+			"form-action 'self' "+oauthHosts)
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")

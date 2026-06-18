@@ -35,6 +35,13 @@ func TestCSPAllowsTemplateCDNs(t *testing.T) {
 		// Tailwind CDN fetches its CSS at runtime; without connect-src
 		// the page loads but stays unstyled.
 		{"connect-src", "https://cdn.tailwindcss.com"},
+		// form-action covers both the initial POST target AND any
+		// redirects from it. The reauth / OAuth-install flows POST
+		// same-origin and the server returns a 302 to the provider —
+		// without these hosts the redirect is blocked at the browser.
+		{"form-action", "https://accounts.google.com"},
+		{"form-action", "https://slack.com"},
+		{"form-action", "https://github.com"},
 	}
 	for _, want := range wants {
 		if !cspDirectiveContains(csp, want.directive, want.host) {
