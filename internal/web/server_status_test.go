@@ -51,9 +51,10 @@ func authedPost(t *testing.T, env *testenv.Env, path string) (*http.Request, *ht
 // getRequest performs an authenticated GET against an admin handler and
 // returns the recorder. Shared by the web_test package's GET-and-assert
 // tests so a single canonical "GET with session cookie" path lives here
-// instead of being re-implemented in each test file. (The web/internal
-// slack_test.go has a same-named helper for the internal package; this
-// is its external-package counterpart.)
+// instead of being re-implemented in each test file. (internal/web/slack_test.go
+// has a same-named helper that lives in the internal `package web` for
+// the internal-package tests; this one is its external-package
+// counterpart.)
 func getRequest(handler http.Handler, env *testenv.Env, path string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	if c := env.SessionCookie(); c != nil {
