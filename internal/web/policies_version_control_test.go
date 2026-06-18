@@ -8,25 +8,11 @@ package web_test
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
-
-// getPoliciesPage is a thin wrapper around an authenticated GET so the
-// test reads as a query-and-assert.
-func getPoliciesPage(t *testing.T, handler http.Handler, env *testenv.Env, path string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	if c := env.SessionCookie(); c != nil {
-		req.AddCookie(c)
-	}
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	return rec
-}
 
 // TestPoliciesPage_VersionControlScope asserts:
 //   - ?scope=version_control includes policies tagged github and gitlab.
@@ -44,7 +30,7 @@ func TestPoliciesPage_VersionControlScope(t *testing.T) {
 	mustSeedPolicy(t, env, "legacy-no-scope", "") // empty scope — shows under all tabs
 
 	t.Run("version_control includes github + gitlab, excludes slack", func(t *testing.T) {
-		rec := getPoliciesPage(t, handler, env, "/policies?scope=version_control")
+		rec := getRequest(handler, env,"/policies?scope=version_control")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
 		}
@@ -60,7 +46,7 @@ func TestPoliciesPage_VersionControlScope(t *testing.T) {
 	})
 
 	t.Run("github scope excludes gitlab", func(t *testing.T) {
-		rec := getPoliciesPage(t, handler, env, "/policies?scope=github")
+		rec := getRequest(handler, env,"/policies?scope=github")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
 		}
@@ -74,7 +60,7 @@ func TestPoliciesPage_VersionControlScope(t *testing.T) {
 	})
 
 	t.Run("slack scope excludes both vcs policies", func(t *testing.T) {
-		rec := getPoliciesPage(t, handler, env, "/policies?scope=slack")
+		rec := getRequest(handler, env,"/policies?scope=slack")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
 		}

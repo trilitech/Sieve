@@ -8,7 +8,6 @@ package web_test
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -16,22 +15,6 @@ import (
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
 	gitlabconn "github.com/trilitech/Sieve/internal/connectors/gitlab"
 )
-
-// getConnectionsPage is a thin wrapper around an authenticated GET on
-// the /connections page (and its filtered variants) so each subtest
-// reads as query-and-assert.
-func getConnectionsPage(t *testing.T, handler http.Handler, env interface {
-	SessionCookie() *http.Cookie
-}, path string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	if c := env.SessionCookie(); c != nil {
-		req.AddCookie(c)
-	}
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	return rec
-}
 
 // TestConnectionsPage_VersionControlTab asserts:
 //   - /connections?type=version_control surfaces both the github and
@@ -73,7 +56,7 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 	}
 
 	t.Run("version_control tab shows both catalog cards + both connections", func(t *testing.T) {
-		rec := getConnectionsPage(t, handler, env, "/connections?type=version_control")
+		rec := getRequest(handler, env,"/connections?type=version_control")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
 		}
@@ -102,7 +85,7 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 	})
 
 	t.Run("github tab excludes gitlab", func(t *testing.T) {
-		rec := getConnectionsPage(t, handler, env, "/connections?type=github")
+		rec := getRequest(handler, env,"/connections?type=github")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
 		}
@@ -116,7 +99,7 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 	})
 
 	t.Run("gitlab tab excludes github", func(t *testing.T) {
-		rec := getConnectionsPage(t, handler, env, "/connections?type=gitlab")
+		rec := getRequest(handler, env,"/connections?type=gitlab")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
 		}
