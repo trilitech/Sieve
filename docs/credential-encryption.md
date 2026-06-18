@@ -110,16 +110,12 @@ When the passphrase comes from a file or FD 3, the "confirm" step that the TTY u
 A small but important caveat for operators who run `SIEVE_PASSPHRASE_FILE` in production:
 
 - **`./sieve` (routine start)** — reads the file/FD 3 source as documented above.
-- **`./sieve --setup`** — refuses to run if `SIEVE_PASSPHRASE_FILE` is set or stdin is not a TTY. The new passphrase you choose at first-run cannot be confirmed against a static file (the confirmation step exists to catch typos), so setup must be driven from an interactive shell.
-- **`./sieve --rotate-passphrase`** — the *current* passphrase still comes from `SIEVE_PASSPHRASE_FILE` if set (so you don't have to type the existing one); the *new* passphrase must be typed at the TTY. Without this guard, rotation under a configured file source would silently re-read the same source for both prompts, fail the "new identical to current" guard, and never actually rotate.
+- **`./sieve --setup`** — ignores `SIEVE_PASSPHRASE_FILE` and FD 3 and reads only from a TTY, failing if stdin isn't interactive. The new passphrase you choose at first-run cannot be confirmed against a static file (the confirmation step exists to catch typos), so setup must be driven from an interactive shell. If your env has the file pointer set, that's fine — it just isn't used here.
+- **`./sieve --rotate-passphrase`** — the *current* passphrase still comes from `SIEVE_PASSPHRASE_FILE` if set (so you don't have to type the existing one); the *new* passphrase ignores file/FD 3 sources and is read only from the TTY. Without this guard, rotation under a configured file source would silently re-read the same source for both prompts, fail the "new identical to current" guard, and never actually rotate.
 
-If you hit `this passphrase prompt requires a TTY`, unset the env var for the duration of the setup/rotate command:
+If you hit `this passphrase prompt requires a TTY`, the cause is a non-interactive stdin — re-run the command from an interactive shell (a real terminal, not a pipe / `< file` redirection / nohup'd background). `SIEVE_PASSPHRASE_FILE` can stay set; it just won't satisfy this particular prompt.
 
-```bash
-env -u SIEVE_PASSPHRASE_FILE ./sieve --rotate-passphrase
-```
-
-then update the file's contents to match the new passphrase before restarting routine `./sieve` startups.
+If you need a one-off escape (e.g. running `--rotate-passphrase` over ssh inside a script that already redirected stdin), unsetting the env var doesn't help — fix the stdin redirection or run the command in a `tmux`/`screen` session attached to a real PTY.
 
 **Never an env var holding the passphrase itself.** Env variables leak through:
 - `/proc/<pid>/environ` (any process with the same UID can read them)

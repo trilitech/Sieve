@@ -69,8 +69,9 @@ func IsStdinTerminal() bool {
 // not supported — env leaks through /proc/<pid>/environ, ps, and crash
 // dumps. If you need to plumb a passphrase from CI, write it to a file
 // and point SIEVE_PASSPHRASE_FILE at it.
-// Note: when the passphrase comes from a file or FD 3, opts.Confirm is
-// ignored — there's nothing to confirm against a static source.
+// Note: opts.Confirm is only meaningful when the read happens on a TTY.
+// Confirm=true implies opts.RequireTTY=true (below), so when Confirm is
+// set Acquire never reaches the file or FD 3 branches.
 //
 // opts.RequireTTY (implied by opts.Confirm) forces the TTY path: file
 // and FD 3 are skipped and Acquire errors out if stdin is not a TTY.
@@ -86,11 +87,14 @@ func Acquire(opts PromptOptions) ([]byte, error) {
 
 	if opts.RequireTTY || opts.Confirm {
 		if !IsStdinTerminal() {
-			return nil, errors.New("this passphrase prompt requires a TTY " +
-				"(running --setup or --rotate-passphrase under a piped " +
-				"stdin or with " + PassphraseFileEnv + " set is not " +
-				"supported — unset the env var and re-run from an " +
-				"interactive shell)")
+			return nil, errors.New("this passphrase prompt requires a TTY: " +
+				"stdin is not interactive (--setup and --rotate-passphrase's " +
+				"new-passphrase prompt only accept a typed value). Re-run " +
+				"from an interactive shell. " + PassphraseFileEnv + " and " +
+				"FD 3 do not influence this branch — even when configured, " +
+				"these sources are skipped here so that an unattended file " +
+				"source cannot silently satisfy a confirmation or rotation " +
+				"new-passphrase prompt.")
 		}
 		return acquireTTY(prompt, opts.Confirm)
 	}
