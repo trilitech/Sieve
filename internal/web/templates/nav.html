@@ -372,7 +372,9 @@ function renderCmdK(query) {
 
   if (cmdkSelected >= cmdkVisible.length) cmdkSelected = 0;
   if (!cmdkVisible.length) {
-    ul.innerHTML = '<li class="px-4 py-3 text-xs text-slate-500">No matches</li>';
+    // Empty-state row carries option semantics + aria-disabled so the
+    // listbox's child structure stays valid for assistive tech.
+    ul.innerHTML = '<li role="option" aria-disabled="true" aria-selected="false" class="px-4 py-3 text-xs text-slate-500">No matches</li>';
     return;
   }
   var html = '';
@@ -450,6 +452,30 @@ document.addEventListener('keydown', function(e) {
     if (cmdkVisible.length) {
       e.preventDefault();
       window.location.href = cmdkVisible[cmdkSelected].href;
+    }
+    return;
+  }
+  // Focus trap: keep Tab / Shift+Tab inside the modal so focus can't
+  // wander to the underlying page (which is hidden behind the
+  // backdrop but still keyboard-reachable without this trap, even
+  // with aria-modal="true").
+  if (e.key === 'Tab') {
+    var modal = document.getElementById('cmdk-overlay').querySelector('[role="dialog"]');
+    if (!modal) return;
+    var focusables = modal.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first || !modal.contains(document.activeElement)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     }
     return;
   }
