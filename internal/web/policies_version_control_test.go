@@ -30,7 +30,7 @@ func TestPoliciesPage_VersionControlScope(t *testing.T) {
 	mustSeedPolicy(t, env, "legacy-no-scope", "") // empty scope — shows under all tabs
 
 	t.Run("version_control includes github + gitlab, excludes slack", func(t *testing.T) {
-		rec := getRequest(handler, env,"/policies?scope=version_control")
+		rec := getRequest(handler, env, "/policies?scope=version_control")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
 		}
@@ -46,7 +46,7 @@ func TestPoliciesPage_VersionControlScope(t *testing.T) {
 	})
 
 	t.Run("github scope excludes gitlab", func(t *testing.T) {
-		rec := getRequest(handler, env,"/policies?scope=github")
+		rec := getRequest(handler, env, "/policies?scope=github")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
 		}
@@ -60,7 +60,7 @@ func TestPoliciesPage_VersionControlScope(t *testing.T) {
 	})
 
 	t.Run("slack scope excludes both vcs policies", func(t *testing.T) {
-		rec := getRequest(handler, env,"/policies?scope=slack")
+		rec := getRequest(handler, env, "/policies?scope=slack")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
 		}

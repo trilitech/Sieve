@@ -71,8 +71,8 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 		// catalog cards while leaving the connection list intact would
 		// fail.
 		for _, want := range []string{
-			"My GitHub",       // existing connection display name
-			"My GitLab",       // existing connection display name
+			"My GitHub",         // existing connection display name
+			"My GitLab",         // existing connection display name
 			"PAT or GitHub App", // GitHub Meta() Description substring
 			"merge requests",    // GitLab Meta() Description substring
 		} {
@@ -86,7 +86,7 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 	})
 
 	t.Run("github tab excludes gitlab", func(t *testing.T) {
-		rec := getRequest(handler, env,"/connections?type=github")
+		rec := getRequest(handler, env, "/connections?type=github")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
 		}
@@ -100,7 +100,7 @@ func TestConnectionsPage_VersionControlTab(t *testing.T) {
 	})
 
 	t.Run("gitlab tab excludes github", func(t *testing.T) {
-		rec := getRequest(handler, env,"/connections?type=gitlab")
+		rec := getRequest(handler, env, "/connections?type=gitlab")
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d", rec.Code)
 		}

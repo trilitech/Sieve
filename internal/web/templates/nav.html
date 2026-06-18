@@ -387,7 +387,12 @@ function renderCmdK(query) {
     var hrefTxt = it.href.replace(/[&<>"']/g, function(ch) {
       return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
     });
-    html += '<li><a href="' + hrefTxt + '" data-cmdk-i="' + i + '" class="cmdk-item flex items-center justify-between px-4 py-2 text-sm hover:bg-slate-700/50 ' + active + '">' +
+    // role="option" + aria-selected complete the listbox ARIA widget
+    // structure (the parent ul has role="listbox"). Without these the
+    // composite is invalid and screen readers can't announce the
+    // selected item correctly.
+    var ariaSel = i === cmdkSelected ? 'true' : 'false';
+    html += '<li role="option" aria-selected="' + ariaSel + '"><a href="' + hrefTxt + '" data-cmdk-i="' + i + '" class="cmdk-item flex items-center justify-between px-4 py-2 text-sm hover:bg-slate-700/50 ' + active + '">' +
             '<span class="text-slate-200">' + labelTxt + '</span>' +
             '<span class="text-[10px] text-slate-500 font-mono">' + hrefTxt + '</span>' +
             '</a></li>';
