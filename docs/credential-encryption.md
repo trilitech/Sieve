@@ -98,10 +98,12 @@ Tampering with either blob flips the GCM auth tag and the call errors out. No pa
 
 When Sieve starts, it looks for the passphrase in this order:
 
-1. **TTY** — if stdin is an interactive terminal, prompt with echo off. First-run setup prompts twice and verifies the entries match.
-2. **`SIEVE_PASSPHRASE_FILE`** env var → read the file at that path. The env var holds a *path*, not the passphrase itself. Good for Docker secrets, systemd `LoadCredential=`, Kubernetes mounted secrets.
-3. **FD 3** — file descriptor 3, if open. This is the convention systemd's `LoadCredential=` uses when it hands a secret to the unit without touching the filesystem.
+1. **`SIEVE_PASSPHRASE_FILE`** env var → read the file at that path. The env var holds a *path*, not the passphrase itself. Good for Docker secrets, systemd `LoadCredential=`, Kubernetes mounted secrets. Takes precedence over the TTY prompt so that operators with wired-up credential plumbing aren't re-prompted on every start.
+2. **FD 3** — file descriptor 3, if open. This is the convention systemd's `LoadCredential=` uses when it hands a secret to the unit without touching the filesystem.
+3. **TTY** — if stdin is an interactive terminal, prompt with echo off. First-run setup prompts twice and verifies the entries match. (Only consulted if neither of the above is configured.)
 4. **No source** → startup fails with a clear error. Sieve refuses to run without a key.
+
+When the passphrase comes from a file or FD 3, the "confirm" step that the TTY uses during first-run setup is skipped — there's nothing to confirm against a static source.
 
 **Never an env var holding the passphrase itself.** Env variables leak through:
 - `/proc/<pid>/environ` (any process with the same UID can read them)

@@ -3,8 +3,11 @@
 // - 19816 (web) — admin UI for human operators
 // - 19817 (api) — agent-facing API+MCP, combined behind one listener
 // Passphrase intake follows the strict priority documented in
-// docs/credential-encryption.md: TTY prompt → SIEVE_PASSPHRASE_FILE →
-// FD 3 (systemd LoadCredential=). Never an environment variable.
+// docs/credential-encryption.md: SIEVE_PASSPHRASE_FILE → FD 3 (systemd
+// LoadCredential=) → TTY prompt. Never an environment variable
+// (other than the file pointer). The file/FD3 sources take precedence
+// over the TTY prompt so operators with wired-up credential plumbing
+// aren't re-prompted on every start.
 // Connection configs are envelope-encrypted at rest. The keyring is set
 // up on first run (--setup) and loaded on every start thereafter.
 // Rotation:
