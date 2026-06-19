@@ -48,6 +48,8 @@ var Meta = connector.ConnectorMeta{
 	Category:    "Proxy",
 	SetupFields: []connector.Field{
 		{Name: "url", Label: "MCP Server URL", Type: "text", Required: true, Editable: true, Placeholder: "http://localhost:3000/mcp"},
+		{Name: "target_url", Label: "Target URL (legacy alias)", Type: "text", Editable: false, EditOnly: true,
+			HelpText: "Legacy/compatibility alias for url. Factory reads target_url as a fallback when url is absent (older rows persisted via the web form handler used this name). Declared here so the architecture test sees the full persisted shape; new configs should set url instead."},
 		{Name: "auth_header", Label: "Auth Header (optional)", Type: "text", Required: false, Editable: true, Placeholder: "Authorization"},
 		{Name: "auth_value", Label: "Auth Value (optional)", Type: "password", Required: false, Editable: true, Secret: true, Placeholder: "Bearer sk-...",
 			HelpText: "Leave blank on edit to keep the stored value."},
@@ -195,6 +197,7 @@ func (m *MCPProxyConnector) Type() string { return "mcp_proxy" }
 func (m *MCPProxyConnector) ConfigSchemaKeys() []string {
 	return []string{
 		"url",
+		"target_url", // legacy alias Factory reads as fallback when url is absent
 		"auth_header",
 		"auth_value",
 		"name",
