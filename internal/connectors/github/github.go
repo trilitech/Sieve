@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 
 	"github.com/trilitech/Sieve/internal/connector"
 )
@@ -50,9 +51,15 @@ func Factory() connector.Factory {
 // Meta returns connector metadata for registration.
 //
 // GitHub connections are created via the bespoke PAT / GitHub-App flows
-// in internal/web/github.go, not the generic create form — so there are
-// no create-time SetupFields here. The EditOnly field below drives the
-// generic connection-edit page.
+// in internal/web/github.go, not the generic create form. The `credentials`
+// and `default_credential_index` SetupFields below are DECLARATIVE — they
+// satisfy the cmd/sieve/registry_arch_test.go invariant that every
+// persisted config key MUST be declared on Meta(). Editable=false +
+// EditOnly=true keeps the generic forms from rendering them; the bespoke
+// PAT/App handlers in internal/web/github.go remain the only writer.
+//
+// Cross-fork allow-list is the one operator-editable field exposed via
+// the generic /connections/{id}/edit page.
 func Meta() connector.ConnectorMeta {
 	return connector.ConnectorMeta{
 		Type:        ConnectorType,
@@ -60,14 +67,25 @@ func Meta() connector.ConnectorMeta {
 		Description: "Read and write GitHub repos, issues, PRs, and more via PAT or GitHub App.",
 		Category:    "Version Control",
 		SetupFields: []connector.Field{
+			{Name: "credentials", Label: "Credentials", Type: "json", Required: true, Editable: false, EditOnly: true, Secret: true,
+				HelpText: "Set via the bespoke PAT / GitHub-App handlers in /connections/github/pat and /connections/github/app/*. Declared here so the architecture test sees the full persisted shape; not directly editable through the generic form."},
+			{Name: "default_credential_index", Label: "Default credential index", Type: "number", Editable: false, EditOnly: true,
+				HelpText: "Index into the credentials list used as fallback for owner-less endpoints. Set by the bespoke create flow."},
 			{Name: "cross_fork_pr_allowlist", Label: "Cross-fork PR allow-list", Type: "textarea", EditOnly: true, Editable: true, Placeholder: "alice\nbob",
 				HelpText: "GitHub user logins (one per line; case-insensitive) whose forks Sieve accepts as cross-fork PR heads via github_create_pr. Empty = deny all cross-fork heads. Wildcards are NOT honoured. The escape-hatch github_request op is unaffected."},
 		},
 	}
 }
 
-func (g *Connector) Type() string                   { return ConnectorType }
+func (g *Connector) Type() string                         { return ConnectorType }
 func (g *Connector) Operations() []connector.OperationDef { return operations }
+
+// ConfigSchemaKeys implements connector.ConfigSchemaProvider. Returns the
+// JSON keys persisted in the Config struct — the architecture test verifies
+// this set is covered by Meta().SetupFields.
+func (g *Connector) ConfigSchemaKeys() []string {
+	return connector.ConfigKeysFromTags(reflect.TypeOf(Config{}))
+}
 
 // Validate hits /user (or /installation/repositories for App credentials) to confirm the first
 // credential is live. Avoids hammering GitHub on every call.

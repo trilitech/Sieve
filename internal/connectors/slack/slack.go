@@ -3,6 +3,7 @@ package slack
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/httpguard"
@@ -24,6 +25,21 @@ type Connector struct {
 
 // Type returns the connector identifier.
 func (c *Connector) Type() string { return ConnectorType }
+
+// ConfigSchemaKeys implements connector.ConfigSchemaProvider. Returns the
+// JSON keys persisted in the Config struct PLUS keys consumed directly from
+// the raw config map by Factory (outbound_allowlist for httpguard CIDR
+// opt-in). The architecture test verifies this set is covered by
+// Meta().SetupFields.
+//
+// Underscore-prefixed runtime injection keys (_base_url, _on_terminal_auth)
+// are deliberately NOT persisted — they're set per-process by the
+// connections service / test harness — so they're not in this list.
+func (c *Connector) ConfigSchemaKeys() []string {
+	keys := connector.ConfigKeysFromTags(reflect.TypeOf(Config{}))
+	keys = append(keys, "outbound_allowlist")
+	return keys
+}
 
 // Operations returns the curated operation set. The slice is
 // read-only so we hand out the same instance every call.
@@ -100,6 +116,13 @@ func Factory() connector.Factory {
 // OAuth path is rendered separately by the connection picker (see
 // internal/web/templates/connections.html and the per-service
 // handlers).
+//
+// The OAuth-managed fields (auth_kind, team_id, team_name, bot_user_id,
+// scopes, oauth_token) are declared with Editable=false + EditOnly=true.
+// They satisfy the cmd/sieve/registry_arch_test.go invariant that every
+// persisted Config key MUST be declared on Meta(); the generic forms
+// don't render them, and the bespoke OAuth handler in
+// internal/web/slack.go remains the only writer.
 func Meta() connector.ConnectorMeta {
 	return connector.ConnectorMeta{
 		Type:        ConnectorType,
@@ -115,6 +138,20 @@ func Meta() connector.ConnectorMeta {
 				Placeholder: "xoxb-…",
 				HelpText:    "Find under your Slack app's OAuth & Permissions page after install.",
 			},
+			{Name: "auth_kind", Label: "Auth kind", Type: "text", Editable: false, EditOnly: true,
+				HelpText: "Either \"oauth\" or \"token\". Set by the bespoke install / paste-token handler in internal/web/slack.go; declared here so the architecture test sees the full persisted shape."},
+			{Name: "team_id", Label: "Team ID", Type: "text", Editable: false, EditOnly: true,
+				HelpText: "Slack workspace ID (e.g. T012ABCDEF). Discovered at install / auth.test; not operator-editable."},
+			{Name: "team_name", Label: "Team name", Type: "text", Editable: false, EditOnly: true,
+				HelpText: "Workspace display name. Same lifecycle as team_id."},
+			{Name: "bot_user_id", Label: "Bot user ID", Type: "text", Editable: false, EditOnly: true,
+				HelpText: "Bot's Slack user ID. Resolved at install."},
+			{Name: "scopes", Label: "Scopes", Type: "json", Editable: false, EditOnly: true,
+				HelpText: "Granted OAuth scope set. Source of truth for what the connector is allowed to do."},
+			{Name: "oauth_token", Label: "OAuth token blob", Type: "json", Editable: false, EditOnly: true, Secret: true,
+				HelpText: "Stored OAuth response. Written by the install handler, never edited from the generic form."},
+			{Name: "outbound_allowlist", Label: "Outbound allow-list (CIDRs)", Type: "textarea", EditOnly: true, Editable: true,
+				HelpText: "Opt CIDRs into httpguard's outbound-host allow-list. Empty = block private / loopback / link-local. Set to 127.0.0.0/8 for a local mock. One entry per line."},
 		},
 	}
 }

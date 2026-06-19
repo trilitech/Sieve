@@ -19,3 +19,4 @@ specs/
 *.DS_Store
 .claude/
 passphrase
+FEEDBACK_from_tezos_ops.md

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 
 	"github.com/trilitech/Sieve/internal/connector"
 )
@@ -86,7 +87,14 @@ func Meta() connector.ConnectorMeta {
 	}
 }
 
-func (g *Connector) Type() string                         { return ConnectorType }
+func (g *Connector) Type() string { return ConnectorType }
+
+// ConfigSchemaKeys implements connector.ConfigSchemaProvider. Returns the
+// JSON keys persisted in the Config struct — the architecture test verifies
+// this set is covered by Meta().SetupFields.
+func (g *Connector) ConfigSchemaKeys() []string {
+	return connector.ConfigKeysFromTags(reflect.TypeOf(Config{}))
+}
 func (g *Connector) Operations() []connector.OperationDef { return operations }
 
 // Validate confirms the token works by calling /user, the cheapest
