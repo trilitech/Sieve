@@ -14,13 +14,20 @@ package main
 // Google. This test closes the loophole by enforcing the invariant at the
 // registry level — no per-connector opt-out is possible.
 //
-// Mechanism: connectors with a typed Config struct (or any persisted-key
-// set) implement connector.ConfigSchemaProvider on their main type. The test
-// walks the registry, calls Factory on each, type-asserts the provider, and
-// compares ConfigSchemaKeys() against Meta().SetupFields names. Map-based
-// connectors (httpproxy, mcpproxy) that don't implement the provider are
-// vacuously safe — their persisted keys come from SetupFields-driven form
-// parsing by construction.
+// Mechanism: EVERY connector — typed-Config or map-based — must implement
+// connector.ConfigSchemaProvider on its main type and return the literal
+// set of keys it reads from its persisted config map. The test walks the
+// registry, calls Factory on each, type-asserts the provider, and compares
+// ConfigSchemaKeys() against Meta().SetupFields names.
+//
+// An earlier draft of this test let map-based connectors (httpproxy,
+// mcpproxy) skip the provider check on the theory that "their persisted
+// keys come from SetupFields-driven form parsing by construction." Codex
+// caught the flaw: both factories ALSO consume outbound_allowlist (read
+// directly from the config map, not from a SetupFields-rendered form
+// input) for the httpguard CIDR opt-in. The vacuous-skip path let that
+// drift through. Every connector implements the provider now; there is no
+// opt-out.
 
 import (
 	"sort"
@@ -154,15 +161,7 @@ func TestConnectorConfigCoveredBySetupFields(t *testing.T) {
 			}
 			provider, ok := c.(connector.ConfigSchemaProvider)
 			if !ok {
-				// Map-based connectors (httpproxy, mcpproxy) are vacuously
-				// safe because their persisted keys are 1:1 with form
-				// parsing driven by SetupFields. Skip them, but verify
-				// SetupFields is non-empty so an empty Meta can't slip
-				// through as "vacuously safe."
-				if len(reg.meta.SetupFields) == 0 {
-					t.Fatalf("%s does not implement ConfigSchemaProvider AND has no SetupFields — invariant cannot be enforced", reg.meta.Type)
-				}
-				return
+				t.Fatalf("%s does not implement ConfigSchemaProvider — every connector must, including map-based ones. See the test file's header comment for rationale.", reg.meta.Type)
 			}
 
 			declared := make(map[string]bool, len(reg.meta.SetupFields))

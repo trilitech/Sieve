@@ -54,6 +54,8 @@ var Meta = connector.ConnectorMeta{
 		{Name: "name", Label: "Server Name", Type: "text", Required: false, Editable: true, Placeholder: "my-mcp-server"},
 		{Name: "response_body_cap_bytes", Label: "Upstream response body cap (bytes)", Type: "number", EditOnly: true, Editable: true, Placeholder: "5242880",
 			HelpText: "Maximum bytes Sieve reads from a tools/call upstream response. 0 or empty = 5 MiB default."},
+		{Name: "outbound_allowlist", Label: "Outbound allow-list (CIDRs)", Type: "textarea", EditOnly: true, Editable: true,
+			HelpText: "Opt CIDRs into httpguard's outbound-host allow-list. Empty = block private / loopback / link-local. Set to 127.0.0.0/8 for a local mock. One entry per line."},
 	},
 }
 
@@ -185,6 +187,21 @@ func Factory(config map[string]any) (connector.Connector, error) {
 }
 
 func (m *MCPProxyConnector) Type() string { return "mcp_proxy" }
+
+// ConfigSchemaKeys implements connector.ConfigSchemaProvider. mcp_proxy
+// reads from a free-form map (no typed Config struct), so the persisted-key
+// list is declared explicitly. The architecture test verifies these are
+// covered by Meta().SetupFields.
+func (m *MCPProxyConnector) ConfigSchemaKeys() []string {
+	return []string{
+		"url",
+		"auth_header",
+		"auth_value",
+		"name",
+		"response_body_cap_bytes",
+		"outbound_allowlist",
+	}
+}
 
 // discoverTools calls tools/list on the upstream server to discover available tools.
 func (m *MCPProxyConnector) discoverTools(ctx context.Context) error {

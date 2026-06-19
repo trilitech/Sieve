@@ -85,6 +85,14 @@ func Meta() connector.ConnectorMeta {
 				Placeholder: defaultAnthropicVersion,
 				HelpText:    "anthropic-version header. Leave blank for the current default.",
 			},
+			{
+				Name:     "outbound_allowlist",
+				Label:    "Outbound allow-list (CIDRs)",
+				Type:     "textarea",
+				EditOnly: true,
+				Editable: true,
+				HelpText: "Opt CIDRs into httpguard's outbound-host allow-list. Empty = block private / loopback / link-local. Set to 127.0.0.0/8 for a local mock; the operator's actual production allow-list otherwise. One entry per line.",
+			},
 		},
 	}
 }
@@ -138,8 +146,12 @@ func (a *Connector) Type() string { return ConnectorType }
 // indexed by string literals in parseConfig), so the persisted key set is
 // declared explicitly here. Architecture test verifies these are covered
 // by Meta().SetupFields.
+//
+// outbound_allowlist is read by Factory (NOT by parseConfig / Config struct)
+// for the httpguard CIDR opt-in. It's persisted alongside the typed
+// fields and must be declared.
 func (a *Connector) ConfigSchemaKeys() []string {
-	return []string{"api_key", "base_url", "anthropic_version"}
+	return []string{"api_key", "base_url", "anthropic_version", "outbound_allowlist"}
 }
 
 // Operations returns the catalog of operations this connector exposes.
