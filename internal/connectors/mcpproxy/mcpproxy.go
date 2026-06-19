@@ -206,6 +206,21 @@ func (m *MCPProxyConnector) ConfigSchemaKeys() []string {
 	}
 }
 
+// NormalizeForEdit implements connector.EditConfigNormalizer. Promotes the
+// legacy target_url alias to url so the edit form's required url field is
+// pre-filled for older rows; deletes the alias unconditionally so the
+// next save persists only the canonical key. Idempotent — running it on
+// an already-canonical config is a no-op.
+func (m *MCPProxyConnector) NormalizeForEdit(cfg map[string]any) map[string]any {
+	if u, _ := cfg["url"].(string); u == "" {
+		if alias, _ := cfg["target_url"].(string); alias != "" {
+			cfg["url"] = alias
+		}
+	}
+	delete(cfg, "target_url")
+	return cfg
+}
+
 // discoverTools calls tools/list on the upstream server to discover available tools.
 func (m *MCPProxyConnector) discoverTools(ctx context.Context) error {
 	m.mu.Lock()

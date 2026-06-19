@@ -37,6 +37,21 @@ type Connector interface {
 	Validate(ctx context.Context) error
 }
 
+// EditConfigNormalizer lets a connector migrate or normalize a stored
+// config map before the generic edit page projects fields from it.
+// Used to handle legacy aliases (e.g. mcp_proxy's target_url → url) so
+// older rows are editable without forcing the operator to re-type a
+// value that's already stored. Called both at edit-page render time AND
+// before UpdateConfig writes the saved form back, so the normalized
+// shape eventually lands in the persisted config.
+//
+// Implementations should mutate-and-return the input map. The normalize
+// step MUST be idempotent — running it on an already-normalized config
+// must be a no-op.
+type EditConfigNormalizer interface {
+	NormalizeForEdit(cfg map[string]any) map[string]any
+}
+
 // ConfigSchemaProvider exposes the JSON keys a connector's persisted Config
 // can carry. The architecture test in cmd/sieve/registry_arch_test.go uses
 // this to verify ConnectorMeta.SetupFields covers the entire persisted

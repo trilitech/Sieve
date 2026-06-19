@@ -113,6 +113,16 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Connector-specific legacy-alias normalize (e.g. mcp_proxy's
+	// target_url → url) so older rows render with the canonical key
+	// pre-filled in the edit form. Best-effort: factory failures are
+	// not fatal — fall back to the raw stored config.
+	if c, err := s.registry.Create(conn.ConnectorType, conn.Config); err == nil {
+		if normalizer, ok := c.(connector.EditConfigNormalizer); ok {
+			conn.Config = normalizer.NormalizeForEdit(conn.Config)
+		}
+	}
+
 	data := s.connectionEditViewFromConnection(conn)
 	if r.URL.Query().Get("saved") == "1" {
 		data.Success = true
@@ -154,6 +164,15 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	cfg := make(map[string]any, len(conn.Config)+4)
 	for k, v := range conn.Config {
 		cfg[k] = v
+	}
+
+	// Apply the same legacy-alias normalize the GET path uses so a
+	// save against a legacy row migrates the alias into the canonical
+	// key and persists only the canonical shape going forward.
+	if c, err := s.registry.Create(conn.ConnectorType, conn.Config); err == nil {
+		if normalizer, ok := c.(connector.EditConfigNormalizer); ok {
+			cfg = normalizer.NormalizeForEdit(cfg)
+		}
 	}
 
 	if msg := applyConnectorFormFields(meta, formModeEdit, r, cfg); msg != "" {
