@@ -133,6 +133,15 @@ func Factory() connector.Factory {
 // Type returns the connector type string.
 func (a *Connector) Type() string { return ConnectorType }
 
+// ConfigSchemaKeys implements connector.ConfigSchemaProvider. The Anthropic
+// Config struct uses Go field names without json tags (raw config map is
+// indexed by string literals in parseConfig), so the persisted key set is
+// declared explicitly here. Architecture test verifies these are covered
+// by Meta().SetupFields.
+func (a *Connector) ConfigSchemaKeys() []string {
+	return []string{"api_key", "base_url", "anthropic_version"}
+}
+
 // Operations returns the catalog of operations this connector exposes.
 func (a *Connector) Operations() []connector.OperationDef { return operations }
 

@@ -40,6 +40,13 @@ import (
 )
 
 // Meta describes the Google Account connector for the UI catalog.
+//
+// The OAuth-managed fields (oauth_token, client_id, client_secret) are
+// written by the bespoke OAuth flow in internal/web/server.go (handleAddConnection,
+// handleOAuthCallback). They're declared here with Editable=false +
+// EditOnly=true so the cmd/sieve/registry_arch_test.go invariant holds —
+// every persisted config key MUST appear on Meta() — while the generic
+// forms continue to not render them.
 var Meta = connector.ConnectorMeta{
 	Type:        "google",
 	Name:        "Google Account",
@@ -47,7 +54,12 @@ var Meta = connector.ConnectorMeta{
 	Category:    "Google",
 	SetupFields: []connector.Field{
 		{Name: "email", Label: "Google Account Email", Type: "text", Required: true, Placeholder: "you@gmail.com"},
-		{Name: "oauth_token", Label: "OAuth Token", Type: "oauth", Required: true, HelpText: "Authenticate via Google OAuth"},
+		{Name: "oauth_token", Label: "OAuth Token", Type: "oauth", Required: true, Editable: false, EditOnly: true, Secret: true,
+			HelpText: "Authenticate via Google OAuth. Stored as a token blob — set by the OAuth callback handler, not directly editable."},
+		{Name: "client_id", Label: "OAuth client_id", Type: "text", Editable: false, EditOnly: true,
+			HelpText: "Google OAuth client_id used to refresh the access token. Copied from the application's client_secret*.json at connection-creation time; declared here for the architecture test."},
+		{Name: "client_secret", Label: "OAuth client_secret", Type: "password", Editable: false, EditOnly: true, Secret: true,
+			HelpText: "Google OAuth client_secret used to refresh the access token. Same source as client_id."},
 	},
 }
 
@@ -253,6 +265,17 @@ func getStringFromMap(m map[string]any, key string) string {
 // Type returns "google".
 func (g *GoogleConnector) Type() string {
 	return "google"
+}
+
+// ConfigSchemaKeys implements connector.ConfigSchemaProvider. The Google
+// connector stores its config as a free-form map (no typed Config struct);
+// the persisted-key list is maintained here and the architecture test
+// verifies these are covered by Meta().SetupFields. Internal injection
+// keys prefixed with "_" (_on_token_refresh, _on_token_refresh_failure)
+// are NOT persisted — they're function-typed callbacks set at runtime by
+// connections.Service and round-tripped via separate plumbing.
+func (g *GoogleConnector) ConfigSchemaKeys() []string {
+	return []string{"email", "oauth_token", "client_id", "client_secret"}
 }
 
 // Operations returns the list of supported Gmail operations.
