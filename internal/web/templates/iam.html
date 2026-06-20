@@ -453,7 +453,18 @@
           const conds = el('rb-conds');
           conds.textContent = '';
           for (const c of (cat.conditions || [])) conds.appendChild(condRow(c));
-          el('rb-conds-wrap').classList.toggle('hidden', !(cat.conditions && cat.conditions.length));
+          rbCondVisibility();
+        }
+
+        // Conditions attach only to allow / require-approval rules (a condition
+        // refines what a permit covers; on a deny it could fail open). Hide the
+        // section for deny — the handler also ignores conditions on deny rules.
+        function rbCondVisibility() {
+          const cat = IAM_CATALOG[el('rb-connector').value] || {};
+          const hasConds = (cat.conditions || []).length > 0;
+          const effect = document.querySelector('#rule-form select[name="effect"]');
+          const isDeny = effect && effect.value === 'deny';
+          el('rb-conds-wrap').classList.toggle('hidden', !hasConds || isDeny);
         }
 
         // rbScopeFields renders the input fields for the currently-selected scope.
@@ -512,6 +523,7 @@
         el('rb-opscope').addEventListener('change', rbToggleOps);
         el('rb-connscope').addEventListener('change', rbToggleConns);
         el('rb-scope').addEventListener('change', rbScopeFields);
+        document.querySelector('#rule-form select[name="effect"]').addEventListener('change', rbCondVisibility);
         rbRefresh(); rbToggleOps(); rbToggleConns();
 
         // --- Filter library: show only the selected kind's config block. ---

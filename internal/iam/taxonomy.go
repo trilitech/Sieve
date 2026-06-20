@@ -166,9 +166,19 @@ func buildContext(params map[string]any) map[string]any {
 	}
 	pm := map[string]any{}
 	for k, v := range params {
-		switch v.(type) {
-		case string, bool, int, int64, float64:
+		switch x := v.(type) {
+		case string, bool, int, int64:
 			pm[k] = v
+		case float64:
+			// Cedar has no float. JSON numbers decode as float64: project a
+			// whole number as a Long; OMIT a non-integral one (rather than let
+			// it error the whole decision). A numeric condition referencing an
+			// omitted value then sees an absent attribute — which on a permit
+			// (the only effect the builder allows conditions on) skips the
+			// permit and falls through to default-deny, i.e. fail-closed.
+			if x == float64(int64(x)) {
+				pm[k] = int64(x)
+			}
 		}
 	}
 	if len(pm) > 0 {

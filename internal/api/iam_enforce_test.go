@@ -2,13 +2,18 @@ package api_test
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"testing"
 
+	"github.com/trilitech/Sieve/internal/api"
 	"github.com/trilitech/Sieve/internal/iam"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/testing/testenv"
+	"github.com/trilitech/Sieve/internal/tokens"
 )
 
 const apiGuardScript = `import sys, json
@@ -59,33 +64,72 @@ func TestIAMEnforce_ScriptGuardOverGateway(t *testing.T) {
 	}
 }
 
-// TestIAMEnforce_ConditionOverGateway proves a numeric condition (amount cap)
-// enforces through the real gateway, incl. JSON numbers (which decode as float64
-// and must round-trip as Cedar Long).
+// TestIAMEnforce_ConditionOverGateway proves a numeric cap enforces through the
+// real gateway in the SAFE form the builder produces: "allow write WHEN amount
+// <= 100" with default-deny (no broad allow). A value that exceeds the cap, is
+// absent, or is non-integral (no Cedar representation) all fail closed — the
+// permit's condition errors/false, the permit is skipped, default-deny applies.
 func TestIAMEnforce_ConditionOverGateway(t *testing.T) {
-	env := setupIAMRouter(t)
-	if err := env.settingsSet("iam_enabled", "true"); err != nil {
+	env := testenv.New(t)
+	env.Mock.SetResponse("send_email", map[string]any{"id": "1"})
+	if err := env.Connections.Add("mc", "mock", "Mock", map[string]any{}); err != nil {
 		t.Fatal(err)
 	}
-	// A cap is naturally a DENY rule (it overrides the role's broader allow):
-	// "deny writes whose amount exceeds 100". forbid-overrides-permit.
+	role, err := env.Roles.Create("capped", []roles.Binding{{ConnectionID: "mc"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := env.Tokens.Create(&tokens.CreateRequest{Name: "t", RoleID: role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	iamSvc := iampolicies.NewService(env.DB)
 	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
-		RoleID: env.roleID, Effect: "deny", ConnectorType: "mock", OpScope: "write",
-		ConnectionIDs: []string{"mock-conn"},
-		Conditions:    []iampolicies.ConditionInput{{Kind: "number", CtxPath: "context.param.amount", Op: "gt", Value: "100"}},
+		RoleID: role.ID, Effect: "allow", ConnectorType: "mock", OpScope: "write",
+		ConnectionIDs: []string{"mc"},
+		Conditions:    []iampolicies.ConditionInput{{Kind: "number", CtxPath: "context.param.amount", Op: "lte", Value: "100"}},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.iam.CreatePolicy("amount-cap", "", cedar, true); err != nil {
+	if _, err := iamSvc.CreatePolicy("amount-cap", "", cedar, true); err != nil {
 		t.Fatal(err)
 	}
-	url := env.url + "/api/v1/connections/mock-conn/ops/send_email"
-	if status, _ := apiPost(t, url, env.tok, `{"to":"a@b.com","subject":"s","body":"x","amount":50}`); status != 200 {
-		t.Errorf("amount 50 (<=100) should pass, got %d", status)
+	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
 	}
-	if status, _ := apiPost(t, url, env.tok, `{"to":"a@b.com","subject":"s","body":"x","amount":500}`); status != 403 {
-		t.Errorf("amount 500 (>100) should be denied, got %d", status)
+	router := api.NewRouter(env.Tokens, env.Connections, env.Policies, env.Roles, env.Approval, env.Audit)
+	router.SetIAM(iamSvc, env.Registry, env.Settings)
+	srv := httptest.NewServer(router.Handler())
+	t.Cleanup(srv.Close)
+
+	url := srv.URL + "/api/v1/connections/mc/ops/send_email"
+	send := func(body string) int { s, _ := apiPost(t, url, tok.PlaintextToken, body); return s }
+
+	if s := send(`{"to":"a@b.com","subject":"s","body":"x","amount":50}`); s != 200 {
+		t.Errorf("amount 50 (<=100) should pass, got %d", s)
+	}
+	if s := send(`{"to":"a@b.com","subject":"s","body":"x","amount":500}`); s != 403 {
+		t.Errorf("amount 500 (>100) should be denied, got %d", s)
+	}
+	// Adversarial: a non-integral amount has no Cedar representation — it must
+	// fail closed (skipped permit → default deny), never bypass the cap.
+	if s := send(`{"to":"a@b.com","subject":"s","body":"x","amount":500.5}`); s == 200 {
+		t.Errorf("non-integral amount 500.5 must NOT bypass the cap, got 200")
+	}
+}
+
+// TestIAMEnforce_BenignDecimalParam proves a request carrying a decimal param
+// (no Cedar float representation) does NOT error the whole decision — the value
+// is omitted from context, the request proceeds normally.
+func TestIAMEnforce_BenignDecimalParam(t *testing.T) {
+	env := setupIAMRouter(t)
+	if err := env.settingsSet("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := apiPost(t, env.url+"/api/v1/connections/mock-conn/ops/list_emails", env.tok, `{"ratio":1.5}`); s != 200 {
+		t.Errorf("benign decimal param must not break the decision, got %d", s)
 	}
 }
 

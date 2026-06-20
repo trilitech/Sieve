@@ -380,17 +380,24 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Conditions (connector-tailored).
-	for _, c := range meta.RuleConditions {
-		if r.FormValue("cond_"+c.Key) != "on" {
-			continue
+	// Conditions (connector-tailored). Only on permit effects: a condition
+	// REFINES what a rule covers, and Cedar skips a policy whose condition
+	// errors (e.g. a missing/non-representable attribute). On a permit that
+	// fails closed (skipped permit → default deny); on a forbid it would fail
+	// OPEN (skipped forbid → allowed), so we never attach conditions to deny
+	// rules. Express a cap as "allow when amount <= N", not "deny when > N".
+	if spec.Effect != "deny" {
+		for _, c := range meta.RuleConditions {
+			if r.FormValue("cond_"+c.Key) != "on" {
+				continue
+			}
+			spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
+				Kind:    c.Kind,
+				CtxPath: c.CtxPath,
+				Op:      r.FormValue("cond_" + c.Key + "_op"),
+				Value:   r.FormValue("cond_" + c.Key + "_val"),
+			})
 		}
-		spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
-			Kind:    c.Kind,
-			CtxPath: c.CtxPath,
-			Op:      r.FormValue("cond_" + c.Key + "_op"),
-			Value:   r.FormValue("cond_" + c.Key + "_val"),
-		})
 	}
 
 	// Response-filter obligations (filter-library names).
