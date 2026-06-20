@@ -144,6 +144,24 @@
             </div>
           </div>
 
+          <!-- Resource scope (connector-tailored, JS-populated) -->
+          <div id="rb-scope-wrap" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Resource scope <span class="text-slate-600">(optional)</span></label>
+            <select name="scope_key" id="rb-scope"
+                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="">No resource scope (whole connection)</option>
+            </select>
+            <p id="rb-scope-help" class="text-xs text-slate-500 mt-1"></p>
+            <div id="rb-scope-fields" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3"></div>
+            <p class="text-xs text-amber-500/80 mt-2">Resource scoping applies to the specific connection(s) selected above.</p>
+          </div>
+
+          <!-- Conditions (connector-tailored, JS-populated) -->
+          <div id="rb-conds-wrap" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-2">Conditions <span class="text-slate-600">(optional)</span></label>
+            <div id="rb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+          </div>
+
           <div class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Rule name <span class="text-slate-600">(optional)</span></label>
             <input type="text" name="name" placeholder="auto-generated from the rule if blank"
@@ -301,17 +319,90 @@
         }
         function rbRefresh() {
           const t = el('rb-connector').value;
-          const cat = IAM_CATALOG[t] || { operations: [], connections: [] };
+          const cat = IAM_CATALOG[t] || {};
+          // Every list is null-guarded: a connector may have operations but no
+          // connections (or vice versa), and JSON renders an empty slice as null.
+          const ops = cat.operations || [], conns = cat.connections || [];
 
           const opsBox = el('rb-ops-list');
           opsBox.textContent = '';
-          if (!cat.operations.length) emptyNote(opsBox, 'This connector has no enumerated operations — use All / read / write.');
-          for (const o of cat.operations) opsBox.appendChild(checkboxRow('operations', o.name, o.name, o.readOnly ? '(read)' : ''));
+          if (!ops.length) emptyNote(opsBox, 'This connector has no enumerated operations — use All / read / write.');
+          for (const o of ops) opsBox.appendChild(checkboxRow('operations', o.name, o.name, o.readOnly ? '(read)' : ''));
 
           const connBox = el('rb-conns-list');
           connBox.textContent = '';
-          if (!cat.connections.length) emptyNote(connBox, 'No connections of this connector type yet.');
-          for (const c of cat.connections) connBox.appendChild(checkboxRow('connections', c.id, c.name, ''));
+          if (!conns.length) emptyNote(connBox, 'No connections of this connector type yet.');
+          for (const c of conns) connBox.appendChild(checkboxRow('connections', c.id, c.name, ''));
+
+          // resource scopes (connector-tailored)
+          const scopeSel = el('rb-scope');
+          scopeSel.textContent = '';
+          const none = document.createElement('option');
+          none.value = ''; none.textContent = 'No resource scope (whole connection)';
+          scopeSel.appendChild(none);
+          for (const sc of (cat.scopes || [])) {
+            const o = document.createElement('option');
+            o.value = sc.key; o.textContent = sc.label;
+            scopeSel.appendChild(o);
+          }
+          el('rb-scope-wrap').classList.toggle('hidden', !(cat.scopes && cat.scopes.length));
+          rbScopeFields();
+
+          // conditions (connector-tailored)
+          const conds = el('rb-conds');
+          conds.textContent = '';
+          for (const c of (cat.conditions || [])) conds.appendChild(condRow(c));
+          el('rb-conds-wrap').classList.toggle('hidden', !(cat.conditions && cat.conditions.length));
+        }
+
+        // rbScopeFields renders the input fields for the currently-selected scope.
+        function rbScopeFields() {
+          const cat = IAM_CATALOG[el('rb-connector').value] || {};
+          const sc = (cat.scopes || []).find(s => s.key === el('rb-scope').value);
+          const box = el('rb-scope-fields'); box.textContent = '';
+          el('rb-scope-help').textContent = sc ? (sc.help || '') : '';
+          if (!sc) return;
+          for (const f of (sc.fields || [])) {
+            const wrap = document.createElement('div');
+            const lbl = document.createElement('label');
+            lbl.className = 'block text-xs text-slate-400 mb-1'; lbl.textContent = f.label;
+            const inp = document.createElement('input');
+            inp.type = 'text'; inp.name = 'scope_' + f.key; inp.placeholder = f.placeholder || '';
+            inp.className = 'w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500';
+            wrap.appendChild(lbl); wrap.appendChild(inp); box.appendChild(wrap);
+          }
+        }
+
+        // condRow builds one condition control (checkbox + operator + value).
+        function condRow(c) {
+          const row = document.createElement('div');
+          row.className = 'flex items-center gap-2 flex-wrap';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.name = 'cond_' + c.key; cb.value = 'on';
+          cb.className = 'rounded border-slate-600 bg-slate-800 text-indigo-500';
+          const lbl = document.createElement('span');
+          lbl.className = 'text-sm text-slate-200 min-w-[12rem]'; lbl.textContent = c.label;
+          row.appendChild(cb); row.appendChild(lbl);
+          if (c.kind === 'number') {
+            const op = document.createElement('select');
+            op.name = 'cond_' + c.key + '_op';
+            op.className = 'rounded bg-slate-900 border border-slate-600 px-2 py-1 text-sm text-white';
+            for (const pair of [['lte', '≤'], ['lt', '<'], ['gte', '≥'], ['gt', '>'], ['eq', '=']]) {
+              const o = document.createElement('option'); o.value = pair[0]; o.textContent = pair[1]; op.appendChild(o);
+            }
+            row.appendChild(op);
+          }
+          const val = document.createElement('input');
+          val.type = 'text'; val.name = 'cond_' + c.key + '_val';
+          val.placeholder = c.kind === 'domain_allowlist' ? 'example.com, trilitech.com' : (c.kind === 'number' ? '1000' : 'value');
+          val.className = 'rounded bg-slate-900 border border-slate-600 px-2 py-1 text-sm text-white flex-1 min-w-[8rem]';
+          row.appendChild(val);
+          if (c.help) {
+            const h = document.createElement('p');
+            h.className = 'text-xs text-slate-500 w-full'; h.textContent = c.help;
+            row.appendChild(h);
+          }
+          return row;
         }
         function rbToggleOps() { el('rb-ops').classList.toggle('hidden', el('rb-opscope').value !== 'specific'); }
         function rbToggleConns() { el('rb-conns').classList.toggle('hidden', el('rb-connscope').value !== 'specific'); }
@@ -319,6 +410,7 @@
         el('rb-connector').addEventListener('change', rbRefresh);
         el('rb-opscope').addEventListener('change', rbToggleOps);
         el('rb-connscope').addEventListener('change', rbToggleConns);
+        el('rb-scope').addEventListener('change', rbScopeFields);
         rbRefresh(); rbToggleOps(); rbToggleConns();
 
         // --- Explorer connection dropdown + operation hints ---

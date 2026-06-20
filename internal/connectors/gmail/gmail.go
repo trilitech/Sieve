@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/trilitech/Sieve/internal/connector"
@@ -50,6 +51,24 @@ var Meta = connector.ConnectorMeta{
 		{Name: "oauth_token", Label: "OAuth Token", Type: "oauth", Required: true, HelpText: "Authenticate via Google OAuth"},
 	},
 	Operations: operations,
+	// recipient_domains is populated by GoogleConnector.EnrichContext for the
+	// send/draft/reply ops (see EnrichContext below). The domain_allowlist
+	// condition lets operators permit a send only when every recipient domain
+	// is in the configured set.
+	RuleConditions: []connector.RuleCondition{
+		{
+			Key:     "recipient_domain",
+			Label:   "Recipient domains (allowlist)",
+			Kind:    "domain_allowlist",
+			CtxPath: "context.recipient_domains",
+			Help:    "Sends allowed only if every recipient domain is in this list",
+		},
+	},
+	// Bridge the pure EnrichContext method to the Meta func field the PDP calls
+	// (no configured instance / keyring needed — the method ignores its
+	// receiver). Populates context.recipient_domains for the domain_allowlist
+	// condition above.
+	EnrichContext: (&GoogleConnector{}).EnrichContext,
 }
 
 // GoogleConnector implements the connector.Connector interface for Google services.
@@ -259,6 +278,78 @@ func (g *GoogleConnector) Type() string {
 // Operations returns the list of supported Gmail operations.
 func (g *GoogleConnector) Operations() []connector.OperationDef {
 	return operations
+}
+
+// recipientParamsByOp lists, per outbound op, the params that carry actual
+// recipient email addresses. Drawn from the Gmail OperationDefs: only "to" and
+// "cc" hold addresses ([]string). "reply_to" is deliberately excluded — in this
+// connector it is a Gmail message ID to reply to, not an address. There is no
+// "bcc" param in the catalog. Read-only ops are absent (no recipients to gate).
+var recipientParamsByOp = map[string][]string{
+	"create_draft": {"to", "cc"},
+	"update_draft": {"to", "cc"},
+	"send_email":   {"to", "cc"},
+	"reply":        {"to", "cc"},
+}
+
+// EnrichContext implements connector.ContextEnricher. For the send/draft/reply
+// ops it collects every recipient address, extracts the domain after '@'
+// (lowercased), and returns {"recipient_domains": [...]} with duplicates
+// removed. The domain_allowlist rule condition (CtxPath
+// "context.recipient_domains", declared in Meta) reads this attribute. Returns
+// nil for ops with no recipient params or when no usable address is present.
+// Pure: no I/O, no mutation of params.
+func (g *GoogleConnector) EnrichContext(op string, params map[string]any) map[string]any {
+	keys, ok := recipientParamsByOp[op]
+	if !ok {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	domains := make([]string, 0)
+	for _, key := range keys {
+		for _, addr := range recipientAddresses(params, key) {
+			d := domainOf(addr)
+			if d == "" {
+				continue
+			}
+			if _, dup := seen[d]; dup {
+				continue
+			}
+			seen[d] = struct{}{}
+			domains = append(domains, d)
+		}
+	}
+	if len(domains) == 0 {
+		return nil
+	}
+	return map[string]any{"recipient_domains": domains}
+}
+
+// recipientAddresses reads a recipient param that may arrive as []string,
+// []any (JSON-decoded), or a single string, returning the addresses as a
+// slice. getStringSliceParam already covers the slice shapes; the plain-string
+// fallback handles callers that pass a single address as a bare string.
+func recipientAddresses(params map[string]any, key string) []string {
+	if vals := getStringSliceParam(params, key); len(vals) > 0 {
+		return vals
+	}
+	if s, ok := params[key].(string); ok && s != "" {
+		return []string{s}
+	}
+	return nil
+}
+
+// domainOf extracts the lowercased domain from an email address (the part
+// after the last '@'). Returns "" when there is no '@' or the domain part is
+// empty, so malformed entries are skipped rather than producing junk domains.
+func domainOf(addr string) string {
+	at := strings.LastIndex(addr, "@")
+	if at < 0 {
+		return ""
+	}
+	domain := strings.TrimSpace(addr[at+1:])
+	return strings.ToLower(domain)
 }
 
 // operations is the static catalog of supported Google operations. It is the

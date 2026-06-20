@@ -68,6 +68,34 @@ func Meta() connector.ConnectorMeta {
 			{Name: "Sieve::Github::Owner"},
 			{Name: "Sieve::Github::Repo", Parent: "Sieve::Github::Owner"},
 		},
+		// RuleScopes mirror the runtime resource mappers in ops.go
+		// (githubOwnerResource / githubRepoResource): the IDFormat strings
+		// MUST stay byte-for-byte aligned with the ids those mappers build —
+		// "{conn}/{owner}" and "{conn}/{owner}/{repo}" — so a rule scoped in
+		// the admin builder and a live request resolve to the same Cedar entity.
+		RuleScopes: []connector.RuleScope{
+			{
+				Key:        "owner",
+				Label:      "Owner / org",
+				EntityType: "Sieve::Github::Owner",
+				Fields: []connector.ScopeField{
+					{Key: "owner", Label: "Owner", Placeholder: "trilitech"},
+				},
+				IDFormat: "{conn}/{owner}",
+				Help:     "Restrict to a GitHub owner/org",
+			},
+			{
+				Key:        "repo",
+				Label:      "Repository",
+				EntityType: "Sieve::Github::Repo",
+				Fields: []connector.ScopeField{
+					{Key: "owner", Label: "Owner", Placeholder: "trilitech"},
+					{Key: "repo", Label: "Repo", Placeholder: "sieve"},
+				},
+				IDFormat: "{conn}/{owner}/{repo}",
+				Help:     "Restrict to a single repository",
+			},
+		},
 	}
 }
 

@@ -39,6 +39,22 @@ func (s *Service) Decide(
 	}
 	opDef := taxonomyOp(reg, connType, op)
 	req := iam.BuildRequest(tokenID, roleID, groups, connType, connID, connStatus, opDef, params)
+
+	// Connector-derived context (e.g. recipient_domains) that RuleConditions
+	// reference. Pure func on Meta — no configured instance / keyring needed.
+	if reg != nil {
+		if meta, ok := reg.Meta(connType); ok && meta.EnrichContext != nil {
+			if extra := meta.EnrichContext(op, params); len(extra) > 0 {
+				if req.Context == nil {
+					req.Context = map[string]any{}
+				}
+				for k, v := range extra {
+					req.Context[k] = v
+				}
+			}
+		}
+	}
+
 	dec, err := eng.Decide(req)
 	if err != nil {
 		return nil, err

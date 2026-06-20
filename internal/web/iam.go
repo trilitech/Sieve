@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/iampolicies"
@@ -47,6 +48,29 @@ type iamOpView struct {
 type iamConnView struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+type iamScopeFieldView struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Placeholder string `json:"placeholder"`
+}
+
+type iamScopeView struct {
+	Key        string              `json:"key"`
+	Label      string              `json:"label"`
+	EntityType string              `json:"entityType"`
+	IDFormat   string              `json:"idFormat"`
+	Help       string              `json:"help"`
+	Fields     []iamScopeFieldView `json:"fields"`
+}
+
+type iamCondView struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Help    string `json:"help"`
+	Kind    string `json:"kind"`
+	CtxPath string `json:"ctxPath"`
 }
 
 // iamConnectorOption is one entry in the connector dropdown.
@@ -140,8 +164,27 @@ func (s *Server) populateBuilderData(data *iamPageData) {
 			sort.Slice(ops, func(i, j int) bool { return ops[i].Name < ops[j].Name })
 			conns := connsByType[m.Type]
 			sort.Slice(conns, func(i, j int) bool { return conns[i].Name < conns[j].Name })
+
+			scopes := make([]iamScopeView, 0, len(m.RuleScopes))
+			for _, sc := range m.RuleScopes {
+				fields := make([]iamScopeFieldView, 0, len(sc.Fields))
+				for _, f := range sc.Fields {
+					fields = append(fields, iamScopeFieldView{Key: f.Key, Label: f.Label, Placeholder: f.Placeholder})
+				}
+				scopes = append(scopes, iamScopeView{
+					Key: sc.Key, Label: sc.Label, EntityType: sc.EntityType,
+					IDFormat: sc.IDFormat, Help: sc.Help, Fields: fields,
+				})
+			}
+			conds := make([]iamCondView, 0, len(m.RuleConditions))
+			for _, c := range m.RuleConditions {
+				conds = append(conds, iamCondView{Key: c.Key, Label: c.Label, Help: c.Help, Kind: c.Kind, CtxPath: c.CtxPath})
+			}
+
 			data.Connectors = append(data.Connectors, iamConnectorOption{Type: m.Type, Name: m.Name})
-			catalog[m.Type] = map[string]any{"operations": ops, "connections": conns}
+			catalog[m.Type] = map[string]any{
+				"operations": ops, "connections": conns, "scopes": scopes, "conditions": conds,
+			}
 		}
 	}
 	sort.Slice(data.Connectors, func(i, j int) bool { return data.Connectors[i].Name < data.Connectors[j].Name })
@@ -211,8 +254,55 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 		spec.ConnectionIDs = r.Form["connections"]
 	}
 
-	var ops = s.connectorOps(spec.ConnectorType)
-	cedar, err := iampolicies.BuildRuleCedar(spec, ops)
+	meta := s.connectorMeta(spec.ConnectorType)
+
+	// Resource scope (connector-tailored). The entity id is connection-prefixed,
+	// so scoping requires specific connection(s).
+	if scopeKey := r.FormValue("scope_key"); scopeKey != "" {
+		for _, sc := range meta.RuleScopes {
+			if sc.Key != scopeKey {
+				continue
+			}
+			fields := map[string]string{}
+			for _, f := range sc.Fields {
+				v := strings.TrimSpace(r.FormValue("scope_" + f.Key))
+				if v == "" {
+					http.Error(w, "fill in all fields for the selected resource scope", http.StatusBadRequest)
+					return
+				}
+				fields[f.Key] = v
+			}
+			if len(spec.ConnectionIDs) == 0 {
+				http.Error(w, "resource scoping requires selecting specific connection(s)", http.StatusBadRequest)
+				return
+			}
+			for _, connID := range spec.ConnectionIDs {
+				spec.Scopes = append(spec.Scopes, iampolicies.ScopeRef{
+					EntityType: sc.EntityType,
+					ID:         iampolicies.BuildScopeID(sc.IDFormat, connID, fields),
+				})
+			}
+			break
+		}
+	}
+
+	// Conditions (connector-tailored).
+	for _, c := range meta.RuleConditions {
+		if r.FormValue("cond_"+c.Key) != "on" {
+			continue
+		}
+		spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
+			Kind:    c.Kind,
+			CtxPath: c.CtxPath,
+			Op:      r.FormValue("cond_" + c.Key + "_op"),
+			Value:   r.FormValue("cond_" + c.Key + "_val"),
+		})
+	}
+
+	// Response-filter obligations (filter-library names).
+	spec.Filters = r.Form["filters"]
+
+	cedar, err := iampolicies.BuildRuleCedar(spec, meta.Operations)
 	if err != nil {
 		http.Error(w, "could not build rule: "+err.Error(), http.StatusBadRequest)
 		return
@@ -261,21 +351,19 @@ func (s *Server) createAdvancedPolicy(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 
-// connectorOps returns the connector's static op catalog (for resolving
-// specific op names to action ids).
-func (s *Server) connectorOps(connType string) []connector.OperationDef {
+// connectorMeta returns the connector's metadata (operations + rule
+// capabilities) for the handler to resolve op names, scopes, and conditions.
+func (s *Server) connectorMeta(connType string) connector.ConnectorMeta {
 	reg := s.iamRegistry
 	if reg == nil {
 		reg = s.registry
 	}
-	if reg == nil {
-		return nil
+	if reg != nil {
+		if m, ok := reg.Meta(connType); ok {
+			return m
+		}
 	}
-	m, ok := reg.Meta(connType)
-	if !ok {
-		return nil
-	}
-	return m.Operations
+	return connector.ConnectorMeta{}
 }
 
 // roleName resolves a role id to its display name ("" / unknown → "").

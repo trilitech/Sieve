@@ -88,4 +88,43 @@ test.describe('Sieve running on the IAM engine', () => {
     await expect(page.locator('body')).toContainText('Allow read-only operations on mock');
     await expect(page.locator('body')).toContainText('role: pw-builder-role');
   });
+
+  test('connector-tailored controls render per connector', async ({ page }) => {
+    await loginOperator(page, s);
+    await page.goto(`${s.web_url}/iam`);
+
+    // GitHub exposes owner/repo resource scopes.
+    await page.selectOption('#rb-connector', 'github');
+    await expect(page.locator('#rb-scope-wrap')).toBeVisible();
+    await expect(page.locator('#rb-scope')).toContainText('Owner / org');
+    await expect(page.locator('#rb-scope')).toContainText('Repository');
+
+    // Anthropic exposes a numeric max-tokens condition.
+    await page.selectOption('#rb-connector', 'anthropic');
+    await expect(page.locator('#rb-conds-wrap')).toBeVisible();
+    await expect(page.locator('#rb-conds')).toContainText('Max tokens');
+
+    // Gmail (google) exposes the recipient-domain condition.
+    await page.selectOption('#rb-connector', 'google');
+    await expect(page.locator('#rb-conds')).toContainText('Recipient domains');
+  });
+
+  test('build a condition rule (anthropic max-tokens) entirely via the UI', async ({ page }) => {
+    await loginOperator(page, s);
+    await page.goto(`${s.web_url}/iam`);
+
+    await page.fill('form[action="/iam/roles"] input[name="name"]', 'pw-cond-role');
+    await page.locator('form[action="/iam/roles"] button[type="submit"]').click();
+
+    await page.selectOption('#rule-form select[name="role_id"]', { label: 'pw-cond-role' });
+    await page.selectOption('#rule-form select[name="effect"]', 'require_approval');
+    await page.selectOption('#rb-connector', 'anthropic');
+    await page.check('input[name="cond_max_tokens"]');
+    await page.selectOption('select[name="cond_max_tokens_op"]', 'lte');
+    await page.fill('input[name="cond_max_tokens_val"]', '4096');
+    await page.locator('#rule-form button[type="submit"]').click();
+
+    await expect(page.locator('body')).toContainText('Require approval for');
+    await expect(page.locator('body')).toContainText('context.param.max_tokens');
+  });
 });

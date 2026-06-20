@@ -81,6 +81,43 @@ type ResourceType struct {
 	Parent string // "Sieve::Github::Owner"; "" ⇒ Sieve::Connection
 }
 
+// RuleScope declares a connector-specific resource the admin rule-builder can
+// scope a rule to (e.g. a GitHub owner or repo). The builder constructs the
+// Cedar entity id from the selected connection id + the user-entered field
+// values via IDFormat — "{conn}" plus one "{<field.Key>}" per Field — and emits
+// `resource in <EntityType>::"<id>"`. IDFormat MUST match the connector's
+// runtime ResourceMapper so a scoped rule and a live request agree.
+type RuleScope struct {
+	Key        string       // form key
+	Label      string       // UI label, e.g. "Repository"
+	EntityType string       // namespaced entity type, e.g. "Sieve::Github::Repo"
+	Fields     []ScopeField // inputs needed to build the id
+	IDFormat   string       // e.g. "{conn}/{owner}/{repo}"
+	Help       string
+}
+
+// ScopeField is one text input contributing to a RuleScope entity id.
+type ScopeField struct {
+	Key         string // substituted as {Key} in RuleScope.IDFormat
+	Label       string
+	Placeholder string
+}
+
+// RuleCondition declares a connector-specific predicate the rule-builder can add
+// to a rule. The builder turns (operator, value) into a Cedar boolean over
+// CtxPath and ANDs it into the rule's `when` clause. Kinds:
+//   - "number":           CtxPath <op> <value>           (op: <=,<,>=,>,==)
+//   - "string":           CtxPath == "<value>"
+//   - "domain_allowlist": ["<v1>","<v2>"].containsAll(CtxPath)  (every actual
+//     value must be in the allowed set — e.g. send only to listed domains)
+type RuleCondition struct {
+	Key     string // form key
+	Label   string
+	Help    string
+	Kind    string // "number" | "string" | "domain_allowlist"
+	CtxPath string // Cedar path, e.g. "context.param.amount", "context.recipient_domains"
+}
+
 // ContextEnricher optionally adds derived context attributes to a request
 // (recipient domains for sends, http method for escape hatches, estimated cost).
 // Declared here; invoked by the PEP/PIP in PR-D. Pure; no I/O.
@@ -117,6 +154,19 @@ type ConnectorMeta struct {
 	// generation (their names + parent edges). The connection/connector
 	// container types are generic and added by the generator.
 	ResourceTypes []ResourceType `json:"-"`
+
+	// RuleScopes / RuleConditions drive the admin rule-builder's
+	// connector-tailored controls (resource scoping + conditions). Empty ⇒ the
+	// builder offers only operation + connection scoping for this connector.
+	RuleScopes     []RuleScope     `json:"-"`
+	RuleConditions []RuleCondition `json:"-"`
+
+	// EnrichContext optionally derives extra request-context attributes (e.g.
+	// recipient_domains for a send) that connector RuleConditions reference via
+	// their CtxPath. Pure; no I/O. Exposed as a Meta func (not the instance
+	// ContextEnricher interface) so the PDP can enrich without constructing a
+	// configured connector / touching the keyring. Nil ⇒ no enrichment.
+	EnrichContext func(op string, params map[string]any) map[string]any `json:"-"`
 }
 
 // Field describes a form field for connection setup and editing.

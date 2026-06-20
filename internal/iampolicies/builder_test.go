@@ -126,6 +126,126 @@ func TestBuildRuleCedar_SpecificConnections(t *testing.T) {
 	}
 }
 
+func TestBuildScopeID(t *testing.T) {
+	got := BuildScopeID("{conn}/{owner}/{repo}", "gh", map[string]string{"owner": "trilitech", "repo": "sieve"})
+	if got != "gh/trilitech/sieve" {
+		t.Errorf("BuildScopeID = %q", got)
+	}
+}
+
+// ownerReq builds a request whose resource is a GitHub owner (mirrors the
+// connector's runtime ResourceMapper id format: "<conn>/<owner>").
+func ownerReq(roleID, connID, owner string) iam.Request {
+	od := connector.OperationDef{
+		Name: "get_repos", ReadOnly: true, ResourceType: "Sieve::Github::Owner",
+		Resource: func(cid string, p map[string]any) []connector.ResourceRef {
+			return []connector.ResourceRef{{Type: "Sieve::Github::Owner", ID: cid + "/" + owner}}
+		},
+	}
+	return iam.BuildRequest("tok", roleID, nil, "github", connID, "active", od, nil)
+}
+
+func TestBuildRuleCedar_ResourceScope(t *testing.T) {
+	cedar, err := BuildRuleCedar(RuleSpec{
+		RoleID: "R", Effect: "allow", ConnectorType: "github", OpScope: "read",
+		Scopes: []ScopeRef{{EntityType: "Sieve::Github::Owner", ID: "gh/trilitech"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := decideEngine(t, cedar)
+	if d, _ := eng.Decide(ownerReq("R", "gh", "trilitech")); !d.Allow {
+		t.Errorf("owner-scoped read should be allowed for the scoped owner\ncedar:\n%s", cedar)
+	}
+	if d, _ := eng.Decide(ownerReq("R", "gh", "someone-else")); d.Allow {
+		t.Errorf("owner-scoped rule must NOT apply to a different owner")
+	}
+}
+
+func TestBuildRuleCedar_NumberCondition(t *testing.T) {
+	cedar, err := BuildRuleCedar(RuleSpec{
+		RoleID: "R", Effect: "allow", ConnectorType: "anthropic", OpScope: "all",
+		Conditions: []ConditionInput{{Kind: "number", CtxPath: "context.param.amount", Op: "lte", Value: "1000"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := decideEngine(t, cedar)
+	mk := func(amount int) iam.Request {
+		return iam.BuildRequest("tok", "R", nil, "anthropic", "ap", "active",
+			connector.OperationDef{Name: "complete"}, map[string]any{"amount": amount})
+	}
+	if d, _ := eng.Decide(mk(500)); !d.Allow {
+		t.Errorf("amount 500 <= 1000 should be allowed\ncedar:\n%s", cedar)
+	}
+	if d, _ := eng.Decide(mk(5000)); d.Allow {
+		t.Errorf("amount 5000 must NOT be allowed by a <=1000 rule")
+	}
+}
+
+func TestBuildRuleCedar_DomainAllowlist(t *testing.T) {
+	cedar, err := BuildRuleCedar(RuleSpec{
+		RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "write",
+		Conditions: []ConditionInput{{Kind: "domain_allowlist", CtxPath: "context.recipient_domains", Value: "example.com, trilitech.com"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := decideEngine(t, cedar)
+	// Build a send request and inject recipient_domains into context (the PEP
+	// enricher does this in the live path).
+	mk := func(domains ...string) iam.Request {
+		req := iam.BuildRequest("tok", "R", nil, "google", "work", "active",
+			connector.OperationDef{Name: "send_email"}, nil)
+		set := make([]any, len(domains))
+		for i, d := range domains {
+			set[i] = d
+		}
+		if req.Context == nil {
+			req.Context = map[string]any{}
+		}
+		req.Context["recipient_domains"] = set
+		return req
+	}
+	if d, _ := eng.Decide(mk("example.com")); !d.Allow {
+		t.Errorf("send to allowed domain should be permitted\ncedar:\n%s", cedar)
+	}
+	if d, _ := eng.Decide(mk("evil.com")); d.Allow {
+		t.Errorf("send to a non-allowlisted domain must be denied")
+	}
+}
+
+func TestBuildRuleCedar_Filters(t *testing.T) {
+	cedar, err := BuildRuleCedar(RuleSpec{
+		RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "read",
+		Filters: []string{"redact-ssn"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cedar, `@filters("redact-ssn")`) {
+		t.Fatalf("expected @filters annotation, got:\n%s", cedar)
+	}
+	lib := iam.MapFilterLibrary{"redact-ssn": iam.Filter{Name: "redact-ssn", Kind: iam.KindRedact}}
+	eng, err := iam.NewEngine([]iam.Policy{{ID: "p1", Cedar: cedar}}, lib)
+	if err != nil {
+		t.Fatalf("compile with filter lib: %v", err)
+	}
+	d, _ := eng.Decide(reqFor("R", "google", "work", "list_emails", true))
+	if !d.Allow {
+		t.Fatalf("filtered read should be allowed")
+	}
+	found := false
+	for _, f := range d.Obligations.Post {
+		if f.Name == "redact-ssn" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected redact-ssn in post obligations, got %+v", d.Obligations.Post)
+	}
+}
+
 func TestHumanSummary(t *testing.T) {
 	got := HumanSummary(RuleSpec{Effect: "allow", ConnectorType: "google", OpScope: "read"}, "agent", nil)
 	want := "Allow read-only operations on google (any connection) — role: agent"

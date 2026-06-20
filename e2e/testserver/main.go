@@ -18,7 +18,10 @@ import (
 	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
+	anthropicconn "github.com/trilitech/Sieve/internal/connectors/anthropic"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
+	gmailconn "github.com/trilitech/Sieve/internal/connectors/gmail"
+	httpproxyconn "github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 	"github.com/trilitech/Sieve/internal/iammigrate"
 	"github.com/trilitech/Sieve/internal/iampolicies"
@@ -74,6 +77,9 @@ func main() {
 	registry.Register(mock.Meta(), mock.Factory())
 	registry.Register(githubconn.Meta(), githubconn.Factory())
 	registry.Register(slackconn.Meta(), slackconn.Factory())
+	registry.Register(gmailconn.Meta, gmailconn.Factory)
+	registry.Register(httpproxyconn.Meta, httpproxyconn.Factory)
+	registry.Register(anthropicconn.Meta(), anthropicconn.Factory())
 
 	// Create all services.
 	connSvc := connections.NewService(db, registry, keyring)

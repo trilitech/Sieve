@@ -162,6 +162,15 @@ var Meta = connector.ConnectorMeta{
 			HelpText: "One header key per line, case-insensitive. Adds to the built-in baseline deny-list; cannot remove from it."},
 	},
 	Operations: operations,
+	RuleConditions: []connector.RuleCondition{
+		{
+			Key:     "http_method",
+			Label:   "HTTP method",
+			Kind:    "string",
+			CtxPath: "context.http_method",
+			Help:    "e.g. GET, POST",
+		},
+	},
 }
 
 // ProxyConnector implements connector.Connector for generic HTTP proxying.
