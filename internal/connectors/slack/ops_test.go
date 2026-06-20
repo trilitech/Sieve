@@ -190,6 +190,76 @@ func TestOps_SearchMessages_NotEnabled(t *testing.T) {
 	}
 }
 
+// TestOps_SearchMessages_UserToken — a user-token connection (xoxp-) CAN
+// run search.messages. Asserts the normalized {items, next_cursor} shape
+// and that the connector translated query/page_size into Slack's
+// query/count params.
+func TestOps_SearchMessages_UserToken(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+	c, _ := newUserConnectorForTest(t, mock)
+
+	got, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "deploy"})
+	if err != nil {
+		t.Fatalf("search_messages (user token): %v", err)
+	}
+	m := got.(map[string]any)
+	items, ok := m["items"].([]any)
+	if !ok {
+		t.Fatalf("expected items array, got %+v", m["items"])
+	}
+	if len(items) == 0 {
+		t.Fatal("expected at least one match from the mock corpus")
+	}
+	if _, ok := m["next_cursor"]; !ok {
+		t.Fatal("expected next_cursor key in response")
+	}
+	// Verify the request actually hit search.messages with the query.
+	var hit bool
+	for _, call := range mock.Calls() {
+		if call.Path == "/api/search.messages" {
+			hit = true
+			if q := call.Form["query"]; len(q) == 0 || q[0] != "deploy" {
+				t.Fatalf("query not forwarded: %v", call.Form["query"])
+			}
+		}
+	}
+	if !hit {
+		t.Fatal("connector never called /api/search.messages")
+	}
+}
+
+// TestOps_SearchMessages_UserToken_Pagination walks the page→cursor
+// translation: page_size=1 against the 3-item mock corpus yields a
+// non-empty next_cursor, and following it advances to the next page.
+func TestOps_SearchMessages_UserToken_Pagination(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+	c, _ := newUserConnectorForTest(t, mock)
+
+	page1, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "deploy", "page_size": 1})
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	m1 := page1.(map[string]any)
+	if items, _ := m1["items"].([]any); len(items) != 1 {
+		t.Fatalf("page 1 size: got %d, want 1", len(items))
+	}
+	cursor1, _ := m1["next_cursor"].(string)
+	if cursor1 == "" {
+		t.Fatal("expected non-empty next_cursor on page 1 of a 3-item corpus")
+	}
+
+	page2, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "deploy", "page_size": 1, "cursor": cursor1})
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	m2 := page2.(map[string]any)
+	if items, _ := m2["items"].([]any); len(items) != 1 {
+		t.Fatalf("page 2 size: got %d, want 1", len(items))
+	}
+}
+
 func TestOps_PostMessage(t *testing.T) {
 	mock := mockslack.New()
 	t.Cleanup(mock.Close)

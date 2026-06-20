@@ -121,9 +121,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	case "/api/chat.postMessage":
 		s.handlePostMessage(w, r)
 	case "/api/search.messages":
-		// Search requires user-token install — return the documented
-		// "operation_not_enabled" shape per research R1a.
-		writeJSON(w, map[string]any{"ok": false, "error": "not_allowed_token_type"})
+		s.handleSearchMessages(w, r)
 	case "/api/oauth.v2.access":
 		s.handleOAuthAccess(w, r)
 	default:
@@ -244,6 +242,62 @@ func (s *Server) handlePostMessage(w http.ResponseWriter, r *http.Request) {
 		"channel": channel,
 		"ts":      "1700000099.000100",
 		"message": map[string]any{"text": text, "user": "U0KRQLJ9H"},
+	})
+}
+
+// handleSearchMessages mimics Slack's search.messages, which only
+// accepts user tokens (xoxp-/xoxe.). A bot token (xoxb-) gets the real
+// API's not_allowed_token_type error, exercising the connector's
+// bot-vs-user gating. For a user token it returns a small paged match
+// set so the connector's page→cursor translation is covered.
+func (s *Server) handleSearchMessages(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !strings.HasPrefix(token, "xoxp-") && !strings.HasPrefix(token, "xoxe.") {
+		writeJSON(w, map[string]any{"ok": false, "error": "not_allowed_token_type"})
+		return
+	}
+
+	// Fixed corpus of 3 matches; paginate by count/page like Slack does.
+	corpus := []map[string]any{
+		{"type": "message", "user": "U0001", "text": "deploy started", "ts": "1700000010.000100", "channel": map[string]any{"id": "C0000001", "name": "channel-1"}},
+		{"type": "message", "user": "U0002", "text": "deploy finished", "ts": "1700000020.000100", "channel": map[string]any{"id": "C0000001", "name": "channel-1"}},
+		{"type": "message", "user": "U0001", "text": "deploy rollback", "ts": "1700000030.000100", "channel": map[string]any{"id": "C0000002", "name": "channel-2"}},
+	}
+	count := 20
+	if c := r.FormValue("count"); c != "" {
+		if n, err := strconv.Atoi(c); err == nil && n > 0 {
+			count = n
+		}
+	}
+	page := 1
+	if p := r.FormValue("page"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			page = n
+		}
+	}
+	total := len(corpus)
+	pages := (total + count - 1) / count
+	if pages == 0 {
+		pages = 1
+	}
+	start := (page - 1) * count
+	if start > total {
+		start = total
+	}
+	end := start + count
+	if end > total {
+		end = total
+	}
+	matches := corpus[start:end]
+
+	writeJSON(w, map[string]any{
+		"ok":    true,
+		"query": r.FormValue("query"),
+		"messages": map[string]any{
+			"total":   total,
+			"matches": matches,
+			"paging":  map[string]any{"count": count, "total": total, "page": page, "pages": pages},
+		},
 	})
 }
 
