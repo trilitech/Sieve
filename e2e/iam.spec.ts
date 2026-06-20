@@ -51,10 +51,9 @@ test.describe('Sieve running on the IAM engine', () => {
   test('decision explorer agrees with the agent path (deny on send_email)', async ({ page }) => {
     await loginOperator(page, s);
     await page.goto(`${s.web_url}/iam`);
-    await page.fill('input[name="role_id"]', s.seed_role_id);
-    await page.fill('input[name="connection_id"]', 'test-conn');
-    await page.fill('input[name="connector_type"]', 'mock');
-    await page.fill('input[name="operation"]', 'send_email');
+    await page.selectOption('select[name="role_id"]', s.seed_role_id);
+    await page.selectOption('#ex-conn', 'test-conn');
+    await page.fill('#ex-op', 'send_email');
     await page.locator('form[action="/iam/explore"] button[type="submit"]').click();
     await expect(page.locator('body')).toContainText(/deny/i);
   });
@@ -62,11 +61,31 @@ test.describe('Sieve running on the IAM engine', () => {
   test('decision explorer allows a read op', async ({ page }) => {
     await loginOperator(page, s);
     await page.goto(`${s.web_url}/iam`);
-    await page.fill('input[name="role_id"]', s.seed_role_id);
-    await page.fill('input[name="connection_id"]', 'test-conn');
-    await page.fill('input[name="connector_type"]', 'mock');
-    await page.fill('input[name="operation"]', 'list_emails');
+    await page.selectOption('select[name="role_id"]', s.seed_role_id);
+    await page.selectOption('#ex-conn', 'test-conn');
+    await page.fill('#ex-op', 'list_emails');
     await page.locator('form[action="/iam/explore"] button[type="submit"]').click();
     await expect(page.locator('body')).toContainText(/allow/i);
+  });
+
+  test('visual builder: create a role + an allow rule, no Cedar typed', async ({ page }) => {
+    await loginOperator(page, s);
+    await page.goto(`${s.web_url}/iam`);
+
+    // Create an IAM role by name.
+    await page.fill('form[action="/iam/roles"] input[name="name"]', 'pw-builder-role');
+    await page.locator('form[action="/iam/roles"] button[type="submit"]').click();
+    await expect(page.locator('body')).toContainText('pw-builder-role');
+
+    // Build an allow/read rule for it on the mock connector — entirely via form controls.
+    await page.selectOption('#rule-form select[name="role_id"]', { label: 'pw-builder-role' });
+    await page.selectOption('#rule-form select[name="effect"]', 'allow');
+    await page.selectOption('#rb-connector', 'mock');
+    await page.selectOption('#rb-opscope', 'read');
+    await page.locator('#rule-form button[type="submit"]').click();
+
+    // The new rule shows up as a human-readable summary (not raw Cedar).
+    await expect(page.locator('body')).toContainText('Allow read-only operations on mock');
+    await expect(page.locator('body')).toContainText('role: pw-builder-role');
   });
 });

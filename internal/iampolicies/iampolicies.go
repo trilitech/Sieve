@@ -278,6 +278,19 @@ func (s *Service) BuildEngine() (*iam.Engine, error) {
 	return iam.NewEngine(pols, lib)
 }
 
+// ValidateCedar reports whether cedar parses and compiles as a single IAM policy
+// against the current filter library. The admin UI calls this BEFORE storing a
+// policy (builder-generated or raw) so one un-parseable statement can't fail the
+// whole engine rebuild and lock out every decision.
+func (s *Service) ValidateCedar(cedar string) error {
+	lib, err := s.FilterLibrary()
+	if err != nil {
+		return err
+	}
+	_, err = iam.NewEngine([]iam.Policy{{ID: "_validate", Cedar: cedar}}, lib)
+	return err
+}
+
 // --- helpers ---
 
 func boolToInt(b bool) int {

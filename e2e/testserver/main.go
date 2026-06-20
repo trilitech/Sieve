@@ -146,7 +146,11 @@ func main() {
 	// Bind the listener first so we know the port; the rotation-form
 	// Origin allow-list (passed into NewServer) needs the concrete
 	// host:port to validate cross-origin POSTs.
-	webListener, err := net.Listen("tcp", "127.0.0.1:0")
+	webBind := os.Getenv("SIEVE_WEB_ADDR")
+	if webBind == "" {
+		webBind = "127.0.0.1:0"
+	}
+	webListener, err := net.Listen("tcp", webBind)
 	mustErr(err, "web listen")
 	webPort := webListener.Addr().(*net.TCPAddr).Port
 	webAddr := fmt.Sprintf("127.0.0.1:%d", webPort)
@@ -177,7 +181,11 @@ func main() {
 	// --- Start API server ---
 	apiRouter := api.NewRouter(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
 	apiRouter.SetIAM(iamSvc, registry, settingsSvc)
-	apiListener, err := net.Listen("tcp", "127.0.0.1:0")
+	apiBind := os.Getenv("SIEVE_API_ADDR")
+	if apiBind == "" {
+		apiBind = "127.0.0.1:0"
+	}
+	apiListener, err := net.Listen("tcp", apiBind)
 	mustErr(err, "api listen")
 	apiPort := apiListener.Addr().(*net.TCPAddr).Port
 

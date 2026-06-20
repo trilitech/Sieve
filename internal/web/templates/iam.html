@@ -13,14 +13,14 @@
   {{template "nav" .}}
 
   <main class="ml-64 p-8">
-    <div class="max-w-6xl">
+    <div class="max-w-5xl">
       <h1 class="text-2xl font-bold text-white mb-2">IAM</h1>
-      <p class="text-sm text-slate-400 mb-6">The Cedar-based IAM engine. Author policies, flip the engine on or off, and dry-run a decision against the live policy set. While disabled, the legacy policy + role evaluator stays authoritative for agent traffic.</p>
+      <p class="text-sm text-slate-400 mb-6">Define what each <strong>role</strong> is allowed to do as a list of allow / deny / approval <strong>rules</strong>. Deny always wins over allow, and anything not explicitly allowed is denied. Tokens are issued for a role and inherit its rules.</p>
 
       {{if not .Configured}}
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6">
         <p class="text-sm text-slate-300">IAM not configured.</p>
-        <p class="text-xs text-slate-500 mt-2">The IAM engine has not been wired into this server (SetIAM was not called). Nothing to manage here.</p>
+        <p class="text-xs text-slate-500 mt-2">The IAM engine has not been wired into this server (SetIAM was not called).</p>
       </div>
       {{else}}
 
@@ -47,98 +47,180 @@
         </div>
       </div>
 
-      <!-- Create policy -->
+      <!-- Roles -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
-        <h2 class="text-lg font-semibold text-white mb-4">Create policy</h2>
-        <form method="POST" action="/iam/policies">
-          <div class="mb-4">
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Policy Name</label>
-            <input type="text" name="name" required placeholder="e.g. allow-gmail-read"
-                   class="w-full max-w-md rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <h2 class="text-lg font-semibold text-white mb-1">Roles</h2>
+        <p class="text-xs text-slate-500 mb-4">A role is a named set of permissions. Create a role, give it rules below, then issue tokens for it on the Tokens page.</p>
+        <form method="POST" action="/iam/roles" class="flex items-end gap-3 mb-5">
+          <div>
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">New role name</label>
+            <input type="text" name="name" required placeholder="e.g. read-only-agent"
+                   class="w-72 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
           </div>
-          <div class="mb-4">
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Cedar</label>
-            <textarea name="cedar" rows="8" required placeholder="permit(principal, action, resource);"
-                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+          <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Create role</button>
+        </form>
+        {{if .Roles}}
+        <div class="flex flex-wrap gap-2">
+          {{range .Roles}}
+          <span class="inline-flex items-center gap-2 rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm">
+            <span class="font-medium text-white">{{.Name}}</span>
+            <code class="text-xs text-slate-500">{{.ID}}</code>
+          </span>
+          {{end}}
+        </div>
+        {{else}}
+        <p class="text-sm text-slate-500">No roles yet — create one to start adding rules.</p>
+        {{end}}
+      </div>
+
+      <!-- Rule builder -->
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+        <h2 class="text-lg font-semibold text-white mb-1">Add a rule</h2>
+        <p class="text-xs text-slate-500 mb-5">Each rule is one line in a role's chain. Build it visually — no Cedar required.</p>
+        <form method="POST" action="/iam/policies" id="rule-form">
+          <input type="hidden" name="mode" value="builder">
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <!-- Role -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Role</label>
+              <select name="role_id" required
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">— select a role —</option>
+                {{range .Roles}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+              </select>
+            </div>
+
+            <!-- Effect -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Effect</label>
+              <select name="effect" required
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="allow">Allow</option>
+                <option value="deny">Deny</option>
+                <option value="require_approval">Require approval</option>
+              </select>
+            </div>
+
+            <!-- Connector -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Connector</label>
+              <select name="connector_type" id="rb-connector" required
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">— select a connector —</option>
+                {{range .Connectors}}<option value="{{.Type}}">{{.Name}} ({{.Type}})</option>{{end}}
+              </select>
+            </div>
+
+            <!-- Operation scope -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Operations</label>
+              <select name="op_scope" id="rb-opscope"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="all">All operations</option>
+                <option value="read">All read-only operations</option>
+                <option value="write">All write operations</option>
+                <option value="specific">Specific operations…</option>
+              </select>
+            </div>
           </div>
-          <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">
-            Create Policy
-          </button>
+
+          <!-- Specific operations (JS-populated) -->
+          <div id="rb-ops" class="mt-4 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-2">Choose operations</label>
+            <div id="rb-ops-list" class="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-56 overflow-y-auto rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+          </div>
+
+          <!-- Connection scope -->
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Applies to</label>
+            <select name="conn_scope" id="rb-connscope"
+                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="any">Any connection of this connector</option>
+              <option value="specific">Specific connections…</option>
+            </select>
+            <div id="rb-conns" class="mt-3 hidden">
+              <div id="rb-conns-list" class="grid grid-cols-2 md:grid-cols-3 gap-2 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Rule name <span class="text-slate-600">(optional)</span></label>
+            <input type="text" name="name" placeholder="auto-generated from the rule if blank"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+
+          <button type="submit" class="mt-6 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Add rule</button>
         </form>
       </div>
 
-      <!-- Policies table -->
+      <!-- Rules / policies list -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden mb-8">
+        <div class="px-6 py-4 border-b border-slate-700">
+          <h2 class="text-lg font-semibold text-white">Rules</h2>
+          <p class="text-xs text-slate-500 mt-0.5">The active chain. Deny overrides allow; unmatched requests are denied.</p>
+        </div>
         <table class="w-full">
-          <thead>
-            <tr class="border-b border-slate-700">
-              <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Name</th>
-              <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Enabled</th>
-              <th class="text-left text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Cedar</th>
-              <th class="text-right text-xs font-medium text-slate-400 uppercase tracking-wider px-6 py-3">Actions</th>
-            </tr>
-          </thead>
           <tbody class="divide-y divide-slate-700">
             {{range .Policies}}
             <tr class="hover:bg-slate-700/30 transition-colors align-top">
-              <td class="px-6 py-4 text-sm font-medium text-white">{{.Name}}</td>
-              <td class="px-6 py-4 text-sm">
-                {{if .Enabled}}
-                <span class="inline-flex rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400">enabled</span>
-                {{else}}
-                <span class="inline-flex rounded-full bg-slate-700 border border-slate-600 px-2 py-0.5 text-xs font-medium text-slate-400">disabled</span>
-                {{end}}
+              <td class="px-6 py-4">
+                <div class="flex items-center gap-2">
+                  {{if .Enabled}}
+                  <span class="inline-flex rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400">on</span>
+                  {{else}}
+                  <span class="inline-flex rounded-full bg-slate-700 border border-slate-600 px-2 py-0.5 text-xs font-medium text-slate-400">off</span>
+                  {{end}}
+                  <span class="text-sm font-medium text-white">{{if .Description}}{{.Description}}{{else}}{{.Name}}{{end}}</span>
+                </div>
+                <details class="mt-2">
+                  <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">show Cedar · {{.Name}}</summary>
+                  <pre class="whitespace-pre-wrap break-words text-xs text-slate-400 bg-slate-900 border border-slate-700 rounded-lg p-3 mt-2 max-w-2xl">{{.Cedar}}</pre>
+                </details>
               </td>
-              <td class="px-6 py-4 text-sm text-slate-300">
-                <pre class="whitespace-pre-wrap break-words text-xs text-slate-300 bg-slate-900 border border-slate-700 rounded-lg p-3 max-w-xl">{{.Cedar}}</pre>
-              </td>
-              <td class="px-6 py-4 text-right">
+              <td class="px-6 py-4 text-right align-top">
                 <form method="POST" action="/iam/policies/{{.ID}}/delete"
-                      onsubmit="return confirm('Delete IAM policy \'{{.Name}}\'?')"
-                      class="inline">
+                      onsubmit="return confirm('Delete this rule?')" class="inline">
                   <button type="submit" class="text-sm text-red-400 hover:text-red-300 font-medium">Delete</button>
                 </form>
               </td>
             </tr>
             {{else}}
-            <tr>
-              <td colspan="4" class="px-6 py-12 text-center text-slate-500">No IAM policies yet. Create one above.</td>
-            </tr>
+            <tr><td class="px-6 py-12 text-center text-slate-500">No rules yet. Add one above.</td></tr>
             {{end}}
           </tbody>
         </table>
       </div>
 
       <!-- Decision explorer -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6">
-        <h2 class="text-lg font-semibold text-white mb-1">Decision explorer</h2>
-        <p class="text-xs text-slate-500 mb-4">Dry-run a request against the current IAM policy set. Uses the pseudo-principal <code class="text-slate-400">explorer</code> and connection status <code class="text-slate-400">active</code>. Does not execute anything.</p>
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+        <h2 class="text-lg font-semibold text-white mb-1">Test a decision</h2>
+        <p class="text-xs text-slate-500 mb-4">Dry-run a request against the current rules. Nothing is executed.</p>
         <form method="POST" action="/iam/explore">
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Role ID</label>
-              <input type="text" name="role_id" value="{{.ExploreRoleID}}" placeholder="e.g. role_abc123"
-                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Role</label>
+              <select name="role_id"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">—</option>
+                {{range .Roles}}<option value="{{.ID}}" {{if eq .ID $.ExploreRoleID}}selected{{end}}>{{.Name}}</option>{{end}}
+              </select>
             </div>
             <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Connection ID</label>
-              <input type="text" name="connection_id" value="{{.ExploreConnID}}" placeholder="e.g. work"
-                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Connector Type</label>
-              <input type="text" name="connector_type" value="{{.ExploreConnType}}" placeholder="e.g. google"
-                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Connection</label>
+              <select name="connection_id" id="ex-conn" data-selected="{{.ExploreConnID}}"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">—</option>
+              </select>
             </div>
             <div>
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Operation</label>
-              <input type="text" name="operation" value="{{.ExploreOperation}}" placeholder="e.g. list_emails"
+              <input type="text" name="operation" id="ex-op" value="{{.ExploreOperation}}" placeholder="e.g. list_emails" list="ex-op-list"
                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <datalist id="ex-op-list"></datalist>
             </div>
           </div>
-          <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">
-            Evaluate
-          </button>
+          <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Evaluate</button>
         </form>
 
         {{if .ExploreDone}}
@@ -147,22 +229,121 @@
           <p class="text-sm font-medium text-red-400 mb-1">Error</p>
           <p class="text-sm text-slate-300">{{.ExploreError}}</p>
           {{else}}
-          <p class="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Decision</p>
           <p class="text-sm text-slate-300 mb-1">
-            <span class="text-slate-500">Action:</span>
-            {{if eq .ExploreAction "allow"}}
-            <span class="font-semibold text-emerald-400">{{.ExploreAction}}</span>
-            {{else if eq .ExploreAction "deny"}}
-            <span class="font-semibold text-red-400">{{.ExploreAction}}</span>
-            {{else}}
-            <span class="font-semibold text-amber-400">{{.ExploreAction}}</span>
-            {{end}}
+            <span class="text-slate-500">Decision:</span>
+            {{if eq .ExploreAction "allow"}}<span class="font-semibold text-emerald-400">allow</span>
+            {{else if eq .ExploreAction "deny"}}<span class="font-semibold text-red-400">deny</span>
+            {{else}}<span class="font-semibold text-amber-400">{{.ExploreAction}}</span>{{end}}
           </p>
           <p class="text-sm text-slate-300"><span class="text-slate-500">Reason:</span> {{if .ExploreReason}}{{.ExploreReason}}{{else}}<span class="text-slate-500">(none)</span>{{end}}</p>
           {{end}}
         </div>
         {{end}}
       </div>
+
+      <!-- Advanced: raw Cedar -->
+      <details class="bg-slate-800 rounded-xl border border-slate-700 p-6">
+        <summary class="text-sm font-medium text-slate-300 cursor-pointer hover:text-white">Advanced: write raw Cedar</summary>
+        <p class="text-xs text-slate-500 mt-3 mb-4">For conditions the visual builder doesn't cover (attribute checks, amount limits, owner-scoping, obligations). Stored and validated as-is.</p>
+        <form method="POST" action="/iam/policies">
+          <input type="hidden" name="mode" value="advanced">
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Policy name</label>
+            <input type="text" name="name" placeholder="e.g. allow-large-transfers-with-approval"
+                   class="w-full max-w-md rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Cedar</label>
+            <textarea name="cedar" rows="6" placeholder="permit(principal in Sieve::Role::&quot;...&quot;, action, resource) when { ... };"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+          </div>
+          <button type="submit" class="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600 transition-colors">Create raw policy</button>
+        </form>
+      </details>
+
+      <div id="iam-catalog" data-catalog="{{jsonAttr .Catalog}}" class="hidden"></div>
+      <script>
+        const IAM_CATALOG = JSON.parse(document.getElementById('iam-catalog').dataset.catalog || '{}');
+
+        // Build a connection-id -> connector-type index for the explorer.
+        const CONN_TYPE = {};
+        for (const t in IAM_CATALOG) {
+          for (const c of (IAM_CATALOG[t].connections || [])) CONN_TYPE[c.id] = t;
+        }
+
+        function el(id) { return document.getElementById(id); }
+
+        // --- Rule builder dynamic fields ---
+        // All dynamic values (connection ids/names, op names) are set via
+        // element properties + textContent — never innerHTML — so an
+        // operator-entered connection name can't inject markup.
+        function checkboxRow(name, value, labelText, badge) {
+          const lbl = document.createElement('label');
+          lbl.className = 'flex items-center gap-2 text-sm text-slate-200';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.name = name; cb.value = value;
+          cb.className = 'rounded border-slate-600 bg-slate-800 text-indigo-500';
+          const span = document.createElement('span');
+          span.textContent = labelText; // textContent — payload renders as text
+          lbl.appendChild(cb); lbl.appendChild(span);
+          if (badge) {
+            const b = document.createElement('span');
+            b.className = 'text-emerald-500/70 text-xs'; b.textContent = badge;
+            lbl.appendChild(b);
+          }
+          return lbl;
+        }
+        function emptyNote(box, text) {
+          const p = document.createElement('p');
+          p.className = 'text-xs text-slate-500 col-span-full';
+          p.textContent = text; // textContent — static, but kept safe
+          box.appendChild(p);
+        }
+        function rbRefresh() {
+          const t = el('rb-connector').value;
+          const cat = IAM_CATALOG[t] || { operations: [], connections: [] };
+
+          const opsBox = el('rb-ops-list');
+          opsBox.textContent = '';
+          if (!cat.operations.length) emptyNote(opsBox, 'This connector has no enumerated operations — use All / read / write.');
+          for (const o of cat.operations) opsBox.appendChild(checkboxRow('operations', o.name, o.name, o.readOnly ? '(read)' : ''));
+
+          const connBox = el('rb-conns-list');
+          connBox.textContent = '';
+          if (!cat.connections.length) emptyNote(connBox, 'No connections of this connector type yet.');
+          for (const c of cat.connections) connBox.appendChild(checkboxRow('connections', c.id, c.name, ''));
+        }
+        function rbToggleOps() { el('rb-ops').classList.toggle('hidden', el('rb-opscope').value !== 'specific'); }
+        function rbToggleConns() { el('rb-conns').classList.toggle('hidden', el('rb-connscope').value !== 'specific'); }
+
+        el('rb-connector').addEventListener('change', rbRefresh);
+        el('rb-opscope').addEventListener('change', rbToggleOps);
+        el('rb-connscope').addEventListener('change', rbToggleConns);
+        rbRefresh(); rbToggleOps(); rbToggleConns();
+
+        // --- Explorer connection dropdown + operation hints ---
+        (function () {
+          const sel = el('ex-conn');
+          const selected = sel.dataset.selected || '';
+          for (const t in IAM_CATALOG) {
+            for (const c of (IAM_CATALOG[t].connections || [])) {
+              const o = document.createElement('option');
+              o.value = c.id; o.textContent = c.name + ' (' + t + ')';
+              if (c.id === selected) o.selected = true;
+              sel.appendChild(o);
+            }
+          }
+          function exRefresh() {
+            const t = CONN_TYPE[sel.value];
+            const dl = el('ex-op-list'); dl.innerHTML = '';
+            for (const o of ((IAM_CATALOG[t] || {}).operations || [])) {
+              const opt = document.createElement('option'); opt.value = o.name; dl.appendChild(opt);
+            }
+          }
+          sel.addEventListener('change', exRefresh);
+          exRefresh();
+        })();
+      </script>
 
       {{end}}
     </div>

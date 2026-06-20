@@ -455,6 +455,7 @@ func (s *Server) Handler() http.Handler {
 	// requireOperatorSession middleware gates them (session cookie + CSRF
 	// on the POSTs) and rejects agent tokens with 403. See iam.go.
 	mux.HandleFunc("GET /iam", s.handleIAM)
+	mux.HandleFunc("POST /iam/roles", s.handleIAMRoleCreate)
 	mux.HandleFunc("POST /iam/policies", s.handleIAMPolicyCreate)
 	mux.HandleFunc("POST /iam/policies/{id}/delete", s.handleIAMPolicyDelete)
 	mux.HandleFunc("POST /iam/toggle", s.handleIAMToggle)

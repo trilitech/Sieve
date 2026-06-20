@@ -2,26 +2,29 @@ package web
 
 import (
 	"net/http"
+	"sort"
 
+	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/iampolicies"
+	"github.com/trilitech/Sieve/internal/roles"
 )
 
-// iam.go implements the /iam admin page: the Cedar-policy list/create/delete,
-// the iam_enabled toggle, and the decision explorer. It wires the IAM engine
-// (internal/iam via internal/iampolicies) into the human-facing admin surface.
+// iam.go implements the /iam admin page: IAM role creation, a VISUAL rules
+// builder (role → effect → connector → operations → connections, compiled to
+// Cedar so an operator never writes Cedar), a raw-Cedar "advanced" escape hatch,
+// the policy list (shown by human-readable summary), the iam_enabled toggle, and
+// the decision explorer.
 //
-// Security: every route here is gated by the requireOperatorSession middleware
-// (adminAuthWrapper in server.go) like the other admin pages — none of the
-// /iam paths are in authExemptPaths, so each request needs a valid operator
-// session, the POSTs need a valid CSRF token (injected client-side by nav.html
-// for every same-origin POST form), and agent bearer tokens are rejected with
-// 403. Cache-Control: no-store is stamped on every admin response by
-// noCacheAllAdmin. None of that is re-implemented here; the wrapper is the
-// single gate.
+// Security: every route here is gated by requireOperatorSession (adminAuthWrapper
+// in server.go) like the other admin pages — none of the /iam paths are in
+// authExemptPaths, so each request needs a valid operator session, the POSTs need
+// a valid CSRF token (injected client-side by nav.html for every same-origin POST
+// form), and agent bearer tokens are rejected with 403. Cache-Control: no-store
+// is stamped on every admin response by noCacheAllAdmin.
 //
-// All five handlers tolerate s.iam == nil (SetIAM never called): the GET page
-// renders an "IAM not configured" notice and the POST handlers redirect back
-// to /iam without touching storage.
+// All handlers tolerate s.iam == nil (SetIAM never called): the GET page renders
+// an "IAM not configured" notice and the POST handlers redirect without touching
+// storage.
 
 // iamEnabled reports whether the iam_enabled flag is set. Matches the
 // comparison in api/router.go and mcp/server.go ("true") so the admin
@@ -34,10 +37,25 @@ func (s *Server) iamEnabled() bool {
 	return v == "true"
 }
 
-// iamPageData is the view-model for iam.html. The CSRFToken field is
-// populated by render() (via injectCSRFToken) so nav.html can expose it
-// to the client-side form-submit handler — same pattern as the typed
-// connectionEditData view-model.
+// --- view models ---
+
+type iamOpView struct {
+	Name     string `json:"name"`
+	ReadOnly bool   `json:"readOnly"`
+}
+
+type iamConnView struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// iamConnectorOption is one entry in the connector dropdown.
+type iamConnectorOption struct {
+	Type string
+	Name string
+}
+
+// iamPageData is the view-model for iam.html.
 type iamPageData struct {
 	Active     string
 	Configured bool
@@ -45,9 +63,16 @@ type iamPageData struct {
 	Policies   []iampolicies.StoredPolicy
 	CSRFToken  string
 
-	// Decision-explorer round-trip fields. ExploreDone is set after a
-	// POST /iam/explore so the template knows to render the result box;
-	// the Explore* inputs are echoed back so the form keeps its values.
+	// Builder inputs.
+	Roles      []roles.Role
+	Connectors []iamConnectorOption
+	// Catalog maps connector type → {operations, connections} for the
+	// client-side form (populate op + connection checkboxes when the connector
+	// dropdown changes). Rendered via the `json` template func into a
+	// <script type="application/json"> block (never template.JS / inline JS).
+	Catalog map[string]map[string]any
+
+	// Decision-explorer round-trip fields.
 	ExploreDone      bool
 	ExploreRoleID    string
 	ExploreConnID    string
@@ -58,21 +83,15 @@ type iamPageData struct {
 	ExploreError     string
 }
 
-// handleIAM renders the IAM admin page (GET /iam). data carries the policy
-// list, the enabled flag, and (when present) a decision-explorer result.
+// handleIAM renders the IAM admin page (GET /iam).
 func (s *Server) handleIAM(w http.ResponseWriter, r *http.Request) {
 	s.renderIAM(w, r, &iamPageData{})
 }
 
-// renderIAM populates the page-wide fields (Configured, Enabled, Policies)
-// onto the supplied data and renders the iam template. Called by handleIAM
-// for a plain page load and by handleIAMExplore after a decision lookup so
-// the explorer result renders without a second round-trip.
+// renderIAM populates the page-wide fields and renders the iam template.
 func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPageData) {
 	data.Active = "iam"
 	if s.iam == nil {
-		// SetIAM was never called — the engine isn't wired. Render the
-		// "not configured" notice rather than dereferencing s.iam.
 		data.Configured = false
 		s.render(w, r, "iam", data)
 		return
@@ -87,11 +106,80 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 	}
 	data.Policies = pols
 
+	s.populateBuilderData(data)
 	s.render(w, r, "iam", data)
 }
 
-// handleIAMPolicyCreate creates an IAM (Cedar) policy from form fields
-// name + cedar, then redirects to /iam. New policies are created enabled.
+// populateBuilderData fills the roles list, connector dropdown, and the
+// per-connector operations+connections catalog the builder/explorer JS needs.
+func (s *Server) populateBuilderData(data *iamPageData) {
+	if rs, err := s.roles.List(); err == nil {
+		data.Roles = rs
+	}
+
+	// Connections grouped by connector type (for the catalog).
+	connsByType := map[string][]iamConnView{}
+	if conns, err := s.connections.List(); err == nil {
+		for _, c := range conns {
+			connsByType[c.ConnectorType] = append(connsByType[c.ConnectorType],
+				iamConnView{ID: c.ID, Name: c.DisplayName})
+		}
+	}
+
+	catalog := map[string]map[string]any{}
+	reg := s.iamRegistry
+	if reg == nil {
+		reg = s.registry
+	}
+	if reg != nil {
+		for _, m := range reg.AllMetas() {
+			ops := make([]iamOpView, 0, len(m.Operations))
+			for _, o := range m.Operations {
+				ops = append(ops, iamOpView{Name: o.Name, ReadOnly: o.ReadOnly})
+			}
+			sort.Slice(ops, func(i, j int) bool { return ops[i].Name < ops[j].Name })
+			conns := connsByType[m.Type]
+			sort.Slice(conns, func(i, j int) bool { return conns[i].Name < conns[j].Name })
+			data.Connectors = append(data.Connectors, iamConnectorOption{Type: m.Type, Name: m.Name})
+			catalog[m.Type] = map[string]any{"operations": ops, "connections": conns}
+		}
+	}
+	sort.Slice(data.Connectors, func(i, j int) bool { return data.Connectors[i].Name < data.Connectors[j].Name })
+
+	data.Catalog = catalog
+}
+
+// handleIAMRoleCreate creates an IAM role (POST /iam/roles, field name). In the
+// IAM model a role is just a named principal: tokens attach to it and rules
+// target it via `principal in Sieve::Role::"<id>"`. No legacy bindings are set.
+func (s *Server) handleIAMRoleCreate(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := r.FormValue("name")
+	if name == "" {
+		http.Error(w, "role name is required", http.StatusBadRequest)
+		return
+	}
+	role, err := s.roles.Create(name, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.role.create", role.ID,
+		map[string]any{"name": name}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// handleIAMPolicyCreate creates an IAM policy (POST /iam/policies). mode=builder
+// compiles the visual rule to Cedar; mode=advanced takes raw Cedar. Both paths
+// validate the Cedar compiles before storing so one bad policy can't break the
+// whole engine.
 func (s *Server) handleIAMPolicyCreate(w http.ResponseWriter, r *http.Request) {
 	if s.iam == nil {
 		http.Redirect(w, r, "/iam", http.StatusSeeOther)
@@ -102,26 +190,122 @@ func (s *Server) handleIAMPolicyCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.FormValue("mode") == "advanced" {
+		s.createAdvancedPolicy(w, r)
+		return
+	}
+	s.createBuilderPolicy(w, r)
+}
+
+// createBuilderPolicy compiles the visual rule form to Cedar and stores it with
+// a human-readable summary as its description.
+func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
+	spec := iampolicies.RuleSpec{
+		RoleID:        r.FormValue("role_id"),
+		Effect:        r.FormValue("effect"),
+		ConnectorType: r.FormValue("connector_type"),
+		OpScope:       r.FormValue("op_scope"),
+		Operations:    r.Form["operations"],
+	}
+	if r.FormValue("conn_scope") == "specific" {
+		spec.ConnectionIDs = r.Form["connections"]
+	}
+
+	var ops = s.connectorOps(spec.ConnectorType)
+	cedar, err := iampolicies.BuildRuleCedar(spec, ops)
+	if err != nil {
+		http.Error(w, "could not build rule: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.iam.ValidateCedar(cedar); err != nil {
+		http.Error(w, "generated rule did not validate: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	summary := iampolicies.HumanSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
+	name := r.FormValue("name")
+	if name == "" {
+		name = summary
+	}
+
+	pol, err := s.iam.CreatePolicy(name, summary, cedar, true)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.create", pol.ID,
+		map[string]any{"name": name, "mode": "builder"}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// createAdvancedPolicy stores raw Cedar (the escape hatch for expressivity the
+// visual builder doesn't cover).
+func (s *Server) createAdvancedPolicy(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	cedar := r.FormValue("cedar")
 	if name == "" || cedar == "" {
 		http.Error(w, "name and cedar are required", http.StatusBadRequest)
 		return
 	}
-
-	pol, err := s.iam.CreatePolicy(name, "", cedar, true)
+	if err := s.iam.ValidateCedar(cedar); err != nil {
+		http.Error(w, "policy did not validate: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	pol, err := s.iam.CreatePolicy(name, "(raw Cedar)", cedar, true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.create", pol.ID,
-		map[string]any{"name": name}, "success")
-
+		map[string]any{"name": name, "mode": "advanced"}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 
-// handleIAMPolicyDelete removes an IAM policy (POST /iam/policies/{id}/delete),
-// then redirects to /iam.
+// connectorOps returns the connector's static op catalog (for resolving
+// specific op names to action ids).
+func (s *Server) connectorOps(connType string) []connector.OperationDef {
+	reg := s.iamRegistry
+	if reg == nil {
+		reg = s.registry
+	}
+	if reg == nil {
+		return nil
+	}
+	m, ok := reg.Meta(connType)
+	if !ok {
+		return nil
+	}
+	return m.Operations
+}
+
+// roleName resolves a role id to its display name ("" / unknown → "").
+func (s *Server) roleName(id string) string {
+	if id == "" {
+		return ""
+	}
+	if role, err := s.roles.Get(id); err == nil {
+		return role.Name
+	}
+	return id
+}
+
+// connLabels resolves connection ids to display names for the human summary.
+func (s *Server) connLabels(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	labels := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if c, err := s.connections.Get(id); err == nil {
+			labels = append(labels, c.DisplayName)
+		} else {
+			labels = append(labels, id)
+		}
+	}
+	return labels
+}
+
+// handleIAMPolicyDelete removes an IAM policy (POST /iam/policies/{id}/delete).
 func (s *Server) handleIAMPolicyDelete(w http.ResponseWriter, r *http.Request) {
 	if s.iam == nil {
 		http.Redirect(w, r, "/iam", http.StatusSeeOther)
@@ -136,10 +320,7 @@ func (s *Server) handleIAMPolicyDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 
-// handleIAMToggle sets the iam_enabled flag from the form field enabled
-// ("true"/"false"), then redirects to /iam. Any value other than "true"
-// is normalized to "false" so the stored value matches the == "true"
-// comparison used by the PEPs.
+// handleIAMToggle sets the iam_enabled flag (POST /iam/toggle, field enabled).
 func (s *Server) handleIAMToggle(w http.ResponseWriter, r *http.Request) {
 	if s.iamSettings == nil {
 		http.Redirect(w, r, "/iam", http.StatusSeeOther)
@@ -162,14 +343,7 @@ func (s *Server) handleIAMToggle(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 
-// handleIAMExplore runs the decision explorer (POST /iam/explore): it asks the
-// IAM engine to decide a synthetic request built from the form fields
-// (role_id, connection_id, connector_type, operation) and re-renders the page
-// with the resulting Action + Reason shown in a result box. The principal is
-// the fixed pseudo-token "explorer" and the connection status is "active".
-// Unlike the create/delete/toggle POSTs this does NOT redirect — it renders
-// the result inline so the operator sees the decision against the form they
-// just submitted.
+// handleIAMExplore runs the decision explorer (POST /iam/explore).
 func (s *Server) handleIAMExplore(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -188,6 +362,13 @@ func (s *Server) handleIAMExplore(w http.ResponseWriter, r *http.Request) {
 		data.ExploreError = "IAM is not configured."
 		s.renderIAM(w, r, data)
 		return
+	}
+
+	// If connector_type wasn't supplied but the connection is known, derive it.
+	if data.ExploreConnType == "" && data.ExploreConnID != "" {
+		if c, err := s.connections.Get(data.ExploreConnID); err == nil {
+			data.ExploreConnType = c.ConnectorType
+		}
 	}
 
 	dec, err := s.iam.Decide(
