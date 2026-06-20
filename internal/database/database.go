@@ -257,6 +257,7 @@ func (db *DB) migrate() error {
 		name         TEXT NOT NULL UNIQUE,
 		description  TEXT NOT NULL DEFAULT '',
 		cedar_text   TEXT NOT NULL,
+		spec_json    TEXT NOT NULL DEFAULT '',
 		enabled      INTEGER NOT NULL DEFAULT 1,
 		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -380,6 +381,13 @@ func (db *DB) migrate() error {
 	// keyring unloaded — this is a plaintext-column update only.
 	if err := migrateNeedsReauthToStatus(db); err != nil {
 		return fmt.Errorf("migrate needs_reauth → status: %w", err)
+	}
+
+	// iam_policies.spec_json stores the structured builder rule (for edit-in-place
+	// reload) alongside the compiled Cedar. Additive; older IAM DBs get it here.
+	if err := addColumnIfMissing(db, "iam_policies", "spec_json",
+		`ALTER TABLE iam_policies ADD COLUMN spec_json TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add iam_policies.spec_json: %w", err)
 	}
 
 	if hasOldColumn {

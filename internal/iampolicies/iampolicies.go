@@ -28,6 +28,7 @@ type StoredPolicy struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	Cedar       string    `json:"cedar"`
+	SpecJSON    string    `json:"spec_json"` // structured builder rule, for edit-in-place ("" if raw/migrated)
 	Enabled     bool      `json:"enabled"`
 	CreatedAt   time.Time `json:"created_at"`
 }
@@ -108,13 +109,24 @@ func (s *Service) SetPolicyEnabled(id string, enabled bool) error {
 	return mustAffect(res, id)
 }
 
+// SetPolicySpec stores the structured builder rule (JSON) beside the compiled
+// Cedar so the admin UI can reload it for edit-in-place. It does not touch the
+// Cedar or the engine, so no invalidate.
+func (s *Service) SetPolicySpec(id, specJSON string) error {
+	res, err := s.db.DB.Exec(`UPDATE iam_policies SET spec_json = ? WHERE id = ?`, specJSON, id)
+	if err != nil {
+		return fmt.Errorf("set policy spec: %w", err)
+	}
+	return mustAffect(res, id)
+}
+
 // GetPolicy returns a policy by id.
 func (s *Service) GetPolicy(id string) (*StoredPolicy, error) {
 	row := s.db.DB.QueryRow(
-		`SELECT id, name, description, cedar_text, enabled, created_at FROM iam_policies WHERE id = ?`, id)
+		`SELECT id, name, description, cedar_text, spec_json, enabled, created_at FROM iam_policies WHERE id = ?`, id)
 	var p StoredPolicy
 	var enabled int
-	if err := row.Scan(&p.ID, &p.Name, &p.Description, &p.Cedar, &enabled, &p.CreatedAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Name, &p.Description, &p.Cedar, &p.SpecJSON, &enabled, &p.CreatedAt); err != nil {
 		return nil, fmt.Errorf("get iam policy %q: %w", id, err)
 	}
 	p.Enabled = enabled != 0
@@ -124,7 +136,7 @@ func (s *Service) GetPolicy(id string) (*StoredPolicy, error) {
 // ListPolicies returns all stored policies (enabled and not).
 func (s *Service) ListPolicies() ([]StoredPolicy, error) {
 	rows, err := s.db.DB.Query(
-		`SELECT id, name, description, cedar_text, enabled, created_at FROM iam_policies ORDER BY created_at`)
+		`SELECT id, name, description, cedar_text, spec_json, enabled, created_at FROM iam_policies ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list iam policies: %w", err)
 	}
@@ -133,7 +145,7 @@ func (s *Service) ListPolicies() ([]StoredPolicy, error) {
 	for rows.Next() {
 		var p StoredPolicy
 		var enabled int
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.Cedar, &enabled, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.Cedar, &p.SpecJSON, &enabled, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan iam policy: %w", err)
 		}
 		p.Enabled = enabled != 0

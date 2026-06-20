@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
@@ -88,15 +89,10 @@ type iamFilterView struct {
 	Kind string
 }
 
-// iamPageData is the view-model for iam.html.
-type iamPageData struct {
-	Active     string
-	Configured bool
-	Enabled    bool
-	Policies   []iampolicies.StoredPolicy
-	CSRFToken  string
-
-	// Builder inputs.
+// iamBuilderData is the set of inputs the visual rule builder needs (shared by
+// the "Add a rule" form on iam.html and the edit form on iam_edit.html). It is
+// filled by populateBuilderData.
+type iamBuilderData struct {
 	Roles      []roles.Role
 	Connectors []iamConnectorOption
 	// Filters is the filter-library list, rendered server-side both in the
@@ -107,6 +103,18 @@ type iamPageData struct {
 	// dropdown changes). Rendered via the `json` template func into a
 	// <script type="application/json"> block (never template.JS / inline JS).
 	Catalog map[string]map[string]any
+}
+
+// iamPageData is the view-model for iam.html.
+type iamPageData struct {
+	Active     string
+	Configured bool
+	Enabled    bool
+	Policies   []iamPolicyView
+	CSRFToken  string
+
+	// Builder inputs (shared with the edit page).
+	iamBuilderData
 
 	// Decision-explorer round-trip fields.
 	ExploreDone      bool
@@ -117,6 +125,35 @@ type iamPageData struct {
 	ExploreAction    string
 	ExploreReason    string
 	ExploreError     string
+}
+
+// iamPolicyView wraps a StoredPolicy with a HasSpec flag so the rules list can
+// show an "Edit" link only for builder-authored rules (those with a stored
+// structured spec). Raw/migrated rules (SpecJSON == "") have no form to reload.
+type iamPolicyView struct {
+	iampolicies.StoredPolicy
+	HasSpec bool
+}
+
+// iamEditPageData is the view-model for iam_edit.html (edit-in-place of one
+// builder-authored rule). It carries the same builder inputs as the create
+// page plus the policy being edited and its stored form-state JSON.
+type iamEditPageData struct {
+	Active    string
+	CSRFToken string
+
+	// HasSpec is false for raw/migrated rules — the template then renders a
+	// "no structured form" notice instead of the builder.
+	HasSpec  bool
+	PolicyID string
+	Name     string
+	// Spec is the decoded builder form-state, emitted into a data-attribute via
+	// jsonAttr and read client-side via JSON.parse (never template.JS /
+	// innerHTML). Decoding server-side means a single, predictable JSON object
+	// reaches the prefill script (no double-encoded string to unwrap).
+	Spec builderFormState
+
+	iamBuilderData
 }
 
 // handleIAM renders the IAM admin page (GET /iam).
@@ -140,15 +177,20 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	data.Policies = pols
+	data.Policies = make([]iamPolicyView, 0, len(pols))
+	for _, p := range pols {
+		data.Policies = append(data.Policies, iamPolicyView{StoredPolicy: p, HasSpec: p.SpecJSON != ""})
+	}
 
-	s.populateBuilderData(data)
+	s.populateBuilderData(&data.iamBuilderData)
 	s.render(w, r, "iam", data)
 }
 
 // populateBuilderData fills the roles list, connector dropdown, and the
 // per-connector operations+connections catalog the builder/explorer JS needs.
-func (s *Server) populateBuilderData(data *iamPageData) {
+// It operates on the shared iamBuilderData so both the create page (iam.html)
+// and the edit page (iam_edit.html) get identical inputs.
+func (s *Server) populateBuilderData(data *iamBuilderData) {
 	if rs, err := s.roles.List(); err == nil {
 		data.Roles = rs
 	}
@@ -343,9 +385,40 @@ func (s *Server) handleIAMPolicyCreate(w http.ResponseWriter, r *http.Request) {
 	s.createBuilderPolicy(w, r)
 }
 
-// createBuilderPolicy compiles the visual rule form to Cedar and stores it with
-// a human-readable summary as its description.
-func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
+// builderFormState is the RAW builder selections (JSON-serialized into the
+// policy's spec_json column) needed to re-render the form for edit-in-place.
+// Field names mirror the form controls so the prefill JS can map 1:1.
+type builderFormState struct {
+	RoleID        string            `json:"role_id"`
+	Effect        string            `json:"effect"`
+	ConnectorType string            `json:"connector_type"`
+	OpScope       string            `json:"op_scope"`
+	Operations    []string          `json:"operations"`
+	ConnScope     string            `json:"conn_scope"`
+	Connections   []string          `json:"connections"`
+	ScopeKey      string            `json:"scope_key"`
+	ScopeFields   map[string]string `json:"scope_fields"`
+	Conditions    []builderCond     `json:"conditions"`
+	Filters       []string          `json:"filters"`
+}
+
+// builderCond is one captured condition selection (checkbox on + op + value).
+type builderCond struct {
+	Key   string `json:"key"`
+	Op    string `json:"op"`
+	Value string `json:"value"`
+}
+
+// parseBuilderForm parses the visual rule form into a RuleSpec (for Cedar
+// compilation), the human summary, and the raw form-state JSON (for storing in
+// spec_json so the rule can be reloaded into the form for edit-in-place). It is
+// shared by createBuilderPolicy and handleIAMPolicyUpdate so create/edit can
+// never diverge. r.ParseForm must have been called by the caller.
+//
+// Validation that depends on the request (missing scope fields, scoping without
+// a connection) returns a non-nil *parseError that the caller maps to an HTTP
+// error; on success err is nil.
+func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string, string, *parseError) {
 	spec := iampolicies.RuleSpec{
 		RoleID:        r.FormValue("role_id"),
 		Effect:        r.FormValue("effect"),
@@ -353,8 +426,23 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 		OpScope:       r.FormValue("op_scope"),
 		Operations:    r.Form["operations"],
 	}
-	if r.FormValue("conn_scope") == "specific" {
+	connScope := r.FormValue("conn_scope")
+	if connScope == "specific" {
 		spec.ConnectionIDs = r.Form["connections"]
+	}
+
+	// Capture the raw selections for round-tripping into the edit form.
+	state := builderFormState{
+		RoleID:        spec.RoleID,
+		Effect:        spec.Effect,
+		ConnectorType: spec.ConnectorType,
+		OpScope:       spec.OpScope,
+		Operations:    r.Form["operations"],
+		ConnScope:     connScope,
+		Connections:   r.Form["connections"],
+		ScopeKey:      r.FormValue("scope_key"),
+		ScopeFields:   map[string]string{},
+		Filters:       r.Form["filters"],
 	}
 
 	meta := s.connectorMeta(spec.ConnectorType)
@@ -370,14 +458,13 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 			for _, f := range sc.Fields {
 				v := strings.TrimSpace(r.FormValue("scope_" + f.Key))
 				if v == "" {
-					http.Error(w, "fill in all fields for the selected resource scope", http.StatusBadRequest)
-					return
+					return spec, "", "", &parseError{msg: "fill in all fields for the selected resource scope", code: http.StatusBadRequest}
 				}
 				fields[f.Key] = v
+				state.ScopeFields[f.Key] = v
 			}
 			if len(spec.ConnectionIDs) == 0 {
-				http.Error(w, "resource scoping requires selecting specific connection(s)", http.StatusBadRequest)
-				return
+				return spec, "", "", &parseError{msg: "resource scoping requires selecting specific connection(s)", code: http.StatusBadRequest}
 			}
 			for _, connID := range spec.ConnectionIDs {
 				spec.Scopes = append(spec.Scopes, iampolicies.ScopeRef{
@@ -400,18 +487,48 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 			if r.FormValue("cond_"+c.Key) != "on" {
 				continue
 			}
+			op := r.FormValue("cond_" + c.Key + "_op")
+			val := r.FormValue("cond_" + c.Key + "_val")
 			spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
 				Kind:    c.Kind,
 				CtxPath: c.CtxPath,
-				Op:      r.FormValue("cond_" + c.Key + "_op"),
-				Value:   r.FormValue("cond_" + c.Key + "_val"),
+				Op:      op,
+				Value:   val,
 			})
+			state.Conditions = append(state.Conditions, builderCond{Key: c.Key, Op: op, Value: val})
 		}
 	}
 
 	// Response-filter obligations (filter-library names).
 	spec.Filters = r.Form["filters"]
 
+	summary := iampolicies.HumanSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
+
+	formStateJSON := "{}"
+	if b, err := json.Marshal(state); err == nil {
+		formStateJSON = string(b)
+	}
+	return spec, summary, formStateJSON, nil
+}
+
+// parseError is a request-derived validation failure from parseBuilderForm,
+// carrying the message + HTTP status the handler should return.
+type parseError struct {
+	msg  string
+	code int
+}
+
+// createBuilderPolicy compiles the visual rule form to Cedar and stores it with
+// a human-readable summary as its description and the raw form-state as its
+// spec_json (so it can be edited in place later).
+func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
+	spec, summary, formStateJSON, perr := s.parseBuilderForm(r)
+	if perr != nil {
+		http.Error(w, perr.msg, perr.code)
+		return
+	}
+
+	meta := s.connectorMeta(spec.ConnectorType)
 	cedar, err := iampolicies.BuildRuleCedar(spec, meta.Operations)
 	if err != nil {
 		http.Error(w, "could not build rule: "+err.Error(), http.StatusBadRequest)
@@ -422,7 +539,6 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary := iampolicies.HumanSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
 	name := r.FormValue("name")
 	if name == "" {
 		name = summary
@@ -433,6 +549,10 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Persist the structured form-state so the rule can be reloaded into the
+	// builder for edit-in-place. Best-effort: a spec write failure must not
+	// orphan the (already-created) rule, which is fully functional without it.
+	_ = s.iam.SetPolicySpec(pol.ID, formStateJSON)
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.create", pol.ID,
 		map[string]any{"name": name, "mode": "builder"}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
@@ -458,6 +578,89 @@ func (s *Server) createAdvancedPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.create", pol.ID,
 		map[string]any{"name": name, "mode": "advanced"}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// handleIAMPolicyEditPage renders the edit-in-place form for one
+// builder-authored rule (GET /iam/policies/{id}/edit). Rules with no stored
+// structured form (raw Cedar / migrated) render a notice instead — there's no
+// form-state to reload, so they must be recreated via the builder or edited as
+// raw Cedar in the Advanced section.
+func (s *Server) handleIAMPolicyEditPage(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	id := r.PathValue("id")
+	pol, err := s.iam.GetPolicy(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	data := &iamEditPageData{
+		Active:   "iam",
+		PolicyID: pol.ID,
+		Name:     pol.Name,
+		HasSpec:  pol.SpecJSON != "",
+	}
+	if data.HasSpec {
+		// Decode the stored form-state so the template emits one clean JSON
+		// object for the prefill script. A corrupt spec falls back to the
+		// notice page rather than rendering a half-populated form.
+		if err := json.Unmarshal([]byte(pol.SpecJSON), &data.Spec); err != nil {
+			data.HasSpec = false
+		} else {
+			s.populateBuilderData(&data.iamBuilderData)
+		}
+	}
+	s.render(w, r, "iam_edit", data)
+}
+
+// handleIAMPolicyUpdate recompiles an edited builder rule and stores it in place
+// (POST /iam/policies/{id}/update). It reuses parseBuilderForm so create/edit
+// share identical parsing, validation, and form-state capture.
+func (s *Server) handleIAMPolicyUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+
+	spec, summary, formStateJSON, perr := s.parseBuilderForm(r)
+	if perr != nil {
+		http.Error(w, perr.msg, perr.code)
+		return
+	}
+
+	meta := s.connectorMeta(spec.ConnectorType)
+	cedar, err := iampolicies.BuildRuleCedar(spec, meta.Operations)
+	if err != nil {
+		http.Error(w, "could not build rule: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.iam.ValidateCedar(cedar); err != nil {
+		http.Error(w, "generated rule did not validate: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	name := r.FormValue("name")
+	if name == "" {
+		name = summary
+	}
+
+	// Editing keeps the rule enabled (the list has its own enable/disable
+	// toggle; edit-in-place is about the rule's content, not its on/off state).
+	if err := s.iam.UpdatePolicy(id, name, summary, cedar, true); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.iam.SetPolicySpec(id, formStateJSON)
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.update", id,
+		map[string]any{"name": name, "mode": "builder"}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 

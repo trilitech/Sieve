@@ -128,6 +128,50 @@ test.describe('Sieve running on the IAM engine', () => {
     await expect(page.locator('body')).toContainText('context.param.max_tokens');
   });
 
+  test('edit-in-place: a builder rule reloads into the form and updates on save', async ({ page }) => {
+    await loginOperator(page, s);
+    await page.goto(`${s.web_url}/iam`);
+
+    // Create a dedicated role so the rule's summary is unambiguous in the list.
+    await page.fill('form[action="/iam/roles"] input[name="name"]', 'pw-edit-role');
+    await page.locator('form[action="/iam/roles"] button[type="submit"]').click();
+    await expect(page.locator('body')).toContainText('pw-edit-role');
+
+    // Build an allow/read rule on the mock connector via the builder.
+    await page.selectOption('#rule-form select[name="role_id"]', { label: 'pw-edit-role' });
+    await page.selectOption('#rule-form select[name="effect"]', 'allow');
+    await page.selectOption('#rb-connector', 'mock');
+    await page.selectOption('#rb-opscope', 'read');
+    await page.locator('#rule-form button[type="submit"]').click();
+
+    const allowSummary = 'Allow read-only operations on mock (any connection) — role: pw-edit-role';
+    await expect(page.locator('body')).toContainText(allowSummary);
+
+    // Click the Edit link in that rule's row.
+    const row = page.locator('tr', { hasText: allowSummary });
+    await row.getByRole('link', { name: 'Edit' }).click();
+    await expect(page).toHaveURL(/\/iam\/policies\/.+\/edit$/);
+
+    // The form is prefilled from the stored spec.
+    await expect(page.locator('#rule-form select[name="effect"]')).toHaveValue('allow');
+    await expect(page.locator('#rule-form select[name="connector_type"]')).toHaveValue('mock');
+    await expect(page.locator('#rule-form select[name="op_scope"]')).toHaveValue('read');
+    // role_id is prefilled to the created role (non-empty).
+    await expect(page.locator('#rule-form select[name="role_id"]')).not.toHaveValue('');
+
+    // Flip the effect allow -> deny and save. Clear the (auto-generated) name so
+    // it regenerates from the new summary, making the list assertion clean.
+    await page.selectOption('#rule-form select[name="effect"]', 'deny');
+    await page.fill('#rule-form input[name="name"]', '');
+    await page.locator('#rule-form button[type="submit"]').click();
+
+    // Back on the list, the summary reflects the change (deny, not allow).
+    await expect(page).toHaveURL(/\/iam$/);
+    const denySummary = 'Deny read-only operations on mock (any connection) — role: pw-edit-role';
+    await expect(page.locator('body')).toContainText(denySummary);
+    await expect(page.locator('body')).not.toContainText(allowSummary);
+  });
+
   test('author a custom script guard in the UI; the gateway enforces it', async ({ page }) => {
     await loginOperator(page, s);
     await page.goto(`${s.web_url}/iam`);

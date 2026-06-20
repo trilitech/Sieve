@@ -31,18 +31,28 @@ Legend: ✅ authored+enforced+gateway-verified · 🟡 partial · ❌ missing.
 | 11 | Custom post-response script filter | — | ✅ (engine) | — | ⛔ not offered (no stub) |
 | 12 | Rate limit (N/min) | — | ❌ | — | ⛔ not offered (no stub) |
 | 13 | Role groups (inherit shared rules) | — | ✅ (engine) | — | ⛔ additive, not parity |
-| 15 | Edit a rule in place | — | n/a | — | 🟡 delete+recreate (workaround) |
+| 15 | Edit a rule in place | edit page (prefilled) | ✅ | e2e (edit→update) | ✅ |
 | 16 | Custom deny message | builder (adv Cedar) | ✅ | — | 🟡 raw Cedar only |
 
 "⛔ not offered" = the engine could but the UI deliberately doesn't surface it, so there is **no authored-but-unenforced trap**. These are additive capabilities, not legacy-parity requirements (legacy = operations/matches/approval/response-filters; scripts were unused per the owner).
 
 ## State
 Every legacy-parity capability + the open-ended "arbitrary operator logic"
-(custom pre-send script guard) is **authored in the UI and enforced**, with the
-highest-risk ones proven **through the real HTTP gateway** (script guard,
-condition cap, response redaction). Remaining items are additive (#11/#13) or
-usability (#15 edit-in-place, #16 friendly deny-message) — none is a capability
-or enforcement hole.
+(custom pre-send script guard) is **authored in the UI and enforced**, proven
+through the real gateway on **both agent surfaces**:
+- REST: script guard blocks a send (200/403), amount cap (allow-when-≤N) denies
+  over/absent/non-integral with no bypass, response redaction masks an SSN,
+  benign decimal params don't error.
+- MCP: the same script guard blocks a tool call (TestMCP_ScriptGuardEnforced).
+
+Safety hardening from adversarial review: numeric conditions compile only onto
+permit effects (fail-closed on skip); non-representable numbers are omitted from
+context, not fatal; deleting an in-use filter is refused (would fail-close
+referencing rules).
+
+#16 (friendly deny-message) and #11/#13 (post script_filter, role groups —
+deliberately not offered, no stubs) remain; none is a capability or enforcement
+hole. #15 edit-in-place is being added for full legacy-edit parity.
 
 ## Remaining toward literal legacy deletion
 - #15 edit-in-place (store the structured rule beside its Cedar so the builder

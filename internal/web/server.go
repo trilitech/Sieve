@@ -317,7 +317,7 @@ func NewServer(
 	// given partial just ignore it. The ops picker partial is included so
 	// policies.html and policy_edit.html resolve to the same scope-aware
 	// markup — making create/edit divergence structurally impossible.
-	pages := []string{"connections", "connection_edit", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit", "iam", "docs"}
+	pages := []string{"connections", "connection_edit", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit", "iam", "iam_edit", "docs"}
 	for _, page := range pages {
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
@@ -457,6 +457,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /iam", s.handleIAM)
 	mux.HandleFunc("POST /iam/roles", s.handleIAMRoleCreate)
 	mux.HandleFunc("POST /iam/policies", s.handleIAMPolicyCreate)
+	mux.HandleFunc("GET /iam/policies/{id}/edit", s.handleIAMPolicyEditPage)
+	mux.HandleFunc("POST /iam/policies/{id}/update", s.handleIAMPolicyUpdate)
 	mux.HandleFunc("POST /iam/policies/{id}/delete", s.handleIAMPolicyDelete)
 	mux.HandleFunc("POST /iam/policies/{id}/enabled", s.handleIAMPolicySetEnabled)
 	mux.HandleFunc("POST /iam/filters", s.handleIAMFilterCreate)

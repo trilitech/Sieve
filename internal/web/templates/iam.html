@@ -289,6 +289,9 @@
                 </details>
               </td>
               <td class="px-6 py-4 text-right align-top whitespace-nowrap">
+                {{if .HasSpec}}
+                <a href="/iam/policies/{{.ID}}/edit" class="text-sm text-indigo-400 hover:text-indigo-300 font-medium mr-3">Edit</a>
+                {{end}}
                 <form method="POST" action="/iam/policies/{{.ID}}/enabled" class="inline mr-3">
                   {{if .Enabled}}
                   <input type="hidden" name="enabled" value="false">
