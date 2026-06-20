@@ -108,4 +108,3 @@ func TestRateLimit_SuccessRefundsBucket(t *testing.T) {
 		t.Error("post-refund failure shouldn't trip the bucket")
 	}
 }
-

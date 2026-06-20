@@ -8,6 +8,7 @@ import (
 	"github.com/trilitech/Sieve/internal/api"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/roles"
+	mockconnector "github.com/trilitech/Sieve/internal/testing/mockconnector"
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 	"github.com/trilitech/Sieve/internal/tokens"
 )
@@ -69,6 +70,7 @@ type iamRouterEnv struct {
 	roleID      string
 	iam         *iampolicies.Service
 	settingsSet func(k, v string) error
+	mock        *mockconnector.Mock
 }
 
 func setupIAMRouter(t *testing.T) iamRouterEnv {
@@ -104,6 +106,6 @@ func setupIAMRouter(t *testing.T) iamRouterEnv {
 
 	return iamRouterEnv{
 		url: srv.URL, tok: tokRes.PlaintextToken, roleID: role.ID, iam: iamSvc,
-		settingsSet: env.Settings.Set,
+		settingsSet: env.Settings.Set, mock: env.Mock,
 	}
 }

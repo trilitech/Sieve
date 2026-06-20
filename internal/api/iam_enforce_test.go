@@ -1,7 +1,9 @@
 package api_test
 
 import (
+	"encoding/json"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/trilitech/Sieve/internal/iam"
@@ -84,5 +86,40 @@ func TestIAMEnforce_ConditionOverGateway(t *testing.T) {
 	}
 	if status, _ := apiPost(t, url, env.tok, `{"to":"a@b.com","subject":"s","body":"x","amount":500}`); status != 403 {
 		t.Errorf("amount 500 (>100) should be denied, got %d", status)
+	}
+}
+
+// TestIAMEnforce_RedactOverGateway proves a redact filter actually masks
+// sensitive data in the HTTP response — response filtering enforced end to end.
+func TestIAMEnforce_RedactOverGateway(t *testing.T) {
+	env := setupIAMRouter(t)
+	if err := env.settingsSet("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
+	env.mock.SetResponse("list_emails", map[string]any{
+		"emails": []any{map[string]any{"id": "1", "note": "ssn 123-45-6789 on file"}},
+	})
+	if _, err := env.iam.CreateFilter("redact-ssn", "mask US SSNs", iam.KindRedact, 0,
+		map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}}); err != nil {
+		t.Fatal(err)
+	}
+	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: env.roleID, Effect: "allow", ConnectorType: "mock", OpScope: "read",
+		ConnectionIDs: []string{"mock-conn"}, Filters: []string{"redact-ssn"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.iam.CreatePolicy("read-redact", "", cedar, true); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := apiPost(t, env.url+"/api/v1/connections/mock-conn/ops/list_emails", env.tok, "{}")
+	if status != 200 {
+		t.Fatalf("read should be allowed, got %d", status)
+	}
+	raw, _ := json.Marshal(body)
+	if strings.Contains(string(raw), "123-45-6789") {
+		t.Errorf("SSN was NOT redacted from the response: %s", raw)
 	}
 }

@@ -288,7 +288,16 @@
                   <pre class="whitespace-pre-wrap break-words text-xs text-slate-400 bg-slate-900 border border-slate-700 rounded-lg p-3 mt-2 max-w-2xl">{{.Cedar}}</pre>
                 </details>
               </td>
-              <td class="px-6 py-4 text-right align-top">
+              <td class="px-6 py-4 text-right align-top whitespace-nowrap">
+                <form method="POST" action="/iam/policies/{{.ID}}/enabled" class="inline mr-3">
+                  {{if .Enabled}}
+                  <input type="hidden" name="enabled" value="false">
+                  <button type="submit" class="text-sm text-slate-400 hover:text-slate-200 font-medium">Disable</button>
+                  {{else}}
+                  <input type="hidden" name="enabled" value="true">
+                  <button type="submit" class="text-sm text-emerald-400 hover:text-emerald-300 font-medium">Enable</button>
+                  {{end}}
+                </form>
                 <form method="POST" action="/iam/policies/{{.ID}}/delete"
                       onsubmit="return confirm('Delete this rule?')" class="inline">
                   <button type="submit" class="text-sm text-red-400 hover:text-red-300 font-medium">Delete</button>

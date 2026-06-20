@@ -502,6 +502,28 @@ func (s *Server) handleIAMPolicyDelete(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 
+// handleIAMPolicySetEnabled enables/disables a rule without deleting it
+// (POST /iam/policies/{id}/enabled, field enabled="true"/"false").
+func (s *Server) handleIAMPolicySetEnabled(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+	enabled := r.FormValue("enabled") == "true"
+	if err := s.iam.SetPolicyEnabled(id, enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.set_enabled", id,
+		map[string]any{"enabled": enabled}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
 // handleIAMToggle sets the iam_enabled flag (POST /iam/toggle, field enabled).
 func (s *Server) handleIAMToggle(w http.ResponseWriter, r *http.Request) {
 	if s.iamSettings == nil {

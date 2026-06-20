@@ -458,6 +458,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /iam/roles", s.handleIAMRoleCreate)
 	mux.HandleFunc("POST /iam/policies", s.handleIAMPolicyCreate)
 	mux.HandleFunc("POST /iam/policies/{id}/delete", s.handleIAMPolicyDelete)
+	mux.HandleFunc("POST /iam/policies/{id}/enabled", s.handleIAMPolicySetEnabled)
 	mux.HandleFunc("POST /iam/filters", s.handleIAMFilterCreate)
 	mux.HandleFunc("POST /iam/filters/{name}/delete", s.handleIAMFilterDelete)
 	mux.HandleFunc("POST /iam/toggle", s.handleIAMToggle)
