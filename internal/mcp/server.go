@@ -30,10 +30,12 @@ import (
 	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/settings"
 	"github.com/trilitech/Sieve/internal/tokens"
 )
 
@@ -95,8 +97,49 @@ type Server struct {
 	connections *connections.Service
 	policies    *policies.Service
 	roles       *roles.Service
-	approval *approval.Queue
-	audit    *audit.Logger
+	approval    *approval.Queue
+	audit       *audit.Logger
+
+	// IAM — opt-in via SetIAM (mirrors api.Router). When enabled, iam.Decide is
+	// the decision source; the non-blocking MCP approval shape is unchanged.
+	iam      *iampolicies.Service
+	registry *connector.Registry
+	settings *settings.Service
+}
+
+// SetIAM wires the IAM engine into the MCP decision path (opt-in).
+func (s *Server) SetIAM(iamSvc *iampolicies.Service, registry *connector.Registry, settingsSvc *settings.Service) {
+	s.iam = iamSvc
+	s.registry = registry
+	s.settings = settingsSvc
+}
+
+func (s *Server) iamEnabled() bool {
+	if s.iam == nil || s.settings == nil {
+		return false
+	}
+	v, _ := s.settings.Get("iam_enabled")
+	return v == "true"
+}
+
+// decide is the MCP decision source: IAM when enabled, else the legacy
+// evaluator. Both return a *policy.PolicyDecision.
+func (s *Server) decide(ctx context.Context, tok *tokens.Token, role *roles.Role, connType, connID, connStatus, op string, params map[string]any) (*policy.PolicyDecision, error) {
+	if s.iamEnabled() {
+		return s.iam.Decide(ctx, s.registry, tok.ID, role.ID, connType, connID, connStatus, op, params)
+	}
+	evaluator, err := s.getEvaluator(role, connID)
+	if err != nil {
+		return nil, err
+	}
+	return evaluator.Evaluate(ctx, &policy.PolicyRequest{
+		Operation:  op,
+		Connection: connID,
+		Connector:  connType,
+		Params:     params,
+		Metadata:   params,
+		Phase:      "pre",
+	})
 }
 
 // NewServer creates a new MCP Server.
@@ -113,8 +156,8 @@ func NewServer(
 		connections: connsSvc,
 		policies:    policiesSvc,
 		roles:       rolesSvc,
-		approval: approvalQ,
-		audit:    auditLog,
+		approval:    approvalQ,
+		audit:       auditLog,
 	}
 }
 
@@ -400,30 +443,11 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		}
 	}
 
-	// Build policy request.
-	policyReq := &policy.PolicyRequest{
-		Operation:  opName,
-		Connection: connID,
-		Connector:  conn.ConnectorType,
-		Params:     call.Arguments,
-		Metadata:   call.Arguments,
-		Phase:      "pre",
-	}
-
-	// Get or create the policy evaluator for this connection's policies.
-	evaluator, err := s.getEvaluator(role, connID)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "policy evaluator error: " + err.Error()},
-		}
-	}
-
-	// Phase 1: Pre-execution policy check. The Phase field is not set here,
-	// so it defaults to "pre" in the evaluator. This is the primary access
-	// control gate — deny/approval_required decisions stop execution entirely.
-	decision, err := evaluator.Evaluate(ctx, policyReq)
+	// Pre-execution policy check — the primary access-control gate. The
+	// decision SOURCE is the IAM engine when enabled, else the legacy
+	// evaluator; both return a *policy.PolicyDecision so deny/approval_required
+	// handling below is identical.
+	decision, err := s.decide(ctx, tok, role, conn.ConnectorType, connID, conn.Status, opName, call.Arguments)
 	if err != nil {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",

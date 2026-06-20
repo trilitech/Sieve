@@ -25,15 +25,15 @@
 // reset, run --setup to choose a new passphrase, then re-add
 // connections.
 // Exit codes (rotation/reset modes):
-//0 — success
-//1 — generic / unexpected failure
-//2 — wrong current passphrase
-//3 — new-passphrase confirmation mismatch (caught by intake layer)
-//4 — new passphrase identical to current
-//5 — keyring not initialized (run --setup first)
-//6 — DB lock conflict (another Sieve process is holding the DB,
-//or another rotation is already in progress)
-//7 — reset aborted (operator did not type RESET, or no TTY)
+// 0 — success
+// 1 — generic / unexpected failure
+// 2 — wrong current passphrase
+// 3 — new-passphrase confirmation mismatch (caught by intake layer)
+// 4 — new passphrase identical to current
+// 5 — keyring not initialized (run --setup first)
+// 6 — DB lock conflict (another Sieve process is holding the DB,
+// or another rotation is already in progress)
+// 7 — reset aborted (operator did not type RESET, or no TTY)
 package main
 
 import (
@@ -58,23 +58,18 @@ import (
 	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
-	anthropicconn "github.com/trilitech/Sieve/internal/connectors/anthropic"
-	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
-	gitlabconn "github.com/trilitech/Sieve/internal/connectors/gitlab"
-	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
-	"github.com/trilitech/Sieve/internal/connectors/gmail"
-	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
-	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
 	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/iammigrate"
+	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/mcp"
 	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/ratelimit"
-	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/settings"
 	"github.com/trilitech/Sieve/internal/tokens"
 	"github.com/trilitech/Sieve/internal/web"
@@ -459,14 +454,7 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	}
 
 	// --- Connector registry ---
-	registry := connector.NewRegistry()
-	registry.Register(gmail.Meta, gmail.Factory)
-	registry.Register(httpproxy.Meta, httpproxy.Factory)
-	registry.Register(mcpproxy.Meta, mcpproxy.Factory)
-	registry.Register(githubconn.Meta(), githubconn.Factory())
-	registry.Register(slackconn.Meta(), slackconn.Factory())
-	registry.Register(anthropicconn.Meta(), anthropicconn.Factory())
-	registry.Register(gitlabconn.Meta(), gitlabconn.Factory())
+	registry := buildConnectorRegistry()
 
 	// --- Services ---
 	connSvc := connections.NewService(db, registry, keyring)
@@ -559,6 +547,33 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 		0, // documented LRU bound
 	))
 	mcpSrv := mcp.NewServer(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
+
+	// IAM engine wiring (opt-in via the iam_enabled setting). When off, both
+	// surfaces use the legacy evaluator unchanged. The connections/tokens/roles
+	// stores are shared; credentials are never touched.
+	iamSvc := iampolicies.NewService(db)
+	apiRouter.SetIAM(iamSvc, registry, settingsSvc)
+	mcpSrv.SetIAM(iamSvc, registry, settingsSvc)
+
+	// Sieve runs on the IAM engine by default. An unset flag resolves to "true"
+	// (operators can pin "false" to stay on the legacy evaluator during the
+	// overlap window). On the first IAM start, the existing roles/policies are
+	// migrated to Cedar so behavior is preserved; the migration is fail-closed
+	// (un-migratable policies narrow access, never widen) and never touches
+	// connections/credentials.
+	if v, _ := settingsSvc.Get("iam_enabled"); v == "" {
+		_ = settingsSvc.Set("iam_enabled", "true")
+	}
+	if v, _ := settingsSvc.Get("iam_enabled"); v == "true" {
+		if pols, perr := iamSvc.ListPolicies(); perr == nil && len(pols) == 0 {
+			if rep, merr := iammigrate.MigrateAll(policiesSvc, rolesSvc, connSvc, iamSvc); merr != nil {
+				log.Printf("sieve: IAM migration failed: %v", merr)
+			} else {
+				log.Printf("sieve: IAM migration: %d policies, %d filters created, %d manual-port items",
+					rep.PoliciesCreated, rep.FiltersCreated, len(rep.Manual))
+			}
+		}
+	}
 
 	agentMux := http.NewServeMux()
 	agentMux.Handle("/mcp", mcpSrv.Handler())
@@ -680,13 +695,13 @@ const reauthSweepInterval = time.Hour
 
 // reauthSweeper runs Validate against every connection on a periodic
 // loop. The loop honors ctx so a SIGTERM during shutdown stops it.
-//connector returns ErrNeedsReauth → SetStatusWithReason(reauth_required)
-//(idempotent if status already reauth_required).
-//connector returns nil but status==reauth_required → SetStatus(active)
-//(auto-recover from blips).
-//connector returns some other error → leave the status alone (could be a
-//transient network blip; not our
-//place to declare it dead).
+// connector returns ErrNeedsReauth → SetStatusWithReason(reauth_required)
+// (idempotent if status already reauth_required).
+// connector returns nil but status==reauth_required → SetStatus(active)
+// (auto-recover from blips).
+// connector returns some other error → leave the status alone (could be a
+// transient network blip; not our
+// place to declare it dead).
 // First sweep runs after one interval, not at startup, so the server isn't
 // hammering external APIs in its first second of life.
 func reauthSweeper(ctx context.Context, connSvc *connections.Service) {

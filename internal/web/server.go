@@ -49,6 +49,7 @@ import (
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/database"
 	"github.com/trilitech/Sieve/internal/httpguard"
+	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/ratelimit"
@@ -134,6 +135,18 @@ type Server struct {
 	// attacker. Populated by SetLoginRateLimiter; when nil, /login and
 	// /setup are not throttled (tests, dev).
 	loginLimiter *ratelimit.Limiter
+
+	// IAM engine wiring for the /iam admin page. All three are populated
+	// together by SetIAM; nil when SetIAM was never called (the /iam routes
+	// are still registered but render "IAM not configured"). iam is the
+	// Cedar-policy + decision store; iamRegistry is threaded into
+	// iam.Decide for operation-taxonomy lookups; iamSettings backs the
+	// iam_enabled toggle. settings already exists on the Server, but IAM
+	// keeps its own reference so the wiring mirrors api/router + mcp/server
+	// (SetIAM(iamSvc, registry, settingsSvc)) exactly.
+	iam         *iampolicies.Service
+	iamRegistry *connector.Registry
+	iamSettings *settings.Service
 }
 
 // funcMap returns the template function map used across all templates.
@@ -304,7 +317,7 @@ func NewServer(
 	// given partial just ignore it. The ops picker partial is included so
 	// policies.html and policy_edit.html resolve to the same scope-aware
 	// markup — making create/edit divergence structurally impossible.
-	pages := []string{"connections", "connection_edit", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit", "docs"}
+	pages := []string{"connections", "connection_edit", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit", "iam", "docs"}
 	for _, page := range pages {
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
@@ -345,6 +358,21 @@ func (s *Server) SetAuth(op *operator.Service, sess *session.Manager) {
 // rate limiter wired separately in cmd/sieve/main.go.
 func (s *Server) SetLoginRateLimiter(rl *ratelimit.Limiter) {
 	s.loginLimiter = rl
+}
+
+// SetIAM wires the IAM engine services that drive the /iam admin page.
+// Call this after NewServer to enable the IAM policy list / create /
+// delete, the iam_enabled toggle, and the decision explorer. When nil
+// values are passed (or SetIAM is never called) the /iam routes stay
+// registered but render an "IAM not configured" notice. The signature
+// mirrors Router.SetIAM / mcp.Server.SetIAM so the same call site shape
+// (SetIAM(iamSvc, registry, settingsSvc)) works for all three surfaces.
+// Production wiring lives in cmd/sieve/main.go; the e2e testserver wires
+// it too.
+func (s *Server) SetIAM(iamSvc *iampolicies.Service, registry *connector.Registry, settingsSvc *settings.Service) {
+	s.iam = iamSvc
+	s.iamRegistry = registry
+	s.iamSettings = settingsSvc
 }
 
 // Handler returns the HTTP handler with all routes registered.
@@ -421,6 +449,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /settings", s.handleSettings)
 	mux.HandleFunc("POST /settings", s.handleSettingsSave)
 	mux.HandleFunc("POST /settings/rotate-passphrase", s.handleRotatePassphrase)
+
+	// IAM (Cedar engine admin surface). Operator-authenticated like every
+	// other admin page: these paths are NOT in authExemptPaths, so the
+	// requireOperatorSession middleware gates them (session cookie + CSRF
+	// on the POSTs) and rejects agent tokens with 403. See iam.go.
+	mux.HandleFunc("GET /iam", s.handleIAM)
+	mux.HandleFunc("POST /iam/policies", s.handleIAMPolicyCreate)
+	mux.HandleFunc("POST /iam/policies/{id}/delete", s.handleIAMPolicyDelete)
+	mux.HandleFunc("POST /iam/toggle", s.handleIAMToggle)
+	mux.HandleFunc("POST /iam/explore", s.handleIAMExplore)
 
 	// Script generation API
 	mux.HandleFunc("POST /api/generate-script", s.handleGenerateScript)

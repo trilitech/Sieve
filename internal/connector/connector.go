@@ -41,6 +41,51 @@ type OperationDef struct {
 	Description string              `json:"description"`
 	Params      map[string]ParamDef `json:"params"`
 	ReadOnly    bool                `json:"read_only"`
+
+	// --- IAM taxonomy (internal/iam) ---
+
+	// Action overrides the Cedar action leaf id. Empty ⇒ the taxonomy derives
+	// "<connectorType>/<Name>". Rarely set; the derived form is canonical.
+	Action string `json:"-"`
+
+	// ResourceType is the SINGLE Cedar entity type this op targets (review M1:
+	// one type per op, never "finest available"). Empty ⇒ the op targets the
+	// connection itself (Sieve::Connection). Used by schema appliesTo and as the
+	// invariant the Resource mapper must satisfy.
+	ResourceType string `json:"-"`
+
+	// Resource maps a request to the concrete resource entity (leaf + any
+	// object-level ancestors above the connection), e.g. a GitHub repo with its
+	// owner. Nil ⇒ the resource is the connection. The leaf's Type MUST equal
+	// ResourceType (enforced by a taxonomy test). Pure; no I/O.
+	Resource ResourceMapper `json:"-"`
+}
+
+// ResourceRef is one entity in a request's resource chain, in IAM terms.
+type ResourceRef struct {
+	Type string // namespaced entity type, e.g. "Sieve::Github::Repo"
+	ID   string // entity id, e.g. "<conn>/<owner>/<repo>"
+}
+
+// ResourceMapper derives the resource a request targets: the leaf entity plus
+// any object-level ancestors ABOVE the connection (leaf-first). The taxonomy
+// appends the connection and connector. An empty/nil result ⇒ the connection is
+// the resource. Example (GitHub get-file): returns [Repo, Owner].
+type ResourceMapper func(connID string, params map[string]any) []ResourceRef
+
+// ResourceType declares a connector's object entity type for schema generation:
+// its namespaced name and the type it is `in` (its parent). Parent "" ⇒ the
+// parent is Sieve::Connection.
+type ResourceType struct {
+	Name   string // "Sieve::Github::Repo"
+	Parent string // "Sieve::Github::Owner"; "" ⇒ Sieve::Connection
+}
+
+// ContextEnricher optionally adds derived context attributes to a request
+// (recipient domains for sends, http method for escape hatches, estimated cost).
+// Declared here; invoked by the PEP/PIP in PR-D. Pure; no I/O.
+type ContextEnricher interface {
+	EnrichContext(op string, params map[string]any) map[string]any
 }
 
 // ParamDef describes a parameter for an operation.
@@ -55,11 +100,23 @@ type Factory func(config map[string]any) (Connector, error)
 
 // ConnectorMeta describes a connector type for the UI catalog.
 type ConnectorMeta struct {
-	Type        string   `json:"type"`         // e.g. "google", "http_proxy"
-	Name        string   `json:"name"`         // e.g. "Gmail"
-	Description string   `json:"description"`  // e.g. "Read, draft, and send email"
-	Category    string   `json:"category"`     // e.g. "Google", "AWS", "Communication"
-	SetupFields []Field  `json:"setup_fields"` // fields needed to create a connection
+	Type        string  `json:"type"`         // e.g. "google", "http_proxy"
+	Name        string  `json:"name"`         // e.g. "Gmail"
+	Description string  `json:"description"`  // e.g. "Read, draft, and send email"
+	Category    string  `json:"category"`     // e.g. "Google", "AWS", "Communication"
+	SetupFields []Field `json:"setup_fields"` // fields needed to create a connection
+
+	// Operations is the STATIC op catalog for IAM taxonomy + schema generation
+	// (the policy-bindable surface). For connectors whose runtime Operations()
+	// is dynamic (mcp_proxy discovers tools), this is the fixed taxonomy op(s)
+	// policies bind to — not the discovered set. Empty is allowed (the schema
+	// generator skips a connector with no declared ops).
+	Operations []OperationDef `json:"-"`
+
+	// ResourceTypes declares this connector's object entity types for schema
+	// generation (their names + parent edges). The connection/connector
+	// container types are generic and added by the generator.
+	ResourceTypes []ResourceType `json:"-"`
 }
 
 // Field describes a form field for connection setup and editing.

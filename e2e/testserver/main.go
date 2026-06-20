@@ -20,10 +20,14 @@ import (
 	"github.com/trilitech/Sieve/internal/connector"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
+	"github.com/trilitech/Sieve/internal/iammigrate"
+	"github.com/trilitech/Sieve/internal/iampolicies"
+	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/settings"
 	mockconn "github.com/trilitech/Sieve/internal/testing/mockconnector"
 	"github.com/trilitech/Sieve/internal/tokens"
@@ -118,13 +122,13 @@ func main() {
 	// Two pending approvals.
 	_, err = approvalQ.Submit(&approval.SubmitRequest{
 		TokenID: tokResult.Token.ID, ConnectionID: "test-conn",
-		Operation: "send_email",
+		Operation:   "send_email",
 		RequestData: map[string]any{"to": "alice@test.com", "subject": "Approval 1", "body": "body1"},
 	})
 	mustErr(err, "submit approval 1")
 	_, err = approvalQ.Submit(&approval.SubmitRequest{
 		TokenID: tokResult.Token.ID, ConnectionID: "test-conn",
-		Operation: "send_email",
+		Operation:   "send_email",
 		RequestData: map[string]any{"to": "bob@test.com", "subject": "Approval 2", "body": "body2"},
 	})
 	mustErr(err, "submit approval 2")
@@ -153,22 +157,51 @@ func main() {
 	)
 	defer webSrv.Close()
 
+	// --- IAM engine wiring ---
+	// Opt-in via SIEVE_IAM=1: enables the IAM engine and one-shot-migrates the
+	// seeded legacy role/policy into Cedar, so the whole harness runs on IAM
+	// (exercised by e2e/iam.spec.ts).
+	iamSvc := iampolicies.NewService(db)
+	if os.Getenv("SIEVE_IAM") == "1" {
+		must(settingsSvc.Set("iam_enabled", "true"))
+		rep, merr := iammigrate.MigrateAll(policiesSvc, rolesSvc, connSvc, iamSvc)
+		mustErr(merr, "iam migrate")
+		fmt.Fprintf(os.Stderr, "IAM mode ON: migrated %d policies, %d filters, %d manual items\n",
+			rep.PoliciesCreated, rep.FiltersCreated, len(rep.Manual))
+	} else {
+		// Legacy-engine e2e runs (web-ui.spec.ts) pin the flag off explicitly.
+		must(settingsSvc.Set("iam_enabled", "false"))
+	}
+	webSrv.SetIAM(iamSvc, registry, settingsSvc)
+
 	// --- Start API server ---
 	apiRouter := api.NewRouter(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
+	apiRouter.SetIAM(iamSvc, registry, settingsSvc)
 	apiListener, err := net.Listen("tcp", "127.0.0.1:0")
 	mustErr(err, "api listen")
 	apiPort := apiListener.Addr().(*net.TCPAddr).Port
 
 	go http.Serve(apiListener, apiRouter.Handler())
 
+	// Operator auth so the admin UI is reachable in e2e (mirrors production;
+	// requireOperatorSession fails closed without it). Tests log in via
+	// helpers.loginOperator with the credential below.
+	const operatorCredential = "e2e-operator-pass"
+	opSvc := operator.NewService(db)
+	opSvc.Time, opSvc.MemoryKiB, opSvc.Parallelism = operator.FastParams()
+	mustErr(opSvc.Setup(operatorCredential, "e2e-operator"), "operator setup")
+	sessionMgr := session.NewManager(db, 0)
+	webSrv.SetAuth(opSvc, sessionMgr)
+
 	// Output server info.
 	info := map[string]any{
-		"web_url":         fmt.Sprintf("http://127.0.0.1:%d", webPort),
-		"api_url":         fmt.Sprintf("http://127.0.0.1:%d", apiPort),
-		"seed_token":      tokResult.PlaintextToken,
-		"seed_token_id":   tokResult.Token.ID,
-		"seed_role_id":    role.ID,
+		"web_url":             fmt.Sprintf("http://127.0.0.1:%d", webPort),
+		"api_url":             fmt.Sprintf("http://127.0.0.1:%d", apiPort),
+		"seed_token":          tokResult.PlaintextToken,
+		"seed_token_id":       tokResult.Token.ID,
+		"seed_role_id":        role.ID,
 		"read_only_policy_id": readOnly.ID,
+		"operator_credential": operatorCredential,
 	}
 	infoJSON, _ := json.Marshal(info)
 	fmt.Println(string(infoJSON))

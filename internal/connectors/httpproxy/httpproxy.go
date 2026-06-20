@@ -8,13 +8,13 @@
 // works with ANY HTTP API (Anthropic, OpenAI, Gemini, Stripe, Twilio, etc.)
 // without provider-specific code.
 // Connection config:
-//{
-//"target_url": "https://api.anthropic.com",
-//"auth_header": "x-api-key",
-//"auth_value": "sk-ant-api03-...",
-//"allowed_paths": ["/v1/messages", "/v1/models"], // optional whitelist
-//"extra_headers": {"anthropic-version": "2023-06-01"} // optional
-//}
+// {
+// "target_url": "https://api.anthropic.com",
+// "auth_header": "x-api-key",
+// "auth_value": "sk-ant-api03-...",
+// "allowed_paths": ["/v1/messages", "/v1/models"], // optional whitelist
+// "extra_headers": {"anthropic-version": "2023-06-01"} // optional
+// }
 // The agent accesses this via: GET/POST http://localhost:19817/proxy/{connection}/{path}
 // Sieve strips the Sieve bearer token, injects the real auth, forwards to target.
 package httpproxy
@@ -161,6 +161,7 @@ var Meta = connector.ConnectorMeta{
 		{Name: "additional_denied_headers", Label: "Additional denied headers", Type: "textarea", EditOnly: true, Editable: true, Placeholder: "X-Custom-Internal\nX-Tenant-ID",
 			HelpText: "One header key per line, case-insensitive. Adds to the built-in baseline deny-list; cannot remove from it."},
 	},
+	Operations: operations,
 }
 
 // ProxyConnector implements connector.Connector for generic HTTP proxying.
@@ -170,12 +171,12 @@ var Meta = connector.ConnectorMeta{
 type ProxyConnector struct {
 	targetURL              string
 	authHeader             string
-	authHeaderLower        string   // lowercased once at construction; used by header deny-check
+	authHeaderLower        string // lowercased once at construction; used by header deny-check
 	authValue              string
-	authValueScrub         bool     // when true (default), upstream response bodies are scrubbed of literal authValue
-	additionalDenied       []string // operator-supplied extras the connector ALSO denies (lowercased; never reduces the baseline)
+	authValueScrub         bool                // when true (default), upstream response bodies are scrubbed of literal authValue
+	additionalDenied       []string            // operator-supplied extras the connector ALSO denies (lowercased; never reduces the baseline)
 	additionalDeniedLookup map[string]struct{} // O(1) lookup over additionalDenied
-	authQueryParam         string   // empty = legacy header-only auth; non-empty = inject auth_value as URL query param under this name
+	authQueryParam         string              // empty = legacy header-only auth; non-empty = inject auth_value as URL query param under this name
 	extraHeaders           map[string]string
 	client                 *http.Client
 }
@@ -360,17 +361,22 @@ func (p *ProxyConnector) AuthValueScrubFilter() *policy.ResponseFilter {
 // Operations returns a single "proxy" operation. The real routing happens
 // at the HTTP level via the proxy handler in the API router.
 func (p *ProxyConnector) Operations() []connector.OperationDef {
-	return []connector.OperationDef{
-		{
-			Name:        "proxy_request",
-			Description: "Forward an HTTP request to the target API",
-			Params: map[string]connector.ParamDef{
-				"method": {Type: "string", Description: "HTTP method", Required: true},
-				"path":   {Type: "string", Description: "URL path", Required: true},
-				"body":   {Type: "string", Description: "Request body", Required: false},
-			},
+	return operations
+}
+
+// operations is the static catalog of supported operations. It is the single
+// source of truth shared by the runtime Operations() method and the
+// Meta.Operations field consumed by IAM taxonomy/schema generation.
+var operations = []connector.OperationDef{
+	{
+		Name:        "proxy_request",
+		Description: "Forward an HTTP request to the target API",
+		Params: map[string]connector.ParamDef{
+			"method": {Type: "string", Description: "HTTP method", Required: true},
+			"path":   {Type: "string", Description: "URL path", Required: true},
+			"body":   {Type: "string", Description: "Request body", Required: false},
 		},
-	}
+	},
 }
 
 // Execute proxies a single HTTP request. Params must include "method" and "path".

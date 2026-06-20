@@ -246,6 +246,42 @@ func (db *DB) migrate() error {
 		response_summary  TEXT,
 		duration_ms       INTEGER
 	);
+
+	-- IAM (internal/iam) — additive, coexists with legacy policies/roles while
+	-- iam_enabled is off. See docs/architecture/iam/. The connections + tokens
+	-- tables are untouched (credentials preserved). Roles reuse the existing
+	-- roles table for identity (id, name); iam_role_groups add the principal
+	-- grouping the IAM model uses.
+	CREATE TABLE IF NOT EXISTS iam_policies (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL UNIQUE,
+		description  TEXT NOT NULL DEFAULT '',
+		cedar_text   TEXT NOT NULL,
+		enabled      INTEGER NOT NULL DEFAULT 1,
+		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS iam_filters (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL UNIQUE,
+		description  TEXT NOT NULL DEFAULT '',
+		kind         TEXT NOT NULL,
+		sort_order   INTEGER NOT NULL DEFAULT 0,
+		config       TEXT NOT NULL DEFAULT '{}',
+		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS iam_role_groups (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL UNIQUE,
+		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS iam_role_group_members (
+		group_id     TEXT NOT NULL,
+		role_id      TEXT NOT NULL,
+		PRIMARY KEY (group_id, role_id)
+	);
 	`
 
 	if _, err := db.Exec(schema); err != nil {

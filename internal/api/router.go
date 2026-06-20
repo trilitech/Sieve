@@ -30,11 +30,13 @@ import (
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
+	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/ratelimit"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/settings"
 	"github.com/trilitech/Sieve/internal/tokens"
 )
 
@@ -55,6 +57,32 @@ type Router struct {
 	// Defaults: 10
 	// tokens, 1 refill / 6s = 10 failures per 60s window.
 	limiter *ratelimit.Limiter
+
+	// IAM (internal/iam) — opt-in via SetIAM. When iam != nil and the
+	// iam_enabled setting is "true", the decision source for every operation is
+	// iam.Decide instead of the legacy evaluator. All downstream control flow
+	// (execute, approval, response filters, audit) is unchanged.
+	iam      *iampolicies.Service
+	registry *connector.Registry
+	settings *settings.Service
+}
+
+// SetIAM wires the IAM engine into the request path (opt-in; keeps NewRouter's
+// signature stable). The flag is read per request from settings, so it can be
+// flipped live without restart.
+func (rt *Router) SetIAM(iamSvc *iampolicies.Service, registry *connector.Registry, settingsSvc *settings.Service) {
+	rt.iam = iamSvc
+	rt.registry = registry
+	rt.settings = settingsSvc
+}
+
+// iamEnabled reports whether the IAM engine should decide this request.
+func (rt *Router) iamEnabled() bool {
+	if rt.iam == nil || rt.settings == nil {
+		return false
+	}
+	v, _ := rt.settings.Get("iam_enabled")
+	return v == "true"
 }
 
 // NewRouter creates a new Router with the given service dependencies.
@@ -314,25 +342,12 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Evaluate policy.
-	policyReq := &policy.PolicyRequest{
-		Operation:  operation,
-		Connection: connID,
-		Connector:  conn.Type(),
-		Params:     params,
-		Metadata:   params,
-		Phase:      "pre",
-	}
-
-	evaluator, err := rt.getEvaluator(role, connID)
+	// Evaluate policy. The decision SOURCE is the IAM engine when enabled, else
+	// the legacy evaluator; both yield a *policy.PolicyDecision, so all
+	// downstream control flow is identical.
+	decision, err := rt.decide(r.Context(), tok, role, conn, connID, operation, params)
 	if err != nil {
 		writeError(w, http.StatusForbidden, fmt.Sprintf("policy error: %v", err))
-		return
-	}
-
-	decision, err := evaluator.Evaluate(r.Context(), policyReq)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("policy evaluation error: %v", err))
 		return
 	}
 
@@ -515,6 +530,33 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// decide produces the policy decision for a request. When the IAM engine is
+// enabled it is the decision source (iam.Decide); otherwise the legacy
+// per-(role,connection) evaluator. Both return a *policy.PolicyDecision, so the
+// caller's allow/deny/approval handling is identical either way. Errors
+// fail closed (the caller maps them to 403).
+func (rt *Router) decide(ctx context.Context, tok *tokens.Token, role *roles.Role, conn connector.Connector, connID, operation string, params map[string]any) (*policy.PolicyDecision, error) {
+	if rt.iamEnabled() {
+		connStatus := ""
+		if c, err := rt.connections.Get(connID); err == nil {
+			connStatus = c.Status
+		}
+		return rt.iam.Decide(ctx, rt.registry, tok.ID, role.ID, conn.Type(), connID, connStatus, operation, params)
+	}
+	evaluator, err := rt.getEvaluator(role, connID)
+	if err != nil {
+		return nil, err
+	}
+	return evaluator.Evaluate(ctx, &policy.PolicyRequest{
+		Operation:  operation,
+		Connection: connID,
+		Connector:  conn.Type(),
+		Params:     params,
+		Metadata:   params,
+		Phase:      "pre",
+	})
+}
+
 // getEvaluator builds a composite evaluator from the policies assigned to a
 // specific connection within a role.
 func (rt *Router) getEvaluator(role *roles.Role, connID string) (policy.Evaluator, error) {
@@ -524,7 +566,6 @@ func (rt *Router) getEvaluator(role *roles.Role, connID string) (policy.Evaluato
 	}
 	return rt.policies.BuildEvaluator(policyIDs)
 }
-
 
 // handleProxy is the transparent HTTP proxy handler. It extracts the connection
 // alias and path from the URL, validates the token has access, and delegates
@@ -598,15 +639,6 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	operation := "proxy:" + r.Method + ":" + proxyPath
 
-	// Policy evaluation — proxy requests go through the same pipeline as
-	// all other operations. The operation name encodes the HTTP method and
-	// path so policy rules can match on them (e.g., "deny proxy:POST:/v1/images").
-	evaluator, err := rt.getEvaluator(role, connID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "policy error")
-		return
-	}
-
 	// Build policy params with method and path. For requests with a JSON body,
 	// peek at the body and merge top-level fields into params so policy rules
 	// can match on fields like "model", "max_tokens", etc.
@@ -629,16 +661,34 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	policyReq := &policy.PolicyRequest{
-		Operation:  operation,
-		Connection: connID,
-		Connector:  "http_proxy",
-		Phase:      "pre",
-		Params:     policyParams,
-		Metadata:   policyParams,
+	// Policy evaluation — proxy requests go through the same pipeline. With IAM
+	// enabled, the action is the connector's `proxy_request` op and the HTTP
+	// method/path land in context (policies gate via context.http_method /
+	// context.param.path). With the legacy engine, the synthetic
+	// "proxy:METHOD:path" operation name is matched by rules.
+	var decision *policy.PolicyDecision
+	if rt.iamEnabled() {
+		connStatus := ""
+		if c, e := rt.connections.Get(connID); e == nil {
+			connStatus = c.Status
+		}
+		decision, err = rt.iam.Decide(r.Context(), rt.registry, tok.ID, role.ID, "http_proxy", connID, connStatus, "proxy_request", policyParams)
+	} else {
+		var evaluator policy.Evaluator
+		evaluator, err = rt.getEvaluator(role, connID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "policy error")
+			return
+		}
+		decision, err = evaluator.Evaluate(r.Context(), &policy.PolicyRequest{
+			Operation:  operation,
+			Connection: connID,
+			Connector:  "http_proxy",
+			Phase:      "pre",
+			Params:     policyParams,
+			Metadata:   policyParams,
+		})
 	}
-
-	decision, err := evaluator.Evaluate(r.Context(), policyReq)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "policy evaluation failed")
 		return
@@ -793,12 +843,12 @@ func (rt *Router) writeConnectionError(w http.ResponseWriter, defaultStatus int,
 
 // writeOperationNotEnabledError emits HTTP 501 with the canonical
 // operation_not_enabled envelope:
-//{
-//"error": "operation_not_enabled",
-//"connection_id": "<connection-id>",
-//"operation": "<operation-name>",
-//"message": "<reason text from the connector>"
-//}
+// {
+// "error": "operation_not_enabled",
+// "connection_id": "<connection-id>",
+// "operation": "<operation-name>",
+// "message": "<reason text from the connector>"
+// }
 // reason is the connector-supplied detail (the err string with the
 // sentinel prefix stripped). Distinct from 403 (reauth) and 503
 // (service locked) — agent SDKs should NOT retry.
@@ -951,25 +1001,10 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 		return
 	}
 
-	// Policy check
-	policyReq := &policy.PolicyRequest{
-		Operation:  operation,
-		Connection: connID,
-		Connector:  "google",
-		Phase:      "pre",
-		Params:     params,
-		Metadata:   params,
-	}
-
-	evaluator, err := rt.getEvaluator(role, connID)
+	// Policy check (IAM decision source when enabled, else legacy).
+	decision, err := rt.decide(r.Context(), tok, role, conn, connID, operation, params)
 	if err != nil {
 		writeError(w, http.StatusForbidden, "policy error: "+err.Error())
-		return
-	}
-
-	decision, err := evaluator.Evaluate(r.Context(), policyReq)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "policy evaluation failed")
 		return
 	}
 

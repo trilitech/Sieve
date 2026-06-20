@@ -106,6 +106,7 @@ func Meta() connector.ConnectorMeta {
 		Name:        "Slack",
 		Description: "Read channels, search messages, post replies via OAuth or pasted bot token.",
 		Category:    "Communication",
+		Operations:  operations,
 		SetupFields: []connector.Field{
 			{
 				Name:        "bot_token",

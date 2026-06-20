@@ -49,6 +49,7 @@ var Meta = connector.ConnectorMeta{
 		{Name: "email", Label: "Google Account Email", Type: "text", Required: true, Placeholder: "you@gmail.com"},
 		{Name: "oauth_token", Label: "OAuth Token", Type: "oauth", Required: true, HelpText: "Authenticate via Google OAuth"},
 	},
+	Operations: operations,
 }
 
 // GoogleConnector implements the connector.Connector interface for Google services.
@@ -257,370 +258,375 @@ func (g *GoogleConnector) Type() string {
 
 // Operations returns the list of supported Gmail operations.
 func (g *GoogleConnector) Operations() []connector.OperationDef {
-	return []connector.OperationDef{
-		{
-			Name:        "list_emails",
-			Description: "Search and list emails using Gmail query syntax. Returns lightweight stubs (id, thread_id, snippet, labels, and the From/To/Cc/Subject/Date/Message-ID headers) — no body, no attachments. Call read_email to fetch the full content of a specific message. This keeps list responses small enough to fit in agent context windows even with max_results=100.",
-			Params: map[string]connector.ParamDef{
-				"query":       {Type: "string", Description: "Gmail search query string (same syntax as the Gmail web UI search box)", Required: false},
-				"max_results": {Type: "int", Description: "Maximum number of results to return (default 100, max 500)", Required: false},
-				"page_token":  {Type: "string", Description: "Page token for pagination", Required: false},
-			},
-			ReadOnly: true,
-		},
-		{
-			Name:        "read_email",
-			Description: "Read a single email by message ID, returning full headers, plain-text body, HTML body, and attachment metadata",
-			Params: map[string]connector.ParamDef{
-				"message_id": {Type: "string", Description: "The ID of the message to read", Required: true},
-			},
-			ReadOnly: true,
-		},
-		{
-			Name:        "read_email_raw",
-			Description: "Read a single email by message ID, returning the byte-faithful RFC822 message (full headers, all MIME parts, attachments inline) base64url-encoded in `raw`. Response shape matches Google's users.messages.get?format=RAW. Use for archival pipelines that need .eml-grade fidelity; response bodies are large, so this is not suitable for context-window-bound interactive use — prefer read_email for that.",
-			Params: map[string]connector.ParamDef{
-				"message_id": {Type: "string", Description: "The ID of the message to read", Required: true},
-			},
-			ReadOnly: true,
-		},
-		{
-			Name:        "read_thread",
-			Description: "Read all messages in a thread",
-			Params: map[string]connector.ParamDef{
-				"thread_id": {Type: "string", Description: "The ID of the thread to read", Required: true},
-			},
-			ReadOnly: true,
-		},
-		{
-			Name:        "create_draft",
-			Description: "Create a new email draft",
-			Params: map[string]connector.ParamDef{
-				"to":       {Type: "[]string", Description: "Recipient email addresses", Required: false},
-				"cc":       {Type: "[]string", Description: "CC email addresses", Required: false},
-				"subject":  {Type: "string", Description: "Email subject", Required: false},
-				"body":     {Type: "string", Description: "Email body text", Required: false},
-				"reply_to": {Type: "string", Description: "Message ID to reply to", Required: false},
-			},
-			ReadOnly: false,
-		},
-		{
-			Name:        "update_draft",
-			Description: "Update an existing email draft",
-			Params: map[string]connector.ParamDef{
-				"draft_id": {Type: "string", Description: "The ID of the draft to update", Required: true},
-				"to":       {Type: "[]string", Description: "Recipient email addresses", Required: false},
-				"cc":       {Type: "[]string", Description: "CC email addresses", Required: false},
-				"subject":  {Type: "string", Description: "Email subject", Required: false},
-				"body":     {Type: "string", Description: "Email body text", Required: false},
-			},
-			ReadOnly: false,
-		},
-		{
-			Name:        "send_email",
-			Description: "Send an email directly",
-			Params: map[string]connector.ParamDef{
-				"to":       {Type: "[]string", Description: "Recipient email addresses", Required: false},
-				"cc":       {Type: "[]string", Description: "CC email addresses", Required: false},
-				"subject":  {Type: "string", Description: "Email subject", Required: false},
-				"body":     {Type: "string", Description: "Email body text", Required: false},
-				"reply_to": {Type: "string", Description: "Message ID to reply to", Required: false},
-			},
-			ReadOnly: false,
-		},
-		{
-			Name:        "send_draft",
-			Description: "Send an existing draft",
-			Params: map[string]connector.ParamDef{
-				"draft_id": {Type: "string", Description: "The ID of the draft to send", Required: true},
-			},
-			ReadOnly: false,
-		},
-		{
-			Name:        "reply",
-			Description: "Reply to an existing email",
-			Params: map[string]connector.ParamDef{
-				"message_id": {Type: "string", Description: "The ID of the message to reply to", Required: true},
-				"to":         {Type: "[]string", Description: "Recipient email addresses (defaults to original sender)", Required: false},
-				"cc":         {Type: "[]string", Description: "CC email addresses", Required: false},
-				"subject":    {Type: "string", Description: "Email subject (defaults to Re: original subject)", Required: false},
-				"body":       {Type: "string", Description: "Reply body text", Required: true},
-			},
-			ReadOnly: false,
-		},
-		{
-			Name:        "add_label",
-			Description: "Add a label to a message",
-			Params: map[string]connector.ParamDef{
-				"message_id": {Type: "string", Description: "The ID of the message", Required: true},
-				"label_id":   {Type: "string", Description: "The ID of the label to add", Required: true},
-			},
-			ReadOnly: false,
-		},
-		{
-			Name:        "remove_label",
-			Description: "Remove a label from a message",
-			Params: map[string]connector.ParamDef{
-				"message_id": {Type: "string", Description: "The ID of the message", Required: true},
-				"label_id":   {Type: "string", Description: "The ID of the label to remove", Required: true},
-			},
-			ReadOnly: false,
-		},
-		{
-			Name:        "archive",
-			Description: "Archive a message by removing the INBOX label",
-			Params: map[string]connector.ParamDef{
-				"message_id": {Type: "string", Description: "The ID of the message to archive", Required: true},
-			},
-			ReadOnly: false,
-		},
-		{
-			Name:        "list_labels",
-			Description: "List all labels for the account",
-			Params:      map[string]connector.ParamDef{},
-			ReadOnly:    true,
-		},
-		{
-			Name:        "get_attachment",
-			Description: "Download an email attachment",
-			Params: map[string]connector.ParamDef{
-				"message_id":    {Type: "string", Description: "The ID of the message containing the attachment", Required: true},
-				"attachment_id": {Type: "string", Description: "The ID of the attachment", Required: true},
-			},
-			ReadOnly: true,
-		},
+	return operations
+}
 
-		// --- Google Drive ---
-		{
-			Name:        "drive.list_files",
-			Description: "List files in Google Drive with optional search query",
-			Params: map[string]connector.ParamDef{
-				"query":      {Type: "string", Description: "Drive search query (e.g. \"name contains 'report'\")", Required: false},
-				"page_size":  {Type: "int", Description: "Maximum number of results (default 100)", Required: false},
-				"page_token": {Type: "string", Description: "Page token for pagination", Required: false},
-			},
-			ReadOnly: true,
+// operations is the static catalog of supported Google operations. It is the
+// single source of truth shared by the runtime Operations() method and the
+// Meta.Operations field consumed by IAM taxonomy/schema generation.
+var operations = []connector.OperationDef{
+	{
+		Name:        "list_emails",
+		Description: "Search and list emails using Gmail query syntax. Returns lightweight stubs (id, thread_id, snippet, labels, and the From/To/Cc/Subject/Date/Message-ID headers) — no body, no attachments. Call read_email to fetch the full content of a specific message. This keeps list responses small enough to fit in agent context windows even with max_results=100.",
+		Params: map[string]connector.ParamDef{
+			"query":       {Type: "string", Description: "Gmail search query string (same syntax as the Gmail web UI search box)", Required: false},
+			"max_results": {Type: "int", Description: "Maximum number of results to return (default 100, max 500)", Required: false},
+			"page_token":  {Type: "string", Description: "Page token for pagination", Required: false},
 		},
-		{
-			Name:        "drive.get_file",
-			Description: "Get metadata for a single file in Google Drive",
-			Params: map[string]connector.ParamDef{
-				"file_id": {Type: "string", Description: "The ID of the file", Required: true},
-			},
-			ReadOnly: true,
+		ReadOnly: true,
+	},
+	{
+		Name:        "read_email",
+		Description: "Read a single email by message ID, returning full headers, plain-text body, HTML body, and attachment metadata",
+		Params: map[string]connector.ParamDef{
+			"message_id": {Type: "string", Description: "The ID of the message to read", Required: true},
 		},
-		{
-			Name:        "drive.download_file",
-			Description: "Download a file's content from Google Drive (returned as base64)",
-			Params: map[string]connector.ParamDef{
-				"file_id": {Type: "string", Description: "The ID of the file to download", Required: true},
-			},
-			ReadOnly: true,
+		ReadOnly: true,
+	},
+	{
+		Name:        "read_email_raw",
+		Description: "Read a single email by message ID, returning the byte-faithful RFC822 message (full headers, all MIME parts, attachments inline) base64url-encoded in `raw`. Response shape matches Google's users.messages.get?format=RAW. Use for archival pipelines that need .eml-grade fidelity; response bodies are large, so this is not suitable for context-window-bound interactive use — prefer read_email for that.",
+		Params: map[string]connector.ParamDef{
+			"message_id": {Type: "string", Description: "The ID of the message to read", Required: true},
 		},
-		{
-			Name:        "drive.upload_file",
-			Description: "Upload a file to Google Drive",
-			Params: map[string]connector.ParamDef{
-				"name":             {Type: "string", Description: "Filename", Required: true},
-				"content":          {Type: "string", Description: "File content as base64", Required: true},
-				"mime_type":        {Type: "string", Description: "MIME type of the file", Required: true},
-				"parent_folder_id": {Type: "string", Description: "Parent folder ID (optional)", Required: false},
-			},
-			ReadOnly: false,
+		ReadOnly: true,
+	},
+	{
+		Name:        "read_thread",
+		Description: "Read all messages in a thread",
+		Params: map[string]connector.ParamDef{
+			"thread_id": {Type: "string", Description: "The ID of the thread to read", Required: true},
 		},
-		{
-			Name:        "drive.share_file",
-			Description: "Share a file with a user by email",
-			Params: map[string]connector.ParamDef{
-				"file_id": {Type: "string", Description: "The ID of the file to share", Required: true},
-				"email":   {Type: "string", Description: "Email address to share with", Required: true},
-				"role":    {Type: "string", Description: "Permission role: reader, writer, commenter (default: reader)", Required: false},
-			},
-			ReadOnly: false,
+		ReadOnly: true,
+	},
+	{
+		Name:        "create_draft",
+		Description: "Create a new email draft",
+		Params: map[string]connector.ParamDef{
+			"to":       {Type: "[]string", Description: "Recipient email addresses", Required: false},
+			"cc":       {Type: "[]string", Description: "CC email addresses", Required: false},
+			"subject":  {Type: "string", Description: "Email subject", Required: false},
+			"body":     {Type: "string", Description: "Email body text", Required: false},
+			"reply_to": {Type: "string", Description: "Message ID to reply to", Required: false},
 		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "update_draft",
+		Description: "Update an existing email draft",
+		Params: map[string]connector.ParamDef{
+			"draft_id": {Type: "string", Description: "The ID of the draft to update", Required: true},
+			"to":       {Type: "[]string", Description: "Recipient email addresses", Required: false},
+			"cc":       {Type: "[]string", Description: "CC email addresses", Required: false},
+			"subject":  {Type: "string", Description: "Email subject", Required: false},
+			"body":     {Type: "string", Description: "Email body text", Required: false},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "send_email",
+		Description: "Send an email directly",
+		Params: map[string]connector.ParamDef{
+			"to":       {Type: "[]string", Description: "Recipient email addresses", Required: false},
+			"cc":       {Type: "[]string", Description: "CC email addresses", Required: false},
+			"subject":  {Type: "string", Description: "Email subject", Required: false},
+			"body":     {Type: "string", Description: "Email body text", Required: false},
+			"reply_to": {Type: "string", Description: "Message ID to reply to", Required: false},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "send_draft",
+		Description: "Send an existing draft",
+		Params: map[string]connector.ParamDef{
+			"draft_id": {Type: "string", Description: "The ID of the draft to send", Required: true},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "reply",
+		Description: "Reply to an existing email",
+		Params: map[string]connector.ParamDef{
+			"message_id": {Type: "string", Description: "The ID of the message to reply to", Required: true},
+			"to":         {Type: "[]string", Description: "Recipient email addresses (defaults to original sender)", Required: false},
+			"cc":         {Type: "[]string", Description: "CC email addresses", Required: false},
+			"subject":    {Type: "string", Description: "Email subject (defaults to Re: original subject)", Required: false},
+			"body":       {Type: "string", Description: "Reply body text", Required: true},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "add_label",
+		Description: "Add a label to a message",
+		Params: map[string]connector.ParamDef{
+			"message_id": {Type: "string", Description: "The ID of the message", Required: true},
+			"label_id":   {Type: "string", Description: "The ID of the label to add", Required: true},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "remove_label",
+		Description: "Remove a label from a message",
+		Params: map[string]connector.ParamDef{
+			"message_id": {Type: "string", Description: "The ID of the message", Required: true},
+			"label_id":   {Type: "string", Description: "The ID of the label to remove", Required: true},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "archive",
+		Description: "Archive a message by removing the INBOX label",
+		Params: map[string]connector.ParamDef{
+			"message_id": {Type: "string", Description: "The ID of the message to archive", Required: true},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "list_labels",
+		Description: "List all labels for the account",
+		Params:      map[string]connector.ParamDef{},
+		ReadOnly:    true,
+	},
+	{
+		Name:        "get_attachment",
+		Description: "Download an email attachment",
+		Params: map[string]connector.ParamDef{
+			"message_id":    {Type: "string", Description: "The ID of the message containing the attachment", Required: true},
+			"attachment_id": {Type: "string", Description: "The ID of the attachment", Required: true},
+		},
+		ReadOnly: true,
+	},
 
-		// --- Google Calendar ---
-		{
-			Name:        "calendar.list_events",
-			Description: "List events from a Google Calendar",
-			Params: map[string]connector.ParamDef{
-				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
-				"time_min":    {Type: "string", Description: "Start time filter (RFC3339, e.g. 2024-01-01T00:00:00Z)", Required: false},
-				"time_max":    {Type: "string", Description: "End time filter (RFC3339)", Required: false},
-				"max_results": {Type: "int", Description: "Maximum number of events (default 100)", Required: false},
-				"page_token":  {Type: "string", Description: "Page token for pagination", Required: false},
-			},
-			ReadOnly: true,
+	// --- Google Drive ---
+	{
+		Name:        "drive.list_files",
+		Description: "List files in Google Drive with optional search query",
+		Params: map[string]connector.ParamDef{
+			"query":      {Type: "string", Description: "Drive search query (e.g. \"name contains 'report'\")", Required: false},
+			"page_size":  {Type: "int", Description: "Maximum number of results (default 100)", Required: false},
+			"page_token": {Type: "string", Description: "Page token for pagination", Required: false},
 		},
-		{
-			Name:        "calendar.get_event",
-			Description: "Get a single calendar event by ID",
-			Params: map[string]connector.ParamDef{
-				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
-				"event_id":    {Type: "string", Description: "The event ID", Required: true},
-			},
-			ReadOnly: true,
+		ReadOnly: true,
+	},
+	{
+		Name:        "drive.get_file",
+		Description: "Get metadata for a single file in Google Drive",
+		Params: map[string]connector.ParamDef{
+			"file_id": {Type: "string", Description: "The ID of the file", Required: true},
 		},
-		{
-			Name:        "calendar.create_event",
-			Description: "Create a new calendar event",
-			Params: map[string]connector.ParamDef{
-				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
-				"summary":     {Type: "string", Description: "Event title", Required: true},
-				"start":       {Type: "string", Description: "Start time (RFC3339)", Required: true},
-				"end":         {Type: "string", Description: "End time (RFC3339)", Required: true},
-				"location":    {Type: "string", Description: "Event location", Required: false},
-				"description": {Type: "string", Description: "Event description", Required: false},
-				"attendees":   {Type: "[]string", Description: "Attendee email addresses", Required: false},
-			},
-			ReadOnly: false,
+		ReadOnly: true,
+	},
+	{
+		Name:        "drive.download_file",
+		Description: "Download a file's content from Google Drive (returned as base64)",
+		Params: map[string]connector.ParamDef{
+			"file_id": {Type: "string", Description: "The ID of the file to download", Required: true},
 		},
-		{
-			Name:        "calendar.update_event",
-			Description: "Update an existing calendar event",
-			Params: map[string]connector.ParamDef{
-				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
-				"event_id":    {Type: "string", Description: "The event ID", Required: true},
-				"summary":     {Type: "string", Description: "Event title", Required: false},
-				"start":       {Type: "string", Description: "Start time (RFC3339)", Required: false},
-				"end":         {Type: "string", Description: "End time (RFC3339)", Required: false},
-				"location":    {Type: "string", Description: "Event location", Required: false},
-				"description": {Type: "string", Description: "Event description", Required: false},
-				"attendees":   {Type: "[]string", Description: "Attendee email addresses", Required: false},
-			},
-			ReadOnly: false,
+		ReadOnly: true,
+	},
+	{
+		Name:        "drive.upload_file",
+		Description: "Upload a file to Google Drive",
+		Params: map[string]connector.ParamDef{
+			"name":             {Type: "string", Description: "Filename", Required: true},
+			"content":          {Type: "string", Description: "File content as base64", Required: true},
+			"mime_type":        {Type: "string", Description: "MIME type of the file", Required: true},
+			"parent_folder_id": {Type: "string", Description: "Parent folder ID (optional)", Required: false},
 		},
-		{
-			Name:        "calendar.delete_event",
-			Description: "Delete a calendar event",
-			Params: map[string]connector.ParamDef{
-				"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
-				"event_id":    {Type: "string", Description: "The event ID to delete", Required: true},
-			},
-			ReadOnly: false,
+		ReadOnly: false,
+	},
+	{
+		Name:        "drive.share_file",
+		Description: "Share a file with a user by email",
+		Params: map[string]connector.ParamDef{
+			"file_id": {Type: "string", Description: "The ID of the file to share", Required: true},
+			"email":   {Type: "string", Description: "Email address to share with", Required: true},
+			"role":    {Type: "string", Description: "Permission role: reader, writer, commenter (default: reader)", Required: false},
 		},
+		ReadOnly: false,
+	},
 
-		// --- Google People/Contacts ---
-		{
-			Name:        "people.list_contacts",
-			Description: "List the user's Google contacts",
-			Params: map[string]connector.ParamDef{
-				"page_size":  {Type: "int", Description: "Maximum number of contacts (default 100)", Required: false},
-				"page_token": {Type: "string", Description: "Page token for pagination", Required: false},
-			},
-			ReadOnly: true,
+	// --- Google Calendar ---
+	{
+		Name:        "calendar.list_events",
+		Description: "List events from a Google Calendar",
+		Params: map[string]connector.ParamDef{
+			"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
+			"time_min":    {Type: "string", Description: "Start time filter (RFC3339, e.g. 2024-01-01T00:00:00Z)", Required: false},
+			"time_max":    {Type: "string", Description: "End time filter (RFC3339)", Required: false},
+			"max_results": {Type: "int", Description: "Maximum number of events (default 100)", Required: false},
+			"page_token":  {Type: "string", Description: "Page token for pagination", Required: false},
 		},
-		{
-			Name:        "people.get_contact",
-			Description: "Get a single contact by resource name",
-			Params: map[string]connector.ParamDef{
-				"resource_name": {Type: "string", Description: "Resource name (e.g. people/c12345)", Required: true},
-			},
-			ReadOnly: true,
+		ReadOnly: true,
+	},
+	{
+		Name:        "calendar.get_event",
+		Description: "Get a single calendar event by ID",
+		Params: map[string]connector.ParamDef{
+			"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
+			"event_id":    {Type: "string", Description: "The event ID", Required: true},
 		},
-		{
-			Name:        "people.create_contact",
-			Description: "Create a new contact",
-			Params: map[string]connector.ParamDef{
-				"name":  {Type: "string", Description: "Contact name", Required: false},
-				"email": {Type: "string", Description: "Contact email address", Required: false},
-				"phone": {Type: "string", Description: "Contact phone number", Required: false},
-			},
-			ReadOnly: false,
+		ReadOnly: true,
+	},
+	{
+		Name:        "calendar.create_event",
+		Description: "Create a new calendar event",
+		Params: map[string]connector.ParamDef{
+			"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
+			"summary":     {Type: "string", Description: "Event title", Required: true},
+			"start":       {Type: "string", Description: "Start time (RFC3339)", Required: true},
+			"end":         {Type: "string", Description: "End time (RFC3339)", Required: true},
+			"location":    {Type: "string", Description: "Event location", Required: false},
+			"description": {Type: "string", Description: "Event description", Required: false},
+			"attendees":   {Type: "[]string", Description: "Attendee email addresses", Required: false},
 		},
-		{
-			Name:        "people.update_contact",
-			Description: "Update an existing contact",
-			Params: map[string]connector.ParamDef{
-				"resource_name": {Type: "string", Description: "Resource name (e.g. people/c12345)", Required: true},
-				"name":          {Type: "string", Description: "Contact name", Required: false},
-				"email":         {Type: "string", Description: "Contact email address", Required: false},
-				"phone":         {Type: "string", Description: "Contact phone number", Required: false},
-			},
-			ReadOnly: false,
+		ReadOnly: false,
+	},
+	{
+		Name:        "calendar.update_event",
+		Description: "Update an existing calendar event",
+		Params: map[string]connector.ParamDef{
+			"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
+			"event_id":    {Type: "string", Description: "The event ID", Required: true},
+			"summary":     {Type: "string", Description: "Event title", Required: false},
+			"start":       {Type: "string", Description: "Start time (RFC3339)", Required: false},
+			"end":         {Type: "string", Description: "End time (RFC3339)", Required: false},
+			"location":    {Type: "string", Description: "Event location", Required: false},
+			"description": {Type: "string", Description: "Event description", Required: false},
+			"attendees":   {Type: "[]string", Description: "Attendee email addresses", Required: false},
 		},
-		{
-			Name:        "people.delete_contact",
-			Description: "Delete a contact",
-			Params: map[string]connector.ParamDef{
-				"resource_name": {Type: "string", Description: "Resource name (e.g. people/c12345)", Required: true},
-			},
-			ReadOnly: false,
+		ReadOnly: false,
+	},
+	{
+		Name:        "calendar.delete_event",
+		Description: "Delete a calendar event",
+		Params: map[string]connector.ParamDef{
+			"calendar_id": {Type: "string", Description: "Calendar ID (default: primary)", Required: false},
+			"event_id":    {Type: "string", Description: "The event ID to delete", Required: true},
 		},
+		ReadOnly: false,
+	},
 
-		// --- Google Sheets ---
-		{
-			Name:        "sheets.get_spreadsheet",
-			Description: "Get metadata about a spreadsheet (sheets, titles)",
-			Params: map[string]connector.ParamDef{
-				"spreadsheet_id": {Type: "string", Description: "The spreadsheet ID", Required: true},
-			},
-			ReadOnly: true,
+	// --- Google People/Contacts ---
+	{
+		Name:        "people.list_contacts",
+		Description: "List the user's Google contacts",
+		Params: map[string]connector.ParamDef{
+			"page_size":  {Type: "int", Description: "Maximum number of contacts (default 100)", Required: false},
+			"page_token": {Type: "string", Description: "Page token for pagination", Required: false},
 		},
-		{
-			Name:        "sheets.read_range",
-			Description: "Read values from a spreadsheet range",
-			Params: map[string]connector.ParamDef{
-				"spreadsheet_id": {Type: "string", Description: "The spreadsheet ID", Required: true},
-				"range":          {Type: "string", Description: "A1 notation range (e.g. Sheet1!A1:D10)", Required: true},
-			},
-			ReadOnly: true,
+		ReadOnly: true,
+	},
+	{
+		Name:        "people.get_contact",
+		Description: "Get a single contact by resource name",
+		Params: map[string]connector.ParamDef{
+			"resource_name": {Type: "string", Description: "Resource name (e.g. people/c12345)", Required: true},
 		},
-		{
-			Name:        "sheets.write_range",
-			Description: "Write values to a spreadsheet range",
-			Params: map[string]connector.ParamDef{
-				"spreadsheet_id": {Type: "string", Description: "The spreadsheet ID", Required: true},
-				"range":          {Type: "string", Description: "A1 notation range (e.g. Sheet1!A1:D10)", Required: true},
-				"values":         {Type: "string", Description: "JSON array of rows, e.g. [[\"a\",\"b\"],[\"c\",\"d\"]]", Required: true},
-			},
-			ReadOnly: false,
+		ReadOnly: true,
+	},
+	{
+		Name:        "people.create_contact",
+		Description: "Create a new contact",
+		Params: map[string]connector.ParamDef{
+			"name":  {Type: "string", Description: "Contact name", Required: false},
+			"email": {Type: "string", Description: "Contact email address", Required: false},
+			"phone": {Type: "string", Description: "Contact phone number", Required: false},
 		},
-		{
-			Name:        "sheets.create_spreadsheet",
-			Description: "Create a new Google Sheets spreadsheet",
-			Params: map[string]connector.ParamDef{
-				"title": {Type: "string", Description: "Spreadsheet title", Required: true},
-			},
-			ReadOnly: false,
+		ReadOnly: false,
+	},
+	{
+		Name:        "people.update_contact",
+		Description: "Update an existing contact",
+		Params: map[string]connector.ParamDef{
+			"resource_name": {Type: "string", Description: "Resource name (e.g. people/c12345)", Required: true},
+			"name":          {Type: "string", Description: "Contact name", Required: false},
+			"email":         {Type: "string", Description: "Contact email address", Required: false},
+			"phone":         {Type: "string", Description: "Contact phone number", Required: false},
 		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "people.delete_contact",
+		Description: "Delete a contact",
+		Params: map[string]connector.ParamDef{
+			"resource_name": {Type: "string", Description: "Resource name (e.g. people/c12345)", Required: true},
+		},
+		ReadOnly: false,
+	},
 
-		// --- Google Docs ---
-		{
-			Name:        "docs.get_document",
-			Description: "Get a Google Doc with its plain text content",
-			Params: map[string]connector.ParamDef{
-				"document_id": {Type: "string", Description: "The document ID", Required: true},
-			},
-			ReadOnly: true,
+	// --- Google Sheets ---
+	{
+		Name:        "sheets.get_spreadsheet",
+		Description: "Get metadata about a spreadsheet (sheets, titles)",
+		Params: map[string]connector.ParamDef{
+			"spreadsheet_id": {Type: "string", Description: "The spreadsheet ID", Required: true},
 		},
-		{
-			Name:        "docs.list_documents",
-			Description: "List Google Docs from Drive",
-			Params: map[string]connector.ParamDef{
-				"page_size":  {Type: "int", Description: "Maximum number of results (default 100)", Required: false},
-				"page_token": {Type: "string", Description: "Page token for pagination", Required: false},
-			},
-			ReadOnly: true,
+		ReadOnly: true,
+	},
+	{
+		Name:        "sheets.read_range",
+		Description: "Read values from a spreadsheet range",
+		Params: map[string]connector.ParamDef{
+			"spreadsheet_id": {Type: "string", Description: "The spreadsheet ID", Required: true},
+			"range":          {Type: "string", Description: "A1 notation range (e.g. Sheet1!A1:D10)", Required: true},
 		},
-		{
-			Name:        "docs.create_document",
-			Description: "Create a new Google Doc",
-			Params: map[string]connector.ParamDef{
-				"title": {Type: "string", Description: "Document title", Required: true},
-			},
-			ReadOnly: false,
+		ReadOnly: true,
+	},
+	{
+		Name:        "sheets.write_range",
+		Description: "Write values to a spreadsheet range",
+		Params: map[string]connector.ParamDef{
+			"spreadsheet_id": {Type: "string", Description: "The spreadsheet ID", Required: true},
+			"range":          {Type: "string", Description: "A1 notation range (e.g. Sheet1!A1:D10)", Required: true},
+			"values":         {Type: "string", Description: "JSON array of rows, e.g. [[\"a\",\"b\"],[\"c\",\"d\"]]", Required: true},
 		},
-		{
-			Name:        "docs.update_document",
-			Description: "Update a Google Doc using batch update requests",
-			Params: map[string]connector.ParamDef{
-				"document_id": {Type: "string", Description: "The document ID", Required: true},
-				"requests":    {Type: "string", Description: "JSON array of Docs API request objects", Required: true},
-			},
-			ReadOnly: false,
+		ReadOnly: false,
+	},
+	{
+		Name:        "sheets.create_spreadsheet",
+		Description: "Create a new Google Sheets spreadsheet",
+		Params: map[string]connector.ParamDef{
+			"title": {Type: "string", Description: "Spreadsheet title", Required: true},
 		},
-	}
+		ReadOnly: false,
+	},
+
+	// --- Google Docs ---
+	{
+		Name:        "docs.get_document",
+		Description: "Get a Google Doc with its plain text content",
+		Params: map[string]connector.ParamDef{
+			"document_id": {Type: "string", Description: "The document ID", Required: true},
+		},
+		ReadOnly: true,
+	},
+	{
+		Name:        "docs.list_documents",
+		Description: "List Google Docs from Drive",
+		Params: map[string]connector.ParamDef{
+			"page_size":  {Type: "int", Description: "Maximum number of results (default 100)", Required: false},
+			"page_token": {Type: "string", Description: "Page token for pagination", Required: false},
+		},
+		ReadOnly: true,
+	},
+	{
+		Name:        "docs.create_document",
+		Description: "Create a new Google Doc",
+		Params: map[string]connector.ParamDef{
+			"title": {Type: "string", Description: "Document title", Required: true},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "docs.update_document",
+		Description: "Update a Google Doc using batch update requests",
+		Params: map[string]connector.ParamDef{
+			"document_id": {Type: "string", Description: "The document ID", Required: true},
+			"requests":    {Type: "string", Description: "JSON array of Docs API request objects", Required: true},
+		},
+		ReadOnly: false,
+	},
 }
 
 // Execute routes an operation to the appropriate gmail.Client method.

@@ -63,10 +63,15 @@ func Meta() connector.ConnectorMeta {
 			{Name: "cross_fork_pr_allowlist", Label: "Cross-fork PR allow-list", Type: "textarea", EditOnly: true, Editable: true, Placeholder: "alice\nbob",
 				HelpText: "GitHub user logins (one per line; case-insensitive) whose forks Sieve accepts as cross-fork PR heads via github_create_pr. Empty = deny all cross-fork heads. Wildcards are NOT honoured. The escape-hatch github_request op is unaffected."},
 		},
+		Operations: operations,
+		ResourceTypes: []connector.ResourceType{
+			{Name: "Sieve::Github::Owner"},
+			{Name: "Sieve::Github::Repo", Parent: "Sieve::Github::Owner"},
+		},
 	}
 }
 
-func (g *Connector) Type() string                   { return ConnectorType }
+func (g *Connector) Type() string                         { return ConnectorType }
 func (g *Connector) Operations() []connector.OperationDef { return operations }
 
 // Validate hits /user (or /installation/repositories for App credentials) to confirm the first
