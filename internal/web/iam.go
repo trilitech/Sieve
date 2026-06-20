@@ -305,6 +305,15 @@ func (s *Server) handleIAMFilterDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	// Refuse to delete a filter still attached to a rule — removing it would
+	// fail-close (deny) every rule that references it.
+	if inUse, err := s.iam.FilterInUse(name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if inUse {
+		http.Error(w, "filter "+name+" is still attached to one or more rules — detach it there first", http.StatusConflict)
+		return
+	}
 	if err := s.iam.DeleteFilter(name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

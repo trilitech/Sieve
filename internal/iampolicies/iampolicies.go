@@ -10,12 +10,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/trilitech/Sieve/internal/database"
 	"github.com/trilitech/Sieve/internal/iam"
 )
+
+// filtersAnnRE matches an @filters("a b c") annotation in a policy's Cedar.
+var filtersAnnRE = regexp.MustCompile(`@filters\("([^"]*)"\)`)
 
 // StoredPolicy is a persisted IAM policy (Cedar text + metadata).
 type StoredPolicy struct {
@@ -205,6 +210,26 @@ func (s *Service) ListFilters() ([]iam.Filter, error) {
 		out = append(out, f)
 	}
 	return out, rows.Err()
+}
+
+// FilterInUse reports whether any stored policy's Cedar references the named
+// filter in an @filters annotation. The admin UI refuses to delete an in-use
+// filter, since removing it would fail-close every rule that references it.
+func (s *Service) FilterInUse(name string) (bool, error) {
+	pols, err := s.ListPolicies()
+	if err != nil {
+		return false, err
+	}
+	for _, p := range pols {
+		for _, m := range filtersAnnRE.FindAllStringSubmatch(p.Cedar, -1) {
+			for _, n := range strings.Fields(m[1]) {
+				if n == name {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
 }
 
 // DeleteFilter removes a filter-library entry by name.
