@@ -73,6 +73,82 @@
         {{end}}
       </div>
 
+      <!-- Filter & guard library -->
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+        <h2 class="text-lg font-semibold text-white mb-1">Filter &amp; guard library</h2>
+        <p class="text-xs text-slate-500 mb-5">Author reusable response filters and pre-execution guards by name, then attach them to rules above. No Cedar required.</p>
+        <form method="POST" action="/iam/filters" id="filter-form">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Name</label>
+              <input type="text" name="name" required placeholder="e.g. redact-ccn"
+                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Kind</label>
+              <select name="kind" id="filter-kind"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="redact">Redact (mask matching text in the response)</option>
+                <option value="exclude_items">Exclude items (drop list items containing text)</option>
+                <option value="script_guard">Script guard (Python; may deny before execution)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
+            <input type="text" name="description" placeholder="what this filter does"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+
+          <!-- redact config -->
+          <div id="filter-cfg-redact" class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Patterns</label>
+            <textarea name="patterns" rows="4" placeholder="One regular expression per line, e.g.&#10;\b\d{16}\b&#10;\b\d{3}-\d{2}-\d{4}\b"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+            <p class="text-xs text-slate-500 mt-1">Each line is one regex; matches are masked in the response.</p>
+          </div>
+
+          <!-- exclude_items config -->
+          <div id="filter-cfg-exclude_items" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Exclude text</label>
+            <input type="text" name="text" placeholder="e.g. confidential"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-xs text-slate-500 mt-1">List items containing this text are dropped from the response.</p>
+          </div>
+
+          <!-- script_guard config -->
+          <div id="filter-cfg-script_guard" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Guard script (Python)</label>
+            <textarea name="script" rows="8" placeholder="import sys, json&#10;req = json.load(sys.stdin)&#10;print(json.dumps({&quot;action&quot;: &quot;allow&quot;, &quot;reason&quot;: &quot;ok&quot;}))"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+            <p class="text-xs text-slate-500 mt-1">Contract: reads JSON <code>{operation, params, ...}</code> on stdin, writes <code>{"action":"allow|deny|approval_required","reason":"..."}</code> on stdout.</p>
+          </div>
+
+          <button type="submit" class="mt-6 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Add filter</button>
+        </form>
+
+        <div class="mt-6 border-t border-slate-700 pt-5">
+          <h3 class="text-sm font-medium text-slate-300 mb-3">Library</h3>
+          {{if .Filters}}
+          <div class="flex flex-wrap gap-2">
+            {{range .Filters}}
+            <span class="inline-flex items-center gap-2 rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm">
+              <span class="font-medium text-white">{{.Name}}</span>
+              <code class="text-xs text-slate-500">{{.Kind}}</code>
+              <form method="POST" action="/iam/filters/{{.Name}}/delete"
+                    onsubmit="return confirm('Delete this filter?')" class="inline">
+                <button type="submit" class="text-xs text-red-400 hover:text-red-300 font-medium">Delete</button>
+              </form>
+            </span>
+            {{end}}
+          </div>
+          {{else}}
+          <p class="text-sm text-slate-500">No filters yet — author one above to attach it to rules.</p>
+          {{end}}
+        </div>
+      </div>
+
       <!-- Rule builder -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
         <h2 class="text-lg font-semibold text-white mb-1">Add a rule</h2>
@@ -161,6 +237,22 @@
             <label class="block text-sm font-medium text-slate-400 mb-2">Conditions <span class="text-slate-600">(optional)</span></label>
             <div id="rb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
           </div>
+
+          <!-- Response filters & guards (filter-library obligations) -->
+          {{if .Filters}}
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-2">Response filters &amp; guards <span class="text-slate-600">(optional)</span></label>
+            <p class="text-xs text-slate-500 mb-2">Attach library filters to this rule. Guards run before the operation (may deny); response filters run on the result.</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 rounded-lg bg-slate-900 border border-slate-700 p-3">
+              {{range .Filters}}
+              <label class="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" name="filters" value="{{.Name}}" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
+                <span>{{.Name}} <span class="text-slate-500">({{.Kind}})</span></span>
+              </label>
+              {{end}}
+            </div>
+          </div>
+          {{end}}
 
           <div class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Rule name <span class="text-slate-600">(optional)</span></label>
@@ -412,6 +504,23 @@
         el('rb-connscope').addEventListener('change', rbToggleConns);
         el('rb-scope').addEventListener('change', rbScopeFields);
         rbRefresh(); rbToggleOps(); rbToggleConns();
+
+        // --- Filter library: show only the selected kind's config block. ---
+        // Pure show/hide keyed off a fixed <select> value (no dynamic data,
+        // no markup injection) — config block ids are static template authors'.
+        (function () {
+          const kindSel = el('filter-kind');
+          if (!kindSel) return;
+          const kinds = ['redact', 'exclude_items', 'script_guard'];
+          function syncFilterCfg() {
+            for (const k of kinds) {
+              const box = el('filter-cfg-' + k);
+              if (box) box.classList.toggle('hidden', k !== kindSel.value);
+            }
+          }
+          kindSel.addEventListener('change', syncFilterCfg);
+          syncFilterCfg();
+        })();
 
         // --- Explorer connection dropdown + operation hints ---
         (function () {

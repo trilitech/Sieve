@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/iam"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/roles"
 )
@@ -79,6 +80,14 @@ type iamConnectorOption struct {
 	Name string
 }
 
+// iamFilterView is one entry in the filter-library list and the builder's
+// "response filters & guards" checkbox group. Used only in the Go template
+// (server-side {{range}}), so no json tags are needed.
+type iamFilterView struct {
+	Name string
+	Kind string
+}
+
 // iamPageData is the view-model for iam.html.
 type iamPageData struct {
 	Active     string
@@ -90,6 +99,9 @@ type iamPageData struct {
 	// Builder inputs.
 	Roles      []roles.Role
 	Connectors []iamConnectorOption
+	// Filters is the filter-library list, rendered server-side both in the
+	// library card and as the builder's response-filter/guard checkboxes.
+	Filters []iamFilterView
 	// Catalog maps connector type → {operations, connections} for the
 	// client-side form (populate op + connection checkboxes when the connector
 	// dropdown changes). Rendered via the `json` template func into a
@@ -189,6 +201,18 @@ func (s *Server) populateBuilderData(data *iamPageData) {
 	}
 	sort.Slice(data.Connectors, func(i, j int) bool { return data.Connectors[i].Name < data.Connectors[j].Name })
 
+	// Filter library: rendered server-side in the library card and the
+	// builder's response-filter checkboxes, and mirrored into the catalog so
+	// client-side JS can reach it too.
+	if fs, err := s.iam.ListFilters(); err == nil {
+		filters := make([]iamFilterView, 0, len(fs))
+		for _, f := range fs {
+			filters = append(filters, iamFilterView{Name: f.Name, Kind: string(f.Kind)})
+		}
+		data.Filters = filters
+		catalog["_filters"] = map[string]any{"filters": filters}
+	}
+
 	data.Catalog = catalog
 }
 
@@ -216,6 +240,76 @@ func (s *Server) handleIAMRoleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.role.create", role.ID,
 		map[string]any{"name": name}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// handleIAMFilterCreate creates a filter-library entry (POST /iam/filters).
+// The filter library lets an operator author response filters (redact /
+// exclude_items) and pre-execution guards (script_guard) by name, without
+// writing Cedar; rules in the builder then reference them via the @filters
+// annotation (the builder handler reads r.Form["filters"]).
+func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := r.FormValue("name")
+	if name == "" {
+		http.Error(w, "filter name is required", http.StatusBadRequest)
+		return
+	}
+
+	kindStr := r.FormValue("kind")
+	var kind iam.FilterKind
+	config := map[string]any{}
+	switch kindStr {
+	case string(iam.KindRedact):
+		kind = iam.KindRedact
+		var patterns []string
+		for _, line := range strings.Split(r.FormValue("patterns"), "\n") {
+			if p := strings.TrimSpace(line); p != "" {
+				patterns = append(patterns, p)
+			}
+		}
+		config["patterns"] = patterns
+	case string(iam.KindExcludeItems):
+		kind = iam.KindExcludeItems
+		config["text"] = r.FormValue("text")
+	case string(iam.KindScriptGuard):
+		kind = iam.KindScriptGuard
+		config["command"] = iampolicies.ScriptCommand()
+		config["inline"] = r.FormValue("script")
+	default:
+		http.Error(w, "unknown filter kind", http.StatusBadRequest)
+		return
+	}
+
+	if _, err := s.iam.CreateFilter(name, r.FormValue("description"), kind, 0, config); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.create", name,
+		map[string]any{"kind": kindStr}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// handleIAMFilterDelete removes a filter-library entry
+// (POST /iam/filters/{name}/delete).
+func (s *Server) handleIAMFilterDelete(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	name := r.PathValue("name")
+	if err := s.iam.DeleteFilter(name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.delete", name, nil, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 

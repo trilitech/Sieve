@@ -50,11 +50,11 @@ import (
 	"github.com/trilitech/Sieve/internal/database"
 	"github.com/trilitech/Sieve/internal/httpguard"
 	"github.com/trilitech/Sieve/internal/iampolicies"
+	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/ratelimit"
 	"github.com/trilitech/Sieve/internal/roles"
-	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
 	"github.com/trilitech/Sieve/internal/session"
@@ -458,6 +458,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /iam/roles", s.handleIAMRoleCreate)
 	mux.HandleFunc("POST /iam/policies", s.handleIAMPolicyCreate)
 	mux.HandleFunc("POST /iam/policies/{id}/delete", s.handleIAMPolicyDelete)
+	mux.HandleFunc("POST /iam/filters", s.handleIAMFilterCreate)
+	mux.HandleFunc("POST /iam/filters/{name}/delete", s.handleIAMFilterDelete)
 	mux.HandleFunc("POST /iam/toggle", s.handleIAMToggle)
 	mux.HandleFunc("POST /iam/explore", s.handleIAMExplore)
 
@@ -491,11 +493,11 @@ func (s *Server) Handler() http.Handler {
 // + a session-hash check inside the handler rather than a Sieve
 // session cookie surfacing at the middleware layer.
 var authExemptPaths = map[string]bool{
-	"/login":  true,
-	"/setup":  true,
-	"/logout": true, // session needed, but CSRF gate skipped — see authExemptCSRF
-	"/oauth/callback":                  true,
-	"/connections/github/app/created":  true,
+	"/login":                            true,
+	"/setup":                            true,
+	"/logout":                           true, // session needed, but CSRF gate skipped — see authExemptCSRF
+	"/oauth/callback":                   true,
+	"/connections/github/app/created":   true,
 	"/connections/github/app/installed": true,
 }
 
@@ -2187,20 +2189,20 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Active":          "settings",
-		"Connections":     llmConns,
-		"LLMConnection":   allSettings[settings.KeyLLMConnection],
-		"LLMModel":        allSettings[settings.KeyLLMModel],
-		"LLMMaxTokens":    maxTokens,
-		"PublicBaseURL":   allSettings[settings.KeyPublicBaseURL],
+		"Active":           "settings",
+		"Connections":      llmConns,
+		"LLMConnection":    allSettings[settings.KeyLLMConnection],
+		"LLMModel":         allSettings[settings.KeyLLMModel],
+		"LLMMaxTokens":     maxTokens,
+		"PublicBaseURL":    allSettings[settings.KeyPublicBaseURL],
 		"CommandAllowlist": allSettings[settings.KeyCommandAllowlist],
 		"AdminTLSCertPath": allSettings[settings.KeyAdminTLSCertPath],
 		"AdminTLSKeyPath":  allSettings[settings.KeyAdminTLSKeyPath],
 		"APITLSCertPath":   allSettings[settings.KeyAPITLSCertPath],
 		"APITLSKeyPath":    allSettings[settings.KeyAPITLSKeyPath],
-		"Success":         r.URL.Query().Get("saved") == "1",
-		"RotationSuccess": rotationSuccess,
-		"RotationCount":   rotationCount,
+		"Success":          r.URL.Query().Get("saved") == "1",
+		"RotationSuccess":  rotationSuccess,
+		"RotationCount":    rotationCount,
 	}
 	s.render(w, r, "settings", data)
 }

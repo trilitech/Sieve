@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/policies"
+	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
@@ -70,6 +72,12 @@ func main() {
 		os.Exit(1)
 	}
 	secrets.DefaultArgon2Params = saved
+
+	// Allowlist an available Python so authored script_guard filters actually
+	// execute in the demo / e2e (prod ships /opt/sieve-py and uses the default).
+	if py, lerr := exec.LookPath("python3"); lerr == nil {
+		policy.SetCommandAllowlist([]string{py})
+	}
 
 	// Set up mock connector registry.
 	registry := connector.NewRegistry()

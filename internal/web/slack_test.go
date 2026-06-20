@@ -651,4 +651,3 @@ func TestPoliciesPage_SlackScope(t *testing.T) {
 		t.Errorf("expected JS SCOPE to be set to \"slack\"")
 	}
 }
-

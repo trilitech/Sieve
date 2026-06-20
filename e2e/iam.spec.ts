@@ -127,4 +127,39 @@ test.describe('Sieve running on the IAM engine', () => {
     await expect(page.locator('body')).toContainText('Require approval for');
     await expect(page.locator('body')).toContainText('context.param.max_tokens');
   });
+
+  test('author a custom script guard in the UI; the gateway enforces it', async ({ page }) => {
+    await loginOperator(page, s);
+    await page.goto(`${s.web_url}/iam`);
+
+    // 1. Author a script_guard in the filter library: deny sends containing "secret".
+    await page.fill('#filter-form input[name="name"]', 'ui-block-secret');
+    await page.selectOption('#filter-kind', 'script_guard');
+    await page.fill('#filter-form textarea[name="script"]',
+      'import sys, json\n' +
+      'req = json.load(sys.stdin)\n' +
+      'b = ((req.get("params") or {}).get("body")) or ""\n' +
+      'print(json.dumps({"action": "deny", "reason": "blocked"} if "secret" in b.lower() else {"action": "allow"}))\n');
+    await page.locator('#filter-form button[type="submit"]').click();
+    await expect(page.locator('body')).toContainText('ui-block-secret');
+
+    // 2. Attach it to an allow-write rule for the seed role on test-conn.
+    await page.selectOption('#rule-form select[name="role_id"]', { label: 'seed-role' });
+    await page.selectOption('#rule-form select[name="effect"]', 'allow');
+    await page.selectOption('#rb-connector', 'mock');
+    await page.selectOption('#rb-opscope', 'write');
+    await page.selectOption('#rb-connscope', 'specific');
+    await page.check('#rule-form input[name="connections"][value="test-conn"]');
+    await page.check('#rule-form input[name="filters"][value="ui-block-secret"]');
+    await page.locator('#rule-form button[type="submit"]').click();
+    await expect(page.locator('body')).toContainText('filters[ui-block-secret]');
+
+    // 3. The agent API now enforces the guard — nothing was hand-written in Cedar.
+    const allowed = await apiCall(s.api_url, 'POST', '/api/v1/connections/test-conn/ops/send_email', s.seed_token,
+      { to: 'a@b.com', subject: 's', body: 'weekly update' });
+    expect(allowed.status).toBe(200);
+    const blocked = await apiCall(s.api_url, 'POST', '/api/v1/connections/test-conn/ops/send_email', s.seed_token,
+      { to: 'a@b.com', subject: 's', body: 'the secret plan' });
+    expect(blocked.status).toBe(403);
+  });
 });

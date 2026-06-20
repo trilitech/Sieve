@@ -2,6 +2,7 @@ package iampolicies
 
 import (
 	"context"
+	"os"
 
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/iam"
@@ -38,6 +39,10 @@ func (s *Service) Decide(
 		return nil, err
 	}
 	opDef := taxonomyOp(reg, connType, op)
+	prereq := &policy.PolicyRequest{
+		Operation: op, Connection: connID, Connector: connType,
+		Params: params, Metadata: params, Phase: "pre",
+	}
 	req := iam.BuildRequest(tokenID, roleID, groups, connType, connID, connStatus, opDef, params)
 
 	// Connector-derived context (e.g. recipient_domains) that RuleConditions
@@ -59,7 +64,7 @@ func (s *Service) Decide(
 	if err != nil {
 		return nil, err
 	}
-	return toPolicyDecision(dec), nil
+	return s.resolveDecision(ctx, dec, prereq), nil
 }
 
 // taxonomyOp resolves the static OperationDef for (connType, op) from the
@@ -84,7 +89,13 @@ func taxonomyOp(reg *connector.Registry, connType, op string) connector.Operatio
 	return connector.OperationDef{Name: op, ReadOnly: false}
 }
 
-func toPolicyDecision(d iam.Decision) *policy.PolicyDecision {
+// resolveDecision turns an engine Decision into a PolicyDecision, EXECUTING any
+// pre-execution guard obligations (e.g. a custom script that inspects the
+// outgoing request and allows/denies it — "what can or cannot be sent"). A guard
+// that denies (or its execution failing) short-circuits to deny: fail-closed,
+// but now because the guard actually ran and said so, not because execution is
+// stubbed. Post-execution filters are bridged to the response-filter applier.
+func (s *Service) resolveDecision(ctx context.Context, d iam.Decision, req *policy.PolicyRequest) *policy.PolicyDecision {
 	if !d.Allow {
 		reason := d.Reason
 		if reason == "" {
@@ -92,17 +103,71 @@ func toPolicyDecision(d iam.Decision) *policy.PolicyDecision {
 		}
 		return &policy.PolicyDecision{Action: "deny", Reason: reason}
 	}
-	if len(d.Obligations.Guards) > 0 {
-		// Fail closed: pre-guard execution (script_guard/rate_limit) is not wired
-		// in this build; allowing past an unenforced guard would be a hole.
-		return &policy.PolicyDecision{Action: "deny", Reason: "policy guard not enforceable in this build"}
+
+	for _, g := range d.Obligations.Guards {
+		switch g.Kind {
+		case iam.KindScriptGuard:
+			gd := runScriptGuard(ctx, g, req)
+			if gd.Action != "allow" {
+				return gd // deny / approval_required from the guard propagates
+			}
+		default:
+			// e.g. rate_limit — not executable in this build. Fail closed
+			// LOUDLY rather than silently allowing past an unenforced guard.
+			// (The UI must not offer guard kinds that aren't executed.)
+			return &policy.PolicyDecision{Action: "deny", Reason: "guard kind " + string(g.Kind) + " is not supported in this build"}
+		}
 	}
+
 	pd := &policy.PolicyDecision{Action: "allow", Filters: obligationsToFilters(d.Obligations.Post)}
 	if d.Obligations.Approval {
 		pd.Action = "approval_required"
 		pd.Reason = "approval required"
 	}
 	return pd
+}
+
+// runScriptGuard executes a script_guard obligation: it materializes the inline
+// script to a temp file and runs it through the sandboxed ScriptEvaluator (stdin
+// = the request JSON, stdout = {action: allow|deny|approval_required}). The
+// command is allowlist-validated by NewScriptEvaluator.
+func runScriptGuard(ctx context.Context, g iam.Filter, req *policy.PolicyRequest) *policy.PolicyDecision {
+	inline, _ := g.Config["inline"].(string)
+	command, _ := g.Config["command"].(string)
+	if inline == "" || command == "" {
+		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "' is misconfigured"}
+	}
+	f, err := os.CreateTemp("", "sieve-guard-*.py")
+	if err != nil {
+		return &policy.PolicyDecision{Action: "deny", Reason: "script guard temp file: " + err.Error()}
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(inline); err != nil {
+		f.Close()
+		return &policy.PolicyDecision{Action: "deny", Reason: "script guard write: " + err.Error()}
+	}
+	f.Close()
+
+	ev, err := policy.NewScriptEvaluator(map[string]any{
+		"command": command, "script": f.Name(), "timeout": g.Config["timeout"],
+	})
+	if err != nil {
+		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "': " + err.Error()}
+	}
+	pd, err := ev.Evaluate(ctx, req)
+	if err != nil {
+		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "' error: " + err.Error()}
+	}
+	return pd
+}
+
+// ScriptCommand returns the interpreter the admin UI should store for a new
+// script filter: the operator allowlist's first entry, else the bundled default.
+func ScriptCommand() string {
+	if al := policy.CurrentCommandAllowlist(); len(al) > 0 {
+		return al[0]
+	}
+	return policy.DefaultCommand
 }
 
 // obligationsToFilters bridges IAM post-obligations to the existing

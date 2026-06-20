@@ -218,7 +218,6 @@ func rotateRequest(t *testing.T, ts *httptest.Server, current, newPP, confirm st
 	return req
 }
 
-
 // TestRotateHandlerWrongPassphrase verifies the wrong-current-passphrase
 // branch: HTTP 200 re-render with the typed chip; no audit row written.
 func TestRotateHandlerWrongPassphrase(t *testing.T) {

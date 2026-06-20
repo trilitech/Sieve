@@ -207,6 +207,16 @@ func (s *Service) ListFilters() ([]iam.Filter, error) {
 	return out, rows.Err()
 }
 
+// DeleteFilter removes a filter-library entry by name.
+func (s *Service) DeleteFilter(name string) error {
+	res, err := s.db.DB.Exec(`DELETE FROM iam_filters WHERE name = ?`, name)
+	if err != nil {
+		return fmt.Errorf("delete iam filter: %w", err)
+	}
+	s.invalidate()
+	return mustAffect(res, name)
+}
+
 // FilterLibrary loads all filters into an in-memory iam.FilterLibrary.
 func (s *Service) FilterLibrary() (iam.MapFilterLibrary, error) {
 	fs, err := s.ListFilters()
