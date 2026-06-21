@@ -194,6 +194,27 @@ func TestBuildRuleCedar_NumberCondition(t *testing.T) {
 	}
 }
 
+func TestBuildRuleCedar_OneOfCondition(t *testing.T) {
+	cedar, err := BuildRuleCedar(RuleSpec{
+		RoleID: "R", Effect: "allow", ConnectorType: "anthropic", OpScope: "all",
+		Conditions: []ConditionInput{{Kind: "one_of", CtxPath: "context.param.model", Value: "claude-opus-4-8, claude-sonnet-4-6"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := decideEngine(t, cedar)
+	mk := func(model string) iam.Request {
+		return iam.BuildRequest("tok", []string{"R"}, "anthropic", "ap", "active",
+			connector.OperationDef{Name: "messages_create"}, map[string]any{"model": model})
+	}
+	if d, _ := eng.Decide(mk("claude-opus-4-8")); !d.Allow {
+		t.Errorf("an allowlisted model should be permitted\ncedar:\n%s", cedar)
+	}
+	if d, _ := eng.Decide(mk("gpt-4")); d.Allow {
+		t.Errorf("a model not in the allowlist must be denied")
+	}
+}
+
 func TestBuildRuleCedar_DomainAllowlist(t *testing.T) {
 	cedar, err := BuildRuleCedar(RuleSpec{
 		RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "write",

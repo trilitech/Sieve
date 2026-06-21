@@ -619,6 +619,8 @@ else:
             val.type = 'number'; val.step = 'any'; val.placeholder = 'e.g. 1000 or 0.5';
           } else if (c.kind === 'domain_allowlist') {
             val.type = 'text'; val.placeholder = 'example.com, trilitech.com';
+          } else if (c.kind === 'one_of') {
+            val.type = 'text'; val.placeholder = 'comma-separated, e.g. claude-opus-4-8, claude-sonnet-4-6';
           } else {
             val.type = 'text'; val.placeholder = 'enter a value';
           }

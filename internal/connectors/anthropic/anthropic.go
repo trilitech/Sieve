@@ -61,9 +61,17 @@ func Meta() connector.ConnectorMeta {
 		Description: "Call Claude models via Anthropic's Messages API with per-operation policy gating.",
 		Category:    "LLM",
 		Operations:  operations,
-		// messages_create takes a required numeric max_tokens param; expose it
-		// as a rule condition so operators can cap output length per request.
+		// messages_create takes `model` (string) and a required numeric
+		// max_tokens — expose both as rule conditions so operators can gate which
+		// models an agent may call and cap output length per request.
 		RuleConditions: []connector.RuleCondition{
+			{
+				Key:     "model",
+				Label:   "Model",
+				Kind:    "one_of",
+				CtxPath: "context.param.model",
+				Help:    "Allow (or, on a deny rule, block) specific models — comma-separated, e.g. claude-opus-4-8, claude-sonnet-4-6",
+			},
 			{
 				Key:     "max_tokens",
 				Label:   "Max tokens",

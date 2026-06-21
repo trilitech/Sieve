@@ -308,6 +308,19 @@ func conditionExpr(c ConditionInput) (string, error) {
 		}
 	case "string":
 		return fmt.Sprintf("%s == %s", c.CtxPath, cedarString(c.Value)), nil
+	case "one_of":
+		// A scalar attribute (e.g. context.param.model) must be one of a set of
+		// allowed values: ["a","b"].contains(<scalar>). Allow + one_of = an
+		// allowlist; deny + one_of = a blocklist.
+		items := splitList(c.Value)
+		if len(items) == 0 {
+			return "", fmt.Errorf("provide at least one value")
+		}
+		quoted := make([]string, 0, len(items))
+		for _, it := range items {
+			quoted = append(quoted, cedarString(it))
+		}
+		return fmt.Sprintf("[%s].contains(%s)", strings.Join(quoted, ", "), c.CtxPath), nil
 	case "domain_allowlist":
 		items := splitList(c.Value)
 		if len(items) == 0 {
