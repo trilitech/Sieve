@@ -2,7 +2,9 @@ package iampolicies_test
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/trilitech/Sieve/internal/connector"
@@ -32,11 +34,21 @@ func TestDecide_ScriptGuardBlocksSend(t *testing.T) {
 	policy.SetCommandAllowlist([]string{py})
 	defer policy.SetCommandAllowlist(nil)
 
+	// The guard now references a script FILE by path (not inline); write it under
+	// an allowlisted scripts dir.
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "block_secret.py")
+	if err := os.WriteFile(scriptPath, []byte(guardScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy.SetScriptDirs([]string{dir})
+	defer policy.SetScriptDirs(nil)
+
 	env := testenv.New(t)
 	svc := iampolicies.NewService(env.DB)
 
 	if _, err := svc.CreateFilter("block-secret", "block sends containing 'secret'",
-		iam.KindScriptGuard, 0, map[string]any{"command": py, "inline": guardScript}); err != nil {
+		iam.KindScriptGuard, 0, map[string]any{"command": py, "path": scriptPath}); err != nil {
 		t.Fatal(err)
 	}
 

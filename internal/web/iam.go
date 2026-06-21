@@ -120,7 +120,10 @@ type iamBuilderData struct {
 
 // iamPageData is the view-model for iam.html.
 type iamPageData struct {
-	Active     string
+	Active string
+	// Section selects which subsection the page shows (roles|guardrails|filters|
+	// explore) — mirrors the IAM sidebar sub-nav so the page isn't one long scroll.
+	Section    string
 	Configured bool
 	Enabled    bool
 	Policies   []iamPolicyView
@@ -183,14 +186,28 @@ type iamEditPageData struct {
 	iamBuilderData
 }
 
-// handleIAM renders the IAM admin page (GET /iam).
+// iamSections are the /iam subsections shown one-at-a-time via ?section= (the
+// sidebar sub-nav). Default is roles — the main authoring surface.
+var iamSections = map[string]bool{"roles": true, "guardrails": true, "filters": true, "explore": true}
+
+func iamSection(r *http.Request) string {
+	if s := r.URL.Query().Get("section"); iamSections[s] {
+		return s
+	}
+	return "roles"
+}
+
+// handleIAM renders the IAM admin page (GET /iam), one subsection at a time.
 func (s *Server) handleIAM(w http.ResponseWriter, r *http.Request) {
-	s.renderIAM(w, r, &iamPageData{})
+	s.renderIAM(w, r, &iamPageData{Section: iamSection(r)})
 }
 
 // renderIAM populates the page-wide fields and renders the iam template.
 func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPageData) {
-	data.Active = "iam"
+	if data.Section == "" {
+		data.Section = "roles"
+	}
+	data.Active = "iam-" + data.Section
 	if s.iam == nil {
 		data.Configured = false
 		s.render(w, r, "iam", data)
@@ -227,7 +244,7 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 // a raw error page when a form submission fails validation. The operator sees
 // what went wrong and the rest of the page (rules, library) is intact.
 func (s *Server) renderIAMError(w http.ResponseWriter, r *http.Request, msg string) {
-	s.renderIAM(w, r, &iamPageData{Error: msg})
+	s.renderIAM(w, r, &iamPageData{Error: msg, Section: iamSection(r)})
 }
 
 // populateBuilderData fills the roles list, connector dropdown, and the
@@ -380,8 +397,13 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	case string(iam.KindScriptGuard):
 		kind = iam.KindScriptGuard
+		path := strings.TrimSpace(r.FormValue("script_path"))
+		if err := iampolicies.ValidateScriptPath(path); err != nil {
+			http.Error(w, "script path rejected: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		config["command"] = iampolicies.ScriptCommand()
-		config["inline"] = r.FormValue("script")
+		config["path"] = path
 	default:
 		http.Error(w, "unknown filter kind", http.StatusBadRequest)
 		return
@@ -393,7 +415,7 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.create", name,
 		map[string]any{"kind": kindStr}, "success")
-	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=filters", http.StatusSeeOther)
 }
 
 // handleIAMFilterDelete removes a filter-library entry
@@ -418,7 +440,7 @@ func (s *Server) handleIAMFilterDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.delete", name, nil, "success")
-	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=filters", http.StatusSeeOther)
 }
 
 // handleIAMPolicyCreate creates an IAM policy (POST /iam/policies). mode=builder
@@ -929,7 +951,7 @@ func (s *Server) handleIAMGuardrailCreate(w http.ResponseWriter, r *http.Request
 	_ = s.iam.SetGuardrailSpec(g.ID, formStateJSON)
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.create", g.ID,
 		map[string]any{"name": name}, "success")
-	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
 }
 
 // handleIAMGuardrailDelete removes a guardrail (POST /iam/guardrails/{id}/delete).
@@ -944,7 +966,7 @@ func (s *Server) handleIAMGuardrailDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.delete", id, nil, "success")
-	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
 }
 
 // handleIAMGuardrailSetEnabled enables/disables a guardrail
@@ -966,7 +988,7 @@ func (s *Server) handleIAMGuardrailSetEnabled(w http.ResponseWriter, r *http.Req
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.set_enabled", id,
 		map[string]any{"enabled": enabled}, "success")
-	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
 }
 
 // guardrailSummary renders a one-line operator-readable description of a guardrail.
@@ -1060,6 +1082,7 @@ func (s *Server) handleIAMExplore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := &iamPageData{
+		Section:          "explore",
 		ExploreDone:      true,
 		ExploreRoleIDs:   nonEmptyStrings(r.Form["role_id"]),
 		ExploreConnID:    r.FormValue("connection_id"),

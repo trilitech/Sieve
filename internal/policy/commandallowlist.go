@@ -129,3 +129,84 @@ func ValidateCommand(cmd string, allowlist []string) error {
 // Docker image. Operators who haven't customised the allowlist get this
 // as the sole permitted command.
 const DefaultCommand = "/opt/sieve-py/bin/python3"
+
+// --- script path allowlist ---
+// script_guard/script_filter reference a script FILE by path (operators point
+// at a curated script, rather than pasting it inline). The path must live under
+// an allowlisted base directory so the interpreter can't be aimed at an
+// arbitrary host file. Mirrors the command allowlist above.
+
+var (
+	scriptDirsMu sync.RWMutex
+	scriptDirs   []string // nil = use DefaultScriptDir
+)
+
+// DefaultScriptDir is where Sieve's bundled runtime + operator scripts live in
+// the Docker image (the venv root that contains the bundled Python).
+var DefaultScriptDir = filepath.Dir(filepath.Dir(DefaultCommand)) // /opt/sieve-py
+
+// SetScriptDirs replaces the package-level scripts-base allowlist. nil/empty
+// reverts to DefaultScriptDir. Absolute paths only (relative entries dropped).
+func SetScriptDirs(dirs []string) {
+	scriptDirsMu.Lock()
+	defer scriptDirsMu.Unlock()
+	if len(dirs) == 0 {
+		scriptDirs = nil
+		return
+	}
+	cleaned := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		d = strings.TrimSpace(d)
+		if d == "" || !filepath.IsAbs(d) {
+			continue
+		}
+		cleaned = append(cleaned, filepath.Clean(d))
+	}
+	if len(cleaned) == 0 {
+		scriptDirs = nil
+		return
+	}
+	scriptDirs = cleaned
+}
+
+func currentScriptDirs() []string {
+	scriptDirsMu.RLock()
+	defer scriptDirsMu.RUnlock()
+	if len(scriptDirs) == 0 {
+		return []string{DefaultScriptDir}
+	}
+	return append([]string(nil), scriptDirs...)
+}
+
+// ErrScriptPathNotAllowed is returned when a script_guard/filter path is not an
+// absolute path under an allowlisted scripts directory.
+var ErrScriptPathNotAllowed = errors.New("script path not allowed")
+
+// ValidateScriptPath enforces that path is absolute, contains no "..", and
+// resolves (after symlinks) to a real file under an allowlisted scripts
+// directory — so the interpreter only ever runs operator-curated scripts.
+func ValidateScriptPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("%w: path is empty", ErrScriptPathNotAllowed)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("%w: %q must be an absolute path", ErrScriptPathNotAllowed, path)
+	}
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("%w: %q must not contain '..'", ErrScriptPathNotAllowed, path)
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("%w: %q (not found or unreadable)", ErrScriptPathNotAllowed, path)
+	}
+	for _, d := range currentScriptDirs() {
+		base, err := filepath.EvalSymlinks(d)
+		if err != nil {
+			base = filepath.Clean(d)
+		}
+		if resolved == base || strings.HasPrefix(resolved, base+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %q must be under one of %v", ErrScriptPathNotAllowed, path, currentScriptDirs())
+}

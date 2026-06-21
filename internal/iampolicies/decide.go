@@ -2,7 +2,6 @@ package iampolicies
 
 import (
 	"context"
-	"os"
 
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/iam"
@@ -128,24 +127,20 @@ func (s *Service) resolveDecision(ctx context.Context, d iam.Decision, req *poli
 // = the request JSON, stdout = {action: allow|deny|approval_required}). The
 // command is allowlist-validated by NewScriptEvaluator.
 func runScriptGuard(ctx context.Context, g iam.Filter, req *policy.PolicyRequest) *policy.PolicyDecision {
-	inline, _ := g.Config["inline"].(string)
+	path, _ := g.Config["path"].(string)
 	command, _ := g.Config["command"].(string)
-	if inline == "" || command == "" {
+	if path == "" || command == "" {
 		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "' is misconfigured"}
 	}
-	f, err := os.CreateTemp("", "sieve-guard-*.py")
-	if err != nil {
-		return &policy.PolicyDecision{Action: "deny", Reason: "script guard temp file: " + err.Error()}
+	// Defense in depth: re-validate the script path at execution time (it was
+	// also checked at save), so a path that left the allowlist since (or a
+	// tampered config) can't reach the interpreter.
+	if err := policy.ValidateScriptPath(path); err != nil {
+		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "': " + err.Error()}
 	}
-	defer os.Remove(f.Name())
-	if _, err := f.WriteString(inline); err != nil {
-		f.Close()
-		return &policy.PolicyDecision{Action: "deny", Reason: "script guard write: " + err.Error()}
-	}
-	f.Close()
 
 	ev, err := policy.NewScriptEvaluator(map[string]any{
-		"command": command, "script": f.Name(), "timeout": g.Config["timeout"],
+		"command": command, "script": path, "timeout": g.Config["timeout"],
 	})
 	if err != nil {
 		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "': " + err.Error()}
@@ -156,6 +151,10 @@ func runScriptGuard(ctx context.Context, g iam.Filter, req *policy.PolicyRequest
 	}
 	return pd
 }
+
+// ValidateScriptPath checks a filter's script path against the allowlisted
+// scripts directories (thin wrapper so the web layer doesn't import policy).
+func ValidateScriptPath(path string) error { return policy.ValidateScriptPath(path) }
 
 // ScriptCommand returns the interpreter the admin UI should store for a new
 // script filter: the operator allowlist's first entry, else the bundled default.

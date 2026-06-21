@@ -3,7 +3,9 @@ package api_test
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -35,13 +37,21 @@ func TestIAMEnforce_ScriptGuardOverGateway(t *testing.T) {
 	policy.SetCommandAllowlist([]string{py})
 	defer policy.SetCommandAllowlist(nil)
 
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "block_secret.py")
+	if err := os.WriteFile(scriptPath, []byte(apiGuardScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy.SetScriptDirs([]string{dir})
+	defer policy.SetScriptDirs(nil)
+
 	env := setupIAMRouter(t)
 	if err := env.settingsSet("iam_enabled", "true"); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := env.iam.CreateFilter("block-secret", "block sends containing 'secret'",
-		iam.KindScriptGuard, 0, map[string]any{"command": py, "inline": apiGuardScript}); err != nil {
+		iam.KindScriptGuard, 0, map[string]any{"command": py, "path": scriptPath}); err != nil {
 		t.Fatal(err)
 	}
 	spec := iampolicies.RuleSpec{

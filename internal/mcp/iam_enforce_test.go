@@ -2,7 +2,9 @@ package mcp_test
 
 import (
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/trilitech/Sieve/internal/iam"
@@ -30,13 +32,21 @@ func TestMCP_ScriptGuardEnforced(t *testing.T) {
 	policy.SetCommandAllowlist([]string{py})
 	defer policy.SetCommandAllowlist(nil)
 
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "block_secret.py")
+	if err := os.WriteFile(scriptPath, []byte(mcpGuardScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy.SetScriptDirs([]string{dir})
+	defer policy.SetScriptDirs(nil)
+
 	env := testenv.New(t)
 	role := env.SetupConnectionAndRole(t, "test-conn", "read-only")
 	tok := env.CreateToken(t, role.ID)
 	env.Mock.SetResponse("send_email", map[string]any{"id": "1"})
 
 	if _, err := env.IAM.CreateFilter("block-secret", "", iam.KindScriptGuard, 0,
-		map[string]any{"command": py, "inline": mcpGuardScript}); err != nil {
+		map[string]any{"command": py, "path": scriptPath}); err != nil {
 		t.Fatal(err)
 	}
 	spec := iampolicies.RuleSpec{

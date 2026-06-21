@@ -58,7 +58,7 @@
       </div>
 
       <!-- Roles -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "roles"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Roles</h2>
         <p class="text-xs text-slate-500 mb-4">A role is a reusable bundle of the rules below that target it. A token can be issued for <strong>several roles at once</strong> and gets the <strong>union</strong> — so build small, focused roles (e.g. "email-access", "llm-access") and compose them per token on the Tokens page. No need to copy a rule between roles.</p>
         <form method="POST" action="/iam/roles" class="flex items-end gap-3 mb-5">
@@ -84,7 +84,7 @@
       </div>
 
       <!-- Filter & guard library -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "filters"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Filter &amp; guard library</h2>
         <p class="text-xs text-slate-400 mb-2">Reusable, named transforms and guards. Author one here, then attach it to any rule in that rule's <strong>“Response filters &amp; guards”</strong> section. A rule with no filter attached runs unfiltered.</p>
         <ul class="text-xs text-slate-500 mb-5 space-y-1 list-disc list-inside">
@@ -134,11 +134,11 @@
 
           <!-- script_guard config -->
           <div id="filter-cfg-script_guard" class="mt-5 hidden">
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Guard script (Python)</label>
-            <textarea name="script" rows="9"
-                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Guard script path</label>
+            <input type="text" name="script_path" placeholder="/opt/sieve-py/guards/biz_hours.py"
+                   class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
             <div class="text-xs text-slate-500 mt-2 space-y-2 rounded-lg bg-slate-900/60 border border-slate-700 p-3">
-              <p>Runs <strong>before</strong> the operation, in Sieve's sandboxed Python, with a 5-second timeout.</p>
+              <p>Absolute path to a script file <strong>on the Sieve host</strong>, under the allowed scripts directory (<code>/opt/sieve-py</code> by default; no <code>..</code>). It runs <strong>before</strong> the operation via the sandboxed interpreter, with a 5-second timeout.</p>
               <p><strong class="text-slate-300">Reads</strong> a JSON request on <code>stdin</code>:</p>
               <pre class="text-slate-400 whitespace-pre-wrap">{"operation": "send_email", "connector": "google",
  "connection": "work",
@@ -180,7 +180,7 @@ else:
       </div>
 
       <!-- Rule builder -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "roles"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Add a rule</h2>
         <p class="text-xs text-slate-500 mb-5">Each rule is one line in a role's chain. Build it visually — no Cedar required.</p>
         <form method="POST" action="/iam/policies" id="rule-form">
@@ -280,7 +280,7 @@ else:
       </div>
 
       <!-- Rules / policies list -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden mb-8">
+      <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden mb-8{{if ne .Section "roles"}} hidden{{end}}">
         <div class="px-6 py-4 border-b border-slate-700">
           <h2 class="text-lg font-semibold text-white">Rules</h2>
           <p class="text-xs text-slate-500 mt-0.5">The active chain. Deny overrides allow; unmatched requests are denied.</p>
@@ -330,7 +330,7 @@ else:
       </div>
 
       <!-- Guardrail builder -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "guardrails"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Add a guardrail</h2>
         <p class="text-xs text-slate-500 mb-5">A guardrail is a <strong>global constraint</strong> — it requires approval and/or applies response filters to every <em>allowed</em> request that matches its scope, <strong>no matter which rule granted it</strong>. (That's why an obligation lives here, not on a rule: a rule's approval could be bypassed by composing another role that grants the same thing.) Leave the role blank to cover every role.</p>
         <form method="POST" action="/iam/guardrails" id="guardrail-form">
@@ -440,7 +440,7 @@ else:
       </div>
 
       <!-- Guardrails list -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden mb-8">
+      <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden mb-8{{if ne .Section "guardrails"}} hidden{{end}}">
         <div class="px-6 py-4 border-b border-slate-700">
           <h2 class="text-lg font-semibold text-white">Guardrails</h2>
           <p class="text-xs text-slate-500 mt-0.5">Global constraints. Each applies to every matching allowed request, regardless of which rule granted it.</p>
@@ -487,7 +487,7 @@ else:
       </div>
 
       <!-- Decision explorer -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "explore"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Test a decision</h2>
         <p class="text-xs text-slate-500 mb-4">Dry-run a request against the current rules. Nothing is executed.</p>
         <form method="POST" action="/iam/explore">
@@ -535,7 +535,7 @@ else:
       </div>
 
       <!-- Advanced: raw Cedar -->
-      <details class="bg-slate-800 rounded-xl border border-slate-700 p-6">
+      <details class="bg-slate-800 rounded-xl border border-slate-700 p-6{{if ne .Section "roles"}} hidden{{end}}">
         <summary class="text-sm font-medium text-slate-300 cursor-pointer hover:text-white">Advanced: write raw Cedar</summary>
         <p class="text-xs text-slate-500 mt-3 mb-4">For conditions the visual builder doesn't cover (attribute checks, amount limits, owner-scoping, obligations). Stored and validated as-is.</p>
         <form method="POST" action="/iam/policies">

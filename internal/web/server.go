@@ -1314,6 +1314,19 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "tokens", data)
 }
 
+// parseExpiry parses a token-expiry duration. It accepts standard Go durations
+// (e.g. "12h", "720h") plus "Nd" for N days, which Go's ParseDuration rejects.
+func parseExpiry(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(days))
+		if err == nil && n >= 0 {
+			return time.Duration(n) * 24 * time.Hour, nil
+		}
+	}
+	return time.ParseDuration(s)
+}
+
 func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1330,14 +1343,34 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Expiry precedence: an explicit date wins, else a freeform duration, else
+	// the preset. (Go's ParseDuration has no "days", so parseExpiry adds Nd.)
 	var expiresIn time.Duration
-	if expStr := r.FormValue("expires_in"); expStr != "" {
-		d, err := time.ParseDuration(expStr)
+	if dateStr := r.FormValue("expires_date"); dateStr != "" {
+		t, err := time.Parse("2006-01-02", dateStr)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("invalid expires_in: %v", err), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("invalid expiry date: %v", err), http.StatusBadRequest)
 			return
 		}
-		expiresIn = d
+		// Token is valid through the end of the chosen day.
+		expiresIn = time.Until(t.Add(24 * time.Hour))
+		if expiresIn <= 0 {
+			http.Error(w, "expiry date must be in the future", http.StatusBadRequest)
+			return
+		}
+	} else {
+		expStr := r.FormValue("expires_custom")
+		if expStr == "" {
+			expStr = r.FormValue("expires_preset")
+		}
+		if expStr != "" {
+			d, err := parseExpiry(expStr)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("invalid expiry duration %q (try e.g. 45d, 12h)", expStr), http.StatusBadRequest)
+				return
+			}
+			expiresIn = d
+		}
 	}
 
 	result, err := s.tokens.Create(&tokens.CreateRequest{

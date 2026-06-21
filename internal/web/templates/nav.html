@@ -63,6 +63,25 @@
         </ul>
       </li>
 
+      <!-- IAM (collapsible) -->
+      <li>
+        <button onclick="toggleSub('iam-sub')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{if or (eq .Active "iam") (eq .Active "iam-roles") (eq .Active "iam-guardrails") (eq .Active "iam-filters") (eq .Active "iam-explore")}}bg-indigo-500/20 text-indigo-400{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
+          <span class="flex items-center gap-3">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+            </svg>
+            <a href="/iam" class="hover:underline" onclick="event.stopPropagation()">IAM</a>
+          </span>
+          <svg id="iam-sub-chevron" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+        </button>
+        <ul id="iam-sub" class="ml-8 mt-1 space-y-0.5 hidden">
+          <li><a href="/iam?section=roles" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "iam-roles"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Roles &amp; rules</a></li>
+          <li><a href="/iam?section=guardrails" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "iam-guardrails"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Guardrails</a></li>
+          <li><a href="/iam?section=filters" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "iam-filters"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Filters</a></li>
+          <li><a href="/iam?section=explore" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "iam-explore"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Explorer</a></li>
+        </ul>
+      </li>
+
       <!-- Tokens -->
       <li>
         <a href="/tokens" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{if eq .Active "tokens"}}bg-indigo-500/20 text-indigo-400{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
@@ -104,15 +123,6 @@
         </a>
       </li>
 
-      <!-- IAM -->
-      <li>
-        <a href="/iam" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{if eq .Active "iam"}}bg-indigo-500/20 text-indigo-400{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-          </svg>
-          IAM
-        </a>
-      </li>
     </ul>
   </div>
   <div class="p-4 border-t border-slate-700 space-y-1">
@@ -252,20 +262,8 @@ function toggleSub(id) {
       toggleSub('conn-vcs-sub');
     }
   }
-  if (active.startsWith("policies-")) {
-    toggleSub('policy-sub');
-    if (active === "policies-gmail" || active === "policies-drive" || active === "policies-calendar" || active === "policies-people" || active === "policies-sheets" || active === "policies-docs") {
-      toggleSub('google-sub');
-    }
-    if (active.startsWith("policies-aws-") || active === "policies-hyperstack") {
-      toggleSub('cloud-sub');
-      if (active.startsWith("policies-aws-")) {
-        toggleSub('aws-sub');
-      }
-    }
-    if (active === "policies-github" || active === "policies-gitlab" || active === "policies-version_control") {
-      toggleSub('policy-vcs-sub');
-    }
+  if (active.startsWith("iam-")) {
+    toggleSub('iam-sub');
   }
 })();
 </script>
@@ -297,7 +295,10 @@ var CMDK_ITEMS = [
   // Top-level pages
   {label: "Connections",              href: "/connections",                       keywords: "services credentials"},
   {label: "Tokens",                   href: "/tokens",                            keywords: "agents bearer"},
-  {label: "IAM",                      href: "/iam",                               keywords: "roles rules guardrails filters policies permissions rbac access approval redact authorization"},
+  {label: "IAM / Roles & rules",      href: "/iam?section=roles",                 keywords: "roles rules policies permissions rbac access grant deny authorization"},
+  {label: "IAM / Guardrails",         href: "/iam?section=guardrails",            keywords: "approval redact filter obligation constraint"},
+  {label: "IAM / Filters",            href: "/iam?section=filters",               keywords: "redact exclude script guard library transform"},
+  {label: "IAM / Explorer",           href: "/iam?section=explore",               keywords: "decision why dry-run test authorization"},
   {label: "Approvals",                href: "/approvals",                         keywords: "pending"},
   {label: "Audit Log",                href: "/audit",                             keywords: "history events"},
   {label: "Settings",                 href: "/settings",                          keywords: "passphrase rotation llm"},
