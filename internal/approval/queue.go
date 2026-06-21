@@ -40,23 +40,23 @@ const (
 
 // Item represents a single entry in the approval queue.
 type Item struct {
-	ID          string         `json:"id"`
-	TokenID     string         `json:"token_id"`
-	ConnectionID string        `json:"connection_id"`
-	Operation   string         `json:"operation"`
-	RequestData map[string]any `json:"request_data"`
-	Status      Status         `json:"status"`
-	CreatedAt   time.Time      `json:"created_at"`
-	ResolvedAt  *time.Time     `json:"resolved_at,omitempty"`
-	ResolvedBy  string         `json:"resolved_by,omitempty"`
+	ID           string         `json:"id"`
+	TokenID      string         `json:"token_id"`
+	ConnectionID string         `json:"connection_id"`
+	Operation    string         `json:"operation"`
+	RequestData  map[string]any `json:"request_data"`
+	Status       Status         `json:"status"`
+	CreatedAt    time.Time      `json:"created_at"`
+	ResolvedAt   *time.Time     `json:"resolved_at,omitempty"`
+	ResolvedBy   string         `json:"resolved_by,omitempty"`
 }
 
 // SubmitRequest contains the fields needed to create a new approval queue item.
 type SubmitRequest struct {
-	TokenID     string
+	TokenID      string
 	ConnectionID string
-	Operation   string
-	RequestData map[string]any
+	Operation    string
+	RequestData  map[string]any
 }
 
 // Queue manages the approval queue, combining database persistence with
@@ -66,7 +66,7 @@ type SubmitRequest struct {
 type Queue struct {
 	db        *database.DB
 	listeners map[string]chan *Item // keyed by approval item ID; buffered(1)
-	mu        sync.Mutex           // guards listeners map only, not DB operations
+	mu        sync.Mutex            // guards listeners map only, not DB operations
 }
 
 // NewQueue creates a new Queue backed by the given database.
@@ -111,13 +111,13 @@ func (q *Queue) Submit(req *SubmitRequest) (*Item, error) {
 	}
 
 	item := &Item{
-		ID:          id,
-		TokenID:     req.TokenID,
+		ID:           id,
+		TokenID:      req.TokenID,
 		ConnectionID: req.ConnectionID,
-		Operation:   req.Operation,
-		RequestData: req.RequestData,
-		Status:      StatusPending,
-		CreatedAt:   now,
+		Operation:    req.Operation,
+		RequestData:  req.RequestData,
+		Status:       StatusPending,
+		CreatedAt:    now,
 	}
 
 	return item, nil

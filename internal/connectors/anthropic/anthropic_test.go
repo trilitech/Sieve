@@ -305,7 +305,7 @@ func TestValidate_ProbesCountTokens(t *testing.T) {
 //   - 401 / authentication_error → Validate fails
 //   - 4xx with model_not_found    → Validate succeeds (key works)
 //   - 5xx                         → Validate succeeds (can't tell;
-//                                   error will repeat on first agent call)
+//     error will repeat on first agent call)
 func TestValidate_FailsOnlyOnReauth(t *testing.T) {
 	t.Run("401 fails", func(t *testing.T) {
 		conn := newTestConnector(t, func(w http.ResponseWriter, r *http.Request) {

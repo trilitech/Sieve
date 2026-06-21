@@ -199,7 +199,7 @@ func (s *Server) handleUsersList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConversationsHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"ok":       true,
+		"ok": true,
 		"messages": []any{
 			map[string]any{"type": "message", "user": "U0K1", "text": "hello", "ts": "1700000001.000100"},
 			map[string]any{"type": "message", "user": "U0K2", "text": "world", "ts": "1700000002.000200"},
@@ -211,7 +211,7 @@ func (s *Server) handleConversationsHistory(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleConversationsReplies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
-		"ok":       true,
+		"ok": true,
 		"messages": []any{
 			map[string]any{"type": "message", "user": "U0K1", "text": "thread root", "ts": "1700000001.000100", "thread_ts": "1700000001.000100"},
 			map[string]any{"type": "message", "user": "U0K2", "text": "reply", "ts": "1700000003.000100", "thread_ts": "1700000001.000100"},

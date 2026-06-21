@@ -13,8 +13,8 @@ import (
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/operator"
-	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/secrets"
 	"github.com/trilitech/Sieve/internal/session"
@@ -28,7 +28,7 @@ type Env struct {
 	DB          *database.DB
 	Connections *connections.Service
 	Tokens      *tokens.Service
-	Policies    *policies.Service
+	IAM         *iampolicies.Service
 	Roles       *roles.Service
 	Approval    *approval.Queue
 	Audit       *audit.Logger
@@ -78,7 +78,7 @@ func New(t *testing.T) *Env {
 
 	connSvc := connections.NewService(db, registry, keyring)
 	tokenSvc := tokens.NewService(db)
-	policiesSvc := policies.NewService(db)
+	iamSvc := iampolicies.NewService(db)
 	rolesSvc := roles.NewService(db)
 	approvalQ := approval.NewQueue(db)
 	auditLog := audit.NewLogger(db)
@@ -90,10 +90,6 @@ func New(t *testing.T) *Env {
 	opSvc.Time, opSvc.MemoryKiB, opSvc.Parallelism = operator.FastParams()
 	sessionMgr := session.NewManager(db, 0) // default idle timeout (8h)
 
-	if err := policiesSvc.SeedPresets(); err != nil {
-		t.Fatalf("seed presets: %v", err)
-	}
-
 	t.Cleanup(func() {
 		db.Close()
 		os.Remove(dbPath)
@@ -103,7 +99,7 @@ func New(t *testing.T) *Env {
 		DB:          db,
 		Connections: connSvc,
 		Tokens:      tokenSvc,
-		Policies:    policiesSvc,
+		IAM:         iamSvc,
 		Roles:       rolesSvc,
 		Approval:    approvalQ,
 		Audit:       auditLog,
@@ -230,34 +226,43 @@ func (e *Env) CSRFToken() string {
 	return e.operatorActive.CSRFToken
 }
 
-// SetupConnectionAndRole creates a mock connection, a role with the given
-// policy names, and returns the role. This is the common setup for tests
-// that need a working token.
+// SetupConnectionAndRole creates a mock connection plus an IAM role granting
+// access to it, enables IAM, and returns the role — the common setup for tests
+// that need a working token. The legacy "read-only" policy name maps to a
+// read-scoped IAM grant (writes denied); any other/no name grants all ops on the
+// connection. Tests needing specific obligations add guardrails via e.IAM.
 func (e *Env) SetupConnectionAndRole(t *testing.T, connID string, policyNames ...string) *roles.Role {
 	t.Helper()
 
-	// Create the mock connection.
-	err := e.Connections.Add(connID, "mock", "Test Connection", map[string]any{})
-	if err != nil {
+	if err := e.Connections.Add(connID, "mock", "Test Connection", map[string]any{}); err != nil {
 		t.Fatalf("add connection: %v", err)
 	}
 
-	// Resolve policy IDs from names.
-	var policyIDs []string
-	for _, name := range policyNames {
-		pol, err := e.Policies.GetByName(name)
-		if err != nil {
-			t.Fatalf("get policy %q: %v", name, err)
-		}
-		policyIDs = append(policyIDs, pol.ID)
-	}
-
-	// Create a role with the connection and policies.
-	role, err := e.Roles.Create("test-role", []roles.Binding{
-		{ConnectionID: connID, PolicyIDs: policyIDs},
-	})
+	role, err := e.Roles.Create("test-role", nil)
 	if err != nil {
 		t.Fatalf("create role: %v", err)
+	}
+
+	// IAM grant: allow ops on this connection for the role. "read-only" → read
+	// scope (preserves the legacy read-only intent); else all ops.
+	opScope := "all"
+	for _, n := range policyNames {
+		if n == "read-only" {
+			opScope = "read"
+		}
+	}
+	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: role.ID, Effect: "allow", ConnectorType: "mock",
+		OpScope: opScope, ConnectionIDs: []string{connID},
+	}, e.Mock.Meta().Operations)
+	if err != nil {
+		t.Fatalf("build IAM grant: %v", err)
+	}
+	if _, err := e.IAM.CreatePolicy("test-grant-"+connID, "", cedar, true); err != nil {
+		t.Fatalf("create IAM grant: %v", err)
+	}
+	if err := e.Settings.Set("iam_enabled", "true"); err != nil {
+		t.Fatalf("enable iam: %v", err)
 	}
 
 	return role

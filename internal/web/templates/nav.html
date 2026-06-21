@@ -63,16 +63,6 @@
         </ul>
       </li>
 
-      <!-- Roles -->
-      <li>
-        <a href="/roles" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{if eq .Active "roles"}}bg-indigo-500/20 text-indigo-400{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
-          </svg>
-          Roles
-        </a>
-      </li>
-
       <!-- Tokens -->
       <li>
         <a href="/tokens" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{if eq .Active "tokens"}}bg-indigo-500/20 text-indigo-400{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
@@ -81,78 +71,6 @@
           </svg>
           Tokens
         </a>
-      </li>
-
-      <!-- Policies (collapsible with nested Google) -->
-      <li>
-        <button onclick="toggleSub('policy-sub')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors {{if eq .Active "policies"}}bg-indigo-500/20 text-indigo-400{{else}}text-slate-300 hover:bg-slate-700 hover:text-white{{end}}">
-          <span class="flex items-center gap-3">
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-            </svg>
-            <a href="/policies" class="hover:underline" onclick="event.stopPropagation()">Policies</a>
-          </span>
-          <svg id="policy-sub-chevron" class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-        </button>
-        <ul id="policy-sub" class="ml-8 mt-1 space-y-0.5 hidden">
-          <!-- Google (collapsible sub-group) -->
-          <li>
-            <button onclick="toggleSub('google-sub'); event.stopPropagation()" class="w-full flex items-center justify-between px-3 py-1 rounded-lg text-xs transition-colors text-slate-400 hover:text-slate-200 hover:bg-slate-700/50">
-              <span>Google</span>
-              <svg id="google-sub-chevron" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-            </button>
-            <ul id="google-sub" class="ml-3 space-y-0.5 hidden">
-              <li><a href="/policies?scope=gmail" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-gmail"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Gmail</a></li>
-              <li><a href="/policies?scope=drive" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-drive"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Drive</a></li>
-              <li><a href="/policies?scope=calendar" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-calendar"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Calendar</a></li>
-              <li><a href="/policies?scope=people" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-people"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">People</a></li>
-              <li><a href="/policies?scope=sheets" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-sheets"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Sheets</a></li>
-              <li><a href="/policies?scope=docs" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-docs"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Docs</a></li>
-            </ul>
-          </li>
-          <!-- Cloud (AWS + Hyperstack) -->
-          <li>
-            <button onclick="toggleSub('cloud-sub'); event.stopPropagation()" class="w-full flex items-center justify-between px-3 py-1 rounded-lg text-xs transition-colors text-slate-400 hover:text-slate-200 hover:bg-slate-700/50">
-              <span>Cloud</span>
-              <svg id="cloud-sub-chevron" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-            </button>
-            <ul id="cloud-sub" class="ml-3 space-y-0.5 hidden">
-              <li>
-                <button onclick="toggleSub('aws-sub'); event.stopPropagation()" class="w-full flex items-center justify-between px-3 py-0.5 rounded-lg text-[10px] transition-colors text-slate-500 hover:text-slate-300">
-                  <span>AWS</span>
-                  <svg id="aws-sub-chevron" class="w-2.5 h-2.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-                </button>
-                <ul id="aws-sub" class="ml-3 space-y-0.5 hidden">
-                  <li><a href="/policies?scope=aws-ec2" class="block px-3 py-0.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-aws-ec2"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">EC2</a></li>
-                  <li><a href="/policies?scope=aws-s3" class="block px-3 py-0.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-aws-s3"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">S3</a></li>
-                  <li><a href="/policies?scope=aws-lambda" class="block px-3 py-0.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-aws-lambda"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Lambda</a></li>
-                  <li><a href="/policies?scope=aws-ses" class="block px-3 py-0.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-aws-ses"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">SES</a></li>
-                  <li><a href="/policies?scope=aws-dynamodb" class="block px-3 py-0.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-aws-dynamodb"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">DynamoDB</a></li>
-                </ul>
-              </li>
-              <li><a href="/policies?scope=hyperstack" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-hyperstack"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Hyperstack</a></li>
-            </ul>
-          </li>
-          <li><a href="/policies?scope=llm" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-llm"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">LLM API</a></li>
-          <li><a href="/policies?scope=http_proxy" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-http_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">HTTP Proxy</a></li>
-          <li><a href="/policies?scope=mcp_proxy" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-mcp_proxy"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">MCP Proxy</a></li>
-          <!-- Version Control (collapsible sub-group: GitHub + GitLab).
-               Link + toggle are sibling elements so we don't nest an <a>
-               inside a <button> (invalid interactive-in-interactive HTML). -->
-          <li>
-            <div class="flex items-stretch rounded-lg transition-colors {{if or (eq .Active "policies-version_control") (eq .Active "policies-github") (eq .Active "policies-gitlab")}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">
-              <a href="/policies?scope=version_control" class="flex-1 px-3 py-1.5 text-xs text-left">Version Control</a>
-              <button type="button" onclick="toggleSub('policy-vcs-sub')" aria-label="Toggle Version Control sub-items" aria-controls="policy-vcs-sub" aria-expanded="false" class="px-2 py-1.5 flex items-center">
-                <svg id="policy-vcs-sub-chevron" class="w-3 h-3 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-              </button>
-            </div>
-            <ul id="policy-vcs-sub" class="ml-3 space-y-0.5 hidden">
-              <li><a href="/policies?scope=github" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-github"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitHub</a></li>
-              <li><a href="/policies?scope=gitlab" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "policies-gitlab"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">GitLab</a></li>
-            </ul>
-          </li>
-          <li><a href="/policies?scope=slack" class="block px-3 py-1.5 rounded-lg text-xs transition-colors {{if eq .Active "policies-slack"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Slack</a></li>
-        </ul>
       </li>
 
       <!-- Approvals -->
@@ -378,9 +296,7 @@ function toggleSub(id) {
 var CMDK_ITEMS = [
   // Top-level pages
   {label: "Connections",              href: "/connections",                       keywords: "services credentials"},
-  {label: "Roles",                    href: "/roles",                             keywords: "bindings permissions"},
   {label: "Tokens",                   href: "/tokens",                            keywords: "agents bearer"},
-  {label: "Policies",                 href: "/policies",                          keywords: "rules"},
   {label: "Approvals",                href: "/approvals",                         keywords: "pending"},
   {label: "Audit Log",                href: "/audit",                             keywords: "history events"},
   {label: "Settings",                 href: "/settings",                          keywords: "passphrase rotation llm"},
@@ -399,25 +315,6 @@ var CMDK_ITEMS = [
   // picker recognises are listed — "google" and "cloud" are sidebar
   // group labels, not real scopes, so they're omitted to avoid landing
   // the operator on a page with no operations picker.
-  {label: "Policies / Gmail",              href: "/policies?scope=gmail",             keywords: "email google"},
-  {label: "Policies / Drive",              href: "/policies?scope=drive",             keywords: "google files"},
-  {label: "Policies / Calendar",           href: "/policies?scope=calendar",          keywords: "google events"},
-  {label: "Policies / People",             href: "/policies?scope=people",            keywords: "google contacts"},
-  {label: "Policies / Sheets",             href: "/policies?scope=sheets",            keywords: "google spreadsheet"},
-  {label: "Policies / Docs",               href: "/policies?scope=docs",              keywords: "google document"},
-  {label: "Policies / AWS EC2",            href: "/policies?scope=aws-ec2",           keywords: "compute cloud"},
-  {label: "Policies / AWS S3",             href: "/policies?scope=aws-s3",            keywords: "storage bucket cloud"},
-  {label: "Policies / AWS Lambda",         href: "/policies?scope=aws-lambda",        keywords: "functions cloud"},
-  {label: "Policies / AWS SES",            href: "/policies?scope=aws-ses",           keywords: "email cloud"},
-  {label: "Policies / AWS DynamoDB",       href: "/policies?scope=aws-dynamodb",      keywords: "database nosql cloud"},
-  {label: "Policies / Hyperstack",         href: "/policies?scope=hyperstack",        keywords: "gpu cloud"},
-  {label: "Policies / LLM API",            href: "/policies?scope=llm",               keywords: "anthropic openai"},
-  {label: "Policies / HTTP Proxy",         href: "/policies?scope=http_proxy",        keywords: "rest"},
-  {label: "Policies / MCP Proxy",          href: "/policies?scope=mcp_proxy",         keywords: "mcp"},
-  {label: "Policies / Version Control",    href: "/policies?scope=version_control",   keywords: "git github gitlab vcs"},
-  {label: "Policies / GitHub",             href: "/policies?scope=github",            keywords: "git vcs"},
-  {label: "Policies / GitLab",             href: "/policies?scope=gitlab",            keywords: "git vcs"},
-  {label: "Policies / Slack",              href: "/policies?scope=slack",             keywords: "chat"}
 ];
 
 var cmdkSelected = 0;

@@ -71,32 +71,6 @@ type Evaluator interface {
 	Type() string
 }
 
-// LLMProviderConfig holds configuration for an LLM provider endpoint.
-type LLMProviderConfig struct {
-	Endpoint  string `json:"endpoint"`
-	Region    string `json:"region"`
-	APIKeyEnv string `json:"api_key_env"`
-	Model     string `json:"model"`
-}
-
-// CreateEvaluator builds an Evaluator based on the given type string and config.
-func CreateEvaluator(policyType string, config map[string]any, providers map[string]LLMProviderConfig) (Evaluator, error) {
-	switch policyType {
-	case "builtin":
-		return NewBuiltinEvaluator(config)
-	case "script":
-		return NewScriptEvaluator(config)
-	case "llm":
-		return NewLLMEvaluator(config, providers)
-	case "chain":
-		return NewChainEvaluator(config, providers)
-	case "rules":
-		return NewRulesEvaluator(config, providers)
-	default:
-		return nil, fmt.Errorf("unknown policy evaluator type: %s", policyType)
-	}
-}
-
 // ResponseFilterError carries a failure to instantiate or run a response
 // filter. Callers SHOULD treat this as a fail-closed signal — the un-redacted
 // response must NOT be returned to the agent when a filter cannot run, since

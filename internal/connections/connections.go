@@ -33,9 +33,9 @@ import (
 
 // Connection status values. A connection can be in exactly one of these states.
 const (
-	StatusActive          = "active"
-	StatusReauthRequired  = "reauth_required"
-	StatusDisabled        = "disabled"
+	StatusActive         = "active"
+	StatusReauthRequired = "reauth_required"
+	StatusDisabled       = "disabled"
 )
 
 // Sentinel errors returned when GetConnector is called on a non-active

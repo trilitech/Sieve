@@ -51,7 +51,6 @@ import (
 	"github.com/trilitech/Sieve/internal/httpguard"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/operator"
-	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/ratelimit"
 	"github.com/trilitech/Sieve/internal/roles"
@@ -94,7 +93,6 @@ func mustParseCIDRs(cidrs []string) []netip.Prefix {
 type Server struct {
 	tokens                *tokens.Service
 	connections           *connections.Service
-	policies              *policies.Service
 	roles                 *roles.Service
 	registry              *connector.Registry
 	approval              *approval.Queue
@@ -299,7 +297,6 @@ func funcMap() template.FuncMap {
 func NewServer(
 	tokensSvc *tokens.Service,
 	connsSvc *connections.Service,
-	policiesSvc *policies.Service,
 	rolesSvc *roles.Service,
 	registry *connector.Registry,
 	approvalQ *approval.Queue,
@@ -314,7 +311,6 @@ func NewServer(
 	s := &Server{
 		tokens:                tokensSvc,
 		connections:           connsSvc,
-		policies:              policiesSvc,
 		roles:                 rolesSvc,
 		registry:              registry,
 		approval:              approvalQ,
@@ -336,7 +332,7 @@ func NewServer(
 	// given partial just ignore it. The ops picker partial is included so
 	// policies.html and policy_edit.html resolve to the same scope-aware
 	// markup — making create/edit divergence structurally impossible.
-	pages := []string{"connections", "connection_edit", "tokens", "approvals", "audit", "policies", "policy_edit", "settings", "roles", "role_edit", "iam", "iam_edit", "docs"}
+	pages := []string{"connections", "connection_edit", "tokens", "approvals", "audit", "settings", "iam", "iam_edit", "docs"}
 	for _, page := range pages {
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
@@ -442,19 +438,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /tokens/create", s.handleTokenCreate)
 	mux.HandleFunc("POST /tokens/{id}/revoke", s.handleTokenRevoke)
 
-	// Roles
-	mux.HandleFunc("GET /roles", s.handleRoles)
-	mux.HandleFunc("POST /roles/create", s.handleRoleCreate)
-	mux.HandleFunc("POST /roles/{id}/delete", s.handleRoleDelete)
-	mux.HandleFunc("GET /roles/{id}/edit", s.handleRoleEdit)
-	mux.HandleFunc("POST /roles/{id}/update", s.handleRoleUpdate)
-
-	// Policies
-	mux.HandleFunc("GET /policies", s.handlePolicies)
-	mux.HandleFunc("POST /policies/create", s.handlePolicyCreate)
-	mux.HandleFunc("GET /policies/{id}/edit", s.handlePolicyEdit)
-	mux.HandleFunc("POST /policies/{id}/update", s.handlePolicyUpdate)
-	mux.HandleFunc("POST /policies/{id}/delete", s.handlePolicyDelete)
+	// Roles + rules + guardrails are managed on the /iam admin page (IAM is the
+	// sole authorization engine; the legacy /policies + /roles editors are gone).
 
 	// Approvals
 	mux.HandleFunc("GET /approvals", s.handleApprovals)
@@ -1384,12 +1369,6 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pols, err := s.policies.List()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	rolesList, err := s.roles.List()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1400,7 +1379,6 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		"Active":         "tokens",
 		"Tokens":         toks,
 		"Connections":    connList,
-		"Policies":       pols,
 		"Roles":          rolesList,
 		"PlaintextToken": result.PlaintextToken,
 		"CreatedToken":   result.Token,
@@ -1416,590 +1394,6 @@ func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "token.revoke", id, nil, "success")
 	http.Redirect(w, r, "/tokens", http.StatusSeeOther)
-}
-
-// --- Roles handlers ---
-
-func (s *Server) handleRoles(w http.ResponseWriter, r *http.Request) {
-	rolesList, err := s.roles.List()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	conns, err := s.connections.List()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	pols, err := s.policies.List()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	data := map[string]any{
-		"Active":      "roles",
-		"Roles":       rolesList,
-		"Connections": conns,
-		"Policies":    pols,
-	}
-	s.render(w, r, "roles", data)
-}
-
-func (s *Server) handleRoleCreate(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	name := r.FormValue("name")
-	if name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
-		return
-	}
-
-	// Parse bindings from form. Each binding is a connection + policy IDs pair.
-	bindingsJSON := r.FormValue("bindings")
-	var bindings []roles.Binding
-	if bindingsJSON != "" {
-		if err := json.Unmarshal([]byte(bindingsJSON), &bindings); err != nil {
-			http.Error(w, "invalid bindings JSON: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-
-	role, err := s.roles.Create(name, bindings)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "role.create", role.ID,
-		map[string]any{"name": name, "binding_count": len(bindings)}, "success")
-
-	http.Redirect(w, r, "/roles", http.StatusSeeOther)
-}
-
-func (s *Server) handleRoleDelete(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := s.roles.Delete(id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "role.delete", id, nil, "success")
-	http.Redirect(w, r, "/roles", http.StatusSeeOther)
-}
-
-func (s *Server) handleRoleEdit(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	role, err := s.roles.Get(id)
-	if err != nil {
-		http.Error(w, "role not found", http.StatusNotFound)
-		return
-	}
-
-	conns, err := s.connections.List()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	pols, err := s.policies.List()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	data := map[string]any{
-		"Active":      "roles",
-		"Role":        role,
-		"Connections": conns,
-		"Policies":    pols,
-	}
-	s.render(w, r, "role_edit", data)
-}
-
-func (s *Server) handleRoleUpdate(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	name := r.FormValue("name")
-	if name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
-		return
-	}
-
-	bindingsJSON := r.FormValue("bindings")
-	var bindings []roles.Binding
-	if bindingsJSON != "" {
-		if err := json.Unmarshal([]byte(bindingsJSON), &bindings); err != nil {
-			http.Error(w, "invalid bindings JSON: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-
-	if err := s.roles.Update(id, name, bindings); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "role.update", id,
-		map[string]any{"name": name, "binding_count": len(bindings)},
-		"success")
-	http.Redirect(w, r, "/roles", http.StatusSeeOther)
-}
-
-// --- Policies handlers ---
-
-func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
-	allPols, err := s.policies.List()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// The ?scope= parameter determines which connector's operations to show
-	// in the rule builder. Policies are filtered to only show those matching
-	// the current scope.
-	scope := r.URL.Query().Get("scope")
-	active := "policies"
-	if scope != "" {
-		active = "policies-" + scope
-	}
-
-	// Filter policies by scope. A policy's scope is stored in its config.
-	// Policies without a scope (legacy/presets) show under all tabs.
-	// The synthetic "version_control" scope is strictly defined as
-	// github + gitlab + unscoped. A policy literally stamped with
-	// scope=version_control would be nonsense (creation is blocked in
-	// handlePolicyCreate); excluding it here keeps the filter honest
-	// against any hand-crafted DB row that slipped through, and keeps
-	// the handlePolicyCreate comment accurate.
-	var pols []policies.Policy
-	for _, p := range allPols {
-		pScope, _ := p.PolicyConfig["scope"].(string)
-		var match bool
-		if scope == "version_control" {
-			match = pScope == "" || pScope == "github" || pScope == "gitlab"
-		} else {
-			match = scope == "" || pScope == "" || pScope == scope
-		}
-		if match {
-			pols = append(pols, p)
-		}
-	}
-
-	data := map[string]any{
-		"Active":   active,
-		"Policies": pols,
-		"Scope":    scope,
-	}
-	s.render(w, r, "policies", data)
-}
-
-func (s *Server) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	name := r.FormValue("name")
-	policyType := r.FormValue("policy_type")
-	configJSON := r.FormValue("policy_config")
-
-	if name == "" || policyType == "" {
-		http.Error(w, "name and policy_type are required", http.StatusBadRequest)
-		return
-	}
-
-	var policyConfig map[string]any
-	if configJSON != "" {
-		if err := json.Unmarshal([]byte(configJSON), &policyConfig); err != nil {
-			http.Error(w, "invalid policy config JSON: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-	} else {
-		policyConfig = make(map[string]any)
-	}
-
-	// "version_control" is a synthetic browse-only scope used in the
-	// sidebar grouping; it isn't a real connector scope. The
-	// /policies?scope=version_control list-filter (handlePolicies)
-	// pulls policies whose stored scope is github or gitlab (plus
-	// unscoped legacies). Persisting scope=version_control on a new
-	// policy would orphan it from both the github and gitlab tabs
-	// while only matching the synthetic group — almost certainly an
-	// accident, so refuse it loudly. The policies.html template
-	// hides the create form under this scope; this server-side
-	// reject is defence-in-depth against a hand-crafted POST or an
-	// out-of-date browser tab.
-	if sc, _ := policyConfig["scope"].(string); sc == "version_control" {
-		http.Error(w, "scope \"version_control\" is a browse-only filter; pick github or gitlab for a real policy", http.StatusBadRequest)
-		return
-	}
-
-	// Validate the policy rules against known operations.
-	if errs := s.validatePolicyRules(policyConfig); len(errs) > 0 {
-		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
-		return
-	}
-	// Script-command allowlist enforcement : rejects top-level
-	// script policies and nested rules[].script actions whose command
-	// field is not on the operator-configured allowlist.
-	if msg := validatePolicyCommandAllowlist(policyType, policyConfig); msg != "" {
-		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
-		return
-	}
-	// Numeric-ceiling lint : warn-once on the
-	// deny + ceiling + non-deny-default composition. On create there's
-	// no prior sticky ack, so any fire requires acknowledge_lint=true.
-	if warn := policy.DenyCeilingLint(policyType, policyConfig); warn != nil {
-		if r.FormValue("acknowledge_lint") != "true" {
-			writeLintWarningResponse(w, warn)
-			return
-		}
-	}
-
-	pol, err := s.policies.Create(name, policyType, policyConfig)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.create", pol.ID,
-		map[string]any{"name": name, "policy_type": policyType}, "success")
-	// Store sticky acknowledgement for any lint that fired.
-	if warn := policy.DenyCeilingLint(policyType, policyConfig); warn != nil {
-		ack := map[string]any{
-			warn.Rule: map[string]any{
-				"acknowledged_at": time.Now().UTC().Format(time.RFC3339),
-				"by":              operatorDisplayName(r, s),
-				"fingerprint":     warn.Fingerprint,
-			},
-		}
-		if err := s.policies.SetLintAck(pol.ID, ack); err != nil {
-			// Log-and-continue: the policy is saved; the sticky ack is
-			// best-effort. A future save will re-warn until ack persists.
-			http.Error(w, "policy saved but lint ack failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	http.Redirect(w, r, "/policies", http.StatusSeeOther)
-}
-
-// writeLintWarningResponse returns the structured lint warning to the
-// caller. JSON for fetch-style callers (admin JS); fallback text/html
-// 400 page for the form submission path.
-func writeLintWarningResponse(w http.ResponseWriter, warn *policy.LintWarning) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusBadRequest)
-	body := map[string]any{
-		"error": "lint_acknowledgement_required",
-		"lints": []*policy.LintWarning{warn},
-	}
-	_ = json.NewEncoder(w).Encode(body)
-}
-
-func (s *Server) handlePolicyEdit(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	pol, err := s.policies.Get(id)
-	if err != nil {
-		http.Error(w, "policy not found", http.StatusNotFound)
-		return
-	}
-
-	// Detect scope. Preference order: explicit `scope` field > shape inference
-	// from the rules > "gmail" as last-resort default. Older policies that
-	// were created before the create form started persisting `scope` end up
-	// with an empty value; inferring from rules keeps the edit page from
-	// silently rendering the wrong connector's UI.
-	scope := "gmail"
-	if v, ok := pol.PolicyConfig["scope"].(string); ok && v != "" {
-		scope = v
-	} else if inferred := inferPolicyScope(pol.PolicyConfig); inferred != "" {
-		scope = inferred
-	}
-
-	data := map[string]any{
-		"Active": "policies-" + scope,
-		"Policy": pol,
-		"Scope":  scope,
-	}
-	s.render(w, r, "policy_edit", data)
-}
-
-// inferPolicyScope guesses a policy's connector scope from the shape of its
-// rules. Returns "" when nothing distinctive is found (caller defaults to
-// "gmail" for backwards compatibility with the legacy default).
-// Signals checked, in order of specificity:
-// - rule.match.method or rule.match.path → http_proxy
-// - match.operations contains "proxy_request" → http_proxy
-// - rule.match.providers or LLM-only fields → llm
-// - match.operations contains a Drive/Calendar/etc op name → that scope
-func inferPolicyScope(cfg map[string]any) string {
-	rules, _ := cfg["rules"].([]any)
-	for _, ri := range rules {
-		r, ok := ri.(map[string]any)
-		if !ok {
-			continue
-		}
-		match, _ := r["match"].(map[string]any)
-		if match == nil {
-			continue
-		}
-		if _, ok := match["method"]; ok {
-			return "http_proxy"
-		}
-		if _, ok := match["path"]; ok {
-			return "http_proxy"
-		}
-		if ops, ok := match["operations"].([]any); ok {
-			for _, op := range ops {
-				s, _ := op.(string)
-				if s == "proxy_request" {
-					return "http_proxy"
-				}
-				switch s {
-				case "list_channels", "list_users", "read_user_profile",
-					"read_channel_history", "read_thread", "post_message",
-					"search_messages":
-					return "slack"
-				}
-			}
-		}
-		if _, ok := match["channel"]; ok {
-			return "slack"
-		}
-		if _, ok := match["text_contains"]; ok {
-			return "slack"
-		}
-		if _, ok := match["user"]; ok {
-			return "slack"
-		}
-		if _, ok := match["providers"]; ok {
-			return "llm"
-		}
-		for _, k := range []string{"model", "max_tokens", "max_cost", "extended_thinking", "system_prompt_contains", "max_temperature", "json_mode", "grounding", "safety_threshold"} {
-			if _, ok := match[k]; ok {
-				return "llm"
-			}
-		}
-	}
-	return ""
-}
-
-func (s *Server) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	name := r.FormValue("name")
-	policyType := r.FormValue("policy_type")
-	configJSON := r.FormValue("policy_config")
-
-	if name == "" || policyType == "" {
-		http.Error(w, "name and policy_type are required", http.StatusBadRequest)
-		return
-	}
-
-	var policyConfig map[string]any
-	if configJSON != "" {
-		if err := json.Unmarshal([]byte(configJSON), &policyConfig); err != nil {
-			http.Error(w, "invalid policy config JSON: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-	} else {
-		policyConfig = make(map[string]any)
-	}
-
-	if errs := s.validatePolicyRules(policyConfig); len(errs) > 0 {
-		http.Error(w, "Policy validation errors:\n"+strings.Join(errs, "\n"), http.StatusBadRequest)
-		return
-	}
-	// Script-command allowlist enforcement — applies on UPDATE so
-	// an existing benign policy cannot be flipped to bash/sh/perl.
-	if msg := validatePolicyCommandAllowlist(policyType, policyConfig); msg != "" {
-		http.Error(w, "Policy command not allowed: "+msg, http.StatusBadRequest)
-		return
-	}
-	// Numeric-ceiling lint with sticky ack. If the
-	// existing policy already has an ack whose fingerprint matches the
-	// current shape, the warning is silenced. Otherwise the operator
-	// must re-acknowledge.
-	warn := policy.DenyCeilingLint(policyType, policyConfig)
-	if warn != nil {
-		existing, _ := s.policies.Get(id)
-		var existingAck map[string]any
-		if existing != nil {
-			existingAck = existing.LintAck
-		}
-		if !policy.StickyAcknowledgmentMatches(existingAck, warn.Rule, warn.Fingerprint) {
-			if r.FormValue("acknowledge_lint") != "true" {
-				writeLintWarningResponse(w, warn)
-				return
-			}
-		}
-	}
-
-	if err := s.policies.Update(id, name, policyType, policyConfig); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.update", id,
-		map[string]any{"name": name, "policy_type": policyType}, "success")
-	// Sticky-ack maintenance. Three cases:
-	// - Lint fired AND no prior matching sticky ack → operator just
-	// supplied acknowledge_lint=true; persist a fresh ack row.
-	// - Lint fired AND prior matching sticky ack → keep the row.
-	// - Lint did NOT fire → composition was removed; clear the ack
-	// so a future re-introduction re-warns.
-	if warn != nil {
-		ack := map[string]any{
-			warn.Rule: map[string]any{
-				"acknowledged_at": time.Now().UTC().Format(time.RFC3339),
-				"by":              "operator",
-				"fingerprint":     warn.Fingerprint,
-			},
-		}
-		_ = s.policies.SetLintAck(id, ack)
-	} else {
-		// Clear any acks — composition removed.
-		_ = s.policies.SetLintAck(id, nil)
-	}
-
-	http.Redirect(w, r, "/policies", http.StatusSeeOther)
-}
-
-// validatePolicyCommandAllowlist enforces the script-command allowlist at
-// policy CREATE/UPDATE.
-// The allowlist applies in three places:
-// 1. Top-level script-type policy_config (policy_type == "script").
-// 2. Nested script actions inside a rules-type policy
-// (rules[i].action == "script" with rules[i].script.command).
-// 3. Post-execution response filters that exec a script command —
-// global response_filters[].script_command AND rule-scoped
-// rules[i].response_filters[].script_command. These run AFTER the
-// operation, so a disallowed script command silently failing the
-// filter would leak the un-redacted response to the agent. The
-// validator catches this at save time; the runtime fails closed
-// (see policy.ApplyResponseFilters / ResponseFilterError).
-// The package-level allowlist (policy.CurrentCommandAllowlist) is wired at
-// startup from settings.CommandAllowlist; when unset the bundled-Python
-// interpreter is the only permitted value. Returns a non-empty error string
-// when validation fails — caller surfaces it as HTTP 400.
-func validatePolicyCommandAllowlist(policyType string, config map[string]any) string {
-	allow := policy.CurrentCommandAllowlist()
-	if policyType == "script" {
-		cmd, _ := config["command"].(string)
-		if err := policy.ValidateCommand(cmd, allow); err != nil {
-			return fmt.Sprintf("script policy: %v", err)
-		}
-		// A script policy may still emit ResponseFilter values via its
-		// decision (the Python script controls that at runtime, not at
-		// save time). Nothing to validate statically here.
-		return ""
-	}
-	// Rules-type policy: walk rules[] for action=script entries AND for
-	// rule-scoped response_filters[].script_command.
-	rules, _ := config["rules"].([]any)
-	for i, ri := range rules {
-		rm, ok := ri.(map[string]any)
-		if !ok {
-			continue
-		}
-		action, _ := rm["action"].(string)
-		if action == "script" {
-			if sm, ok := rm["script"].(map[string]any); ok {
-				cmd, _ := sm["command"].(string)
-				if err := policy.ValidateCommand(cmd, allow); err != nil {
-					return fmt.Sprintf("rule %d (script action): %v", i+1, err)
-				}
-			}
-		}
-		if msg := validateResponseFilterCommands(rm["response_filters"], allow, fmt.Sprintf("rule %d", i+1)); msg != "" {
-			return msg
-		}
-	}
-	// Global (rules-config-level) response_filters[].
-	if msg := validateResponseFilterCommands(config["response_filters"], allow, "global"); msg != "" {
-		return msg
-	}
-	return ""
-}
-
-// validateResponseFilterCommands walks a response_filters[] list and runs
-// the script_command of each entry through policy.ValidateCommand. Returns
-// an empty string on success; otherwise an operator-facing message naming
-// the offending filter. `where` is a label ("global" or "rule N") used in
-// that message.
-func validateResponseFilterCommands(filtersAny any, allow []string, where string) string {
-	filters, ok := filtersAny.([]any)
-	if !ok {
-		return ""
-	}
-	for j, fi := range filters {
-		fm, ok := fi.(map[string]any)
-		if !ok {
-			continue
-		}
-		cmd, _ := fm["script_command"].(string)
-		path, _ := fm["script_path"].(string)
-		if cmd == "" && path == "" {
-			// Pure regex/exclude filter — no command to validate.
-			continue
-		}
-		if err := policy.ValidateCommand(cmd, allow); err != nil {
-			return fmt.Sprintf("%s response_filters[%d] (script_command): %v", where, j+1, err)
-		}
-	}
-	return ""
-}
-
-// validatePolicyRules gathers all operations from all live connections and
-// validates the policy config against them. Returns nil if valid.
-func (s *Server) validatePolicyRules(config map[string]any) []string {
-	// Gather all operations from all connections.
-	conns, err := s.connections.List()
-	if err != nil {
-		return nil // can't validate without connections, skip
-	}
-
-	var allOps []connector.OperationDef
-	seen := make(map[string]bool)
-	for _, conn := range conns {
-		c, err := s.connections.GetConnector(conn.ID)
-		if err != nil {
-			continue
-		}
-		for _, op := range c.Operations() {
-			if !seen[op.Name] {
-				allOps = append(allOps, op)
-				seen[op.Name] = true
-			}
-		}
-	}
-
-	if len(allOps) == 0 {
-		return nil // no connectors available, skip validation
-	}
-
-	return policy.ValidatePolicy(config, allOps)
-}
-
-func (s *Server) handlePolicyDelete(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := s.policies.Delete(id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "policy.delete", id, nil, "success")
-	http.Redirect(w, r, "/policies", http.StatusSeeOther)
 }
 
 // --- Approvals handlers ---
@@ -2039,47 +1433,6 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-
-	// Check if this is a policy proposal — if so, create the policy on approval.
-	// If Get fails, it's fine — we just treat it as a normal (non-proposal) approval.
-	item, getErr := s.approval.Get(id)
-	if getErr == nil && item.Operation == "propose_policy" {
-		// Validate the proposal payload BEFORE Approve(): a malformed
-		// proposal that we'd then fail to materialise as a policy would
-		// leave an "approved" row pointing at no policy, which is
-		// indistinguishable from an honest approve+fail and confuses
-		// the audit trail.
-		data := item.RequestData
-		name, _ := data["name"].(string)
-		name = strings.TrimSpace(name)
-		if name == "" {
-			http.Error(w, "policy proposal is missing the required \"name\" field", http.StatusBadRequest)
-			return
-		}
-		rules, _ := data["rules"].([]any)
-		defaultAction, _ := data["default_action"].(string)
-		if defaultAction == "" {
-			defaultAction = "deny"
-		}
-		config := map[string]any{
-			"rules":          rules,
-			"default_action": defaultAction,
-		}
-		if err := s.approval.Approve(id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		policyRow, err := s.policies.Create(name, "rules", config)
-		if err != nil {
-			http.Error(w, "failed to create policy: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		_ = s.audit.LogOperator(operatorDisplayName(r, s), "approval.approve_proposal", id,
-			map[string]any{"policy_id": policyRow.ID, "policy_name": name},
-			"success")
-		http.Redirect(w, r, "/approvals", http.StatusSeeOther)
-		return
-	}
 
 	if err := s.approval.Approve(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

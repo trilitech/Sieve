@@ -24,10 +24,8 @@ import (
 	gmailconn "github.com/trilitech/Sieve/internal/connectors/gmail"
 	httpproxyconn "github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
-	"github.com/trilitech/Sieve/internal/iammigrate"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/operator"
-	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
@@ -92,17 +90,12 @@ func main() {
 	// Create all services.
 	connSvc := connections.NewService(db, registry, keyring)
 	tokenSvc := tokens.NewService(db)
-	policiesSvc := policies.NewService(db)
+	iamSvc := iampolicies.NewService(db)
 	rolesSvc := roles.NewService(db)
 	approvalQ := approval.NewQueue(db)
 	auditLog := audit.NewLogger(db)
 	settingsSvc := settings.NewService(db)
 	scriptgenSvc := scriptgen.NewService(connSvc, settingsSvc)
-
-	if err := policiesSvc.SeedPresets(); err != nil {
-		fmt.Fprintf(os.Stderr, "seed presets: %v\n", err)
-		os.Exit(1)
-	}
 
 	// --- Seed minimal test data ---
 
@@ -118,14 +111,16 @@ func main() {
 	must(connSvc.Add("reauth-conn", "mock", "Needs Re-auth", map[string]any{}))
 	must(connSvc.SetStatusWithReason("reauth-conn", connections.StatusReauthRequired, "seeded for e2e reauth_required assertion"))
 
-	// Get the read-only preset for a pre-built role+token.
-	readOnly, err := policiesSvc.GetByName("read-only")
-	mustErr(err, "get read-only")
-
-	role, err := rolesSvc.Create("seed-role", []roles.Binding{
-		{ConnectionID: "test-conn", PolicyIDs: []string{readOnly.ID}},
-	})
+	// A pre-built IAM role + a read-only grant on test-conn (IAM is the engine).
+	role, err := rolesSvc.Create("seed-role", nil)
 	mustErr(err, "create role")
+	grantCedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: role.ID, Effect: "allow", ConnectorType: "mock",
+		OpScope: "read", ConnectionIDs: []string{"test-conn"},
+	}, nil)
+	mustErr(err, "build seed grant")
+	_, err = iamSvc.CreatePolicy("seed-read", "", grantCedar, true)
+	mustErr(err, "create seed grant")
 
 	tokResult, err := tokenSvc.Create(&tokens.CreateRequest{
 		Name:    "seed-token",
@@ -169,32 +164,18 @@ func main() {
 	webPort := webListener.Addr().(*net.TCPAddr).Port
 	webAddr := fmt.Sprintf("127.0.0.1:%d", webPort)
 	webSrv := web.NewServer(
-		tokenSvc, connSvc, policiesSvc, rolesSvc, registry,
+		tokenSvc, connSvc, rolesSvc, registry,
 		approvalQ, auditLog, "", settingsSvc, scriptgenSvc,
 		keyring, db, webAddr,
 	)
 	defer webSrv.Close()
 
-	// --- IAM engine wiring ---
-	// Opt-in via SIEVE_IAM=1: enables the IAM engine and one-shot-migrates the
-	// seeded legacy role/policy into Cedar, so the whole harness runs on IAM
-	// (exercised by e2e/iam.spec.ts).
-	iamSvc := iampolicies.NewService(db)
-	if os.Getenv("SIEVE_IAM") == "1" {
-		must(settingsSvc.Set("iam_enabled", "true"))
-		rep, merr := iammigrate.MigrateAll(policiesSvc, rolesSvc, connSvc, iamSvc)
-		mustErr(merr, "iam migrate")
-		fmt.Fprintf(os.Stderr, "IAM mode ON: migrated %d policies, %d filters, %d manual items\n",
-			rep.PoliciesCreated, rep.FiltersCreated, len(rep.Manual))
-	} else {
-		// Legacy-engine e2e runs (web-ui.spec.ts) pin the flag off explicitly.
-		must(settingsSvc.Set("iam_enabled", "false"))
-	}
+	// IAM is the sole authorization engine.
+	must(settingsSvc.Set("iam_enabled", "true"))
 	webSrv.SetIAM(iamSvc, registry, settingsSvc)
 
 	// --- Start API server ---
-	apiRouter := api.NewRouter(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
-	apiRouter.SetIAM(iamSvc, registry, settingsSvc)
+	apiRouter := api.NewRouter(tokenSvc, connSvc, iamSvc, registry, rolesSvc, approvalQ, auditLog)
 	apiBind := os.Getenv("SIEVE_API_ADDR")
 	if apiBind == "" {
 		apiBind = "127.0.0.1:0"
@@ -222,7 +203,6 @@ func main() {
 		"seed_token":          tokResult.PlaintextToken,
 		"seed_token_id":       tokResult.Token.ID,
 		"seed_role_id":        role.ID,
-		"read_only_policy_id": readOnly.ID,
 		"operator_credential": operatorCredential,
 	}
 	infoJSON, _ := json.Marshal(info)

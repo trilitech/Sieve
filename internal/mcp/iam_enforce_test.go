@@ -35,8 +35,7 @@ func TestMCP_ScriptGuardEnforced(t *testing.T) {
 	tok := env.CreateToken(t, role.ID)
 	env.Mock.SetResponse("send_email", map[string]any{"id": "1"})
 
-	iamSvc := iampolicies.NewService(env.DB)
-	if _, err := iamSvc.CreateFilter("block-secret", "", iam.KindScriptGuard, 0,
+	if _, err := env.IAM.CreateFilter("block-secret", "", iam.KindScriptGuard, 0,
 		map[string]any{"command": py, "inline": mcpGuardScript}); err != nil {
 		t.Fatal(err)
 	}
@@ -48,19 +47,18 @@ func TestMCP_ScriptGuardEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := iamSvc.CreatePolicy("send-guarded", "", grant, true); err != nil {
+	if _, err := env.IAM.CreatePolicy("send-guarded", "", grant, true); err != nil {
 		t.Fatal(err)
 	}
 	guard, err := iampolicies.BuildGuardrailCedar(spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := iamSvc.CreateGuardrail("send-guarded-g", "", guard, true); err != nil {
+	if _, err := env.IAM.CreateGuardrail("send-guarded-g", "", guard, true); err != nil {
 		t.Fatal(err)
 	}
 
-	srv := mcp.NewServer(env.Tokens, env.Connections, env.Policies, env.Roles, env.Approval, env.Audit)
-	srv.SetIAM(iamSvc, env.Registry, env.Settings)
+	srv := mcp.NewServer(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit)
 	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
 		t.Fatal(err)
 	}

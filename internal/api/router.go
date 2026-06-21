@@ -31,12 +31,10 @@ import (
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
 	"github.com/trilitech/Sieve/internal/iampolicies"
-	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/ratelimit"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/secrets"
-	"github.com/trilitech/Sieve/internal/settings"
 	"github.com/trilitech/Sieve/internal/tokens"
 )
 
@@ -45,51 +43,27 @@ type contextKey string
 
 const tokenContextKey contextKey = "token"
 
-// Router holds the dependencies for the REST API handlers.
+// Router holds the dependencies for the REST API handlers. IAM (internal/iam) is
+// the sole authorization engine: every operation's decision source is iam.Decide.
 type Router struct {
 	tokens      *tokens.Service
 	connections *connections.Service
-	policies    *policies.Service
+	iam         *iampolicies.Service
+	registry    *connector.Registry
 	roles       *roles.Service
 	approval    *approval.Queue
 	audit       *audit.Logger
 	// limiter throttles bearer-token validation failures per source IP.
-	// Defaults: 10
-	// tokens, 1 refill / 6s = 10 failures per 60s window.
+	// Defaults: 10 tokens, 1 refill / 6s = 10 failures per 60s window.
 	limiter *ratelimit.Limiter
-
-	// IAM (internal/iam) — opt-in via SetIAM. When iam != nil and the
-	// iam_enabled setting is "true", the decision source for every operation is
-	// iam.Decide instead of the legacy evaluator. All downstream control flow
-	// (execute, approval, response filters, audit) is unchanged.
-	iam      *iampolicies.Service
-	registry *connector.Registry
-	settings *settings.Service
-}
-
-// SetIAM wires the IAM engine into the request path (opt-in; keeps NewRouter's
-// signature stable). The flag is read per request from settings, so it can be
-// flipped live without restart.
-func (rt *Router) SetIAM(iamSvc *iampolicies.Service, registry *connector.Registry, settingsSvc *settings.Service) {
-	rt.iam = iamSvc
-	rt.registry = registry
-	rt.settings = settingsSvc
-}
-
-// iamEnabled reports whether the IAM engine should decide this request.
-func (rt *Router) iamEnabled() bool {
-	if rt.iam == nil || rt.settings == nil {
-		return false
-	}
-	v, _ := rt.settings.Get("iam_enabled")
-	return v == "true"
 }
 
 // NewRouter creates a new Router with the given service dependencies.
 func NewRouter(
 	tokensSvc *tokens.Service,
 	connsSvc *connections.Service,
-	policiesSvc *policies.Service,
+	iamSvc *iampolicies.Service,
+	registry *connector.Registry,
 	rolesSvc *roles.Service,
 	approvalQ *approval.Queue,
 	auditLog *audit.Logger,
@@ -97,7 +71,8 @@ func NewRouter(
 	return &Router{
 		tokens:      tokensSvc,
 		connections: connsSvc,
-		policies:    policiesSvc,
+		iam:         iamSvc,
+		registry:    registry,
 		roles:       rolesSvc,
 		approval:    approvalQ,
 		audit:       auditLog,
@@ -252,7 +227,7 @@ func (rt *Router) listConnections(w http.ResponseWriter, r *http.Request) {
 		Status      string `json:"status"`
 	}
 
-	connIDs := rt.tokenConnectionIDs(tok)
+	connIDs := rt.tokenCandidateConnections(tok)
 	result := make([]connInfo, 0, len(connIDs))
 	for _, connID := range connIDs {
 		conn, err := rt.connections.Get(connID)
@@ -526,47 +501,13 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 // caller's allow/deny/approval handling is identical either way. Errors
 // fail closed (the caller maps them to 403).
 func (rt *Router) decide(ctx context.Context, tok *tokens.Token, conn connector.Connector, connID, operation string, params map[string]any) (*policy.PolicyDecision, error) {
-	if rt.iamEnabled() {
-		connStatus := ""
-		if c, err := rt.connections.Get(connID); err == nil {
-			connStatus = c.Status
-		}
-		// RBAC: the token's whole role set composes (spec §5.1); the engine
-		// default-denies if no rule of any role permits this op on this connection.
-		return rt.iam.Decide(ctx, rt.registry, tok.ID, tok.RoleIDs, conn.Type(), connID, connStatus, operation, params)
+	connStatus := ""
+	if c, err := rt.connections.Get(connID); err == nil {
+		connStatus = c.Status
 	}
-	evaluator, err := rt.getEvaluatorForToken(tok, connID)
-	if err != nil {
-		return nil, err
-	}
-	return evaluator.Evaluate(ctx, &policy.PolicyRequest{
-		Operation:  operation,
-		Connection: connID,
-		Connector:  conn.Type(),
-		Params:     params,
-		Metadata:   params,
-		Phase:      "pre",
-	})
-}
-
-// getEvaluatorForToken builds a legacy composite evaluator from the union of the
-// policies bound to connID across ALL of the token's roles (multi-role). For a
-// single-role token this is exactly the one role's policies (back-compat).
-func (rt *Router) getEvaluatorForToken(tok *tokens.Token, connID string) (policy.Evaluator, error) {
-	seen := map[string]bool{}
-	var policyIDs []string
-	for _, role := range rt.rolesForToken(tok) {
-		for _, pid := range role.PoliciesForConnection(connID) {
-			if !seen[pid] {
-				seen[pid] = true
-				policyIDs = append(policyIDs, pid)
-			}
-		}
-	}
-	if len(policyIDs) == 0 {
-		return nil, fmt.Errorf("no policies for connection %q — access denied", connID)
-	}
-	return rt.policies.BuildEvaluator(policyIDs)
+	// RBAC: the token's whole role set composes (spec §5.1); the engine
+	// default-denies if no rule of any role permits this op on this connection.
+	return rt.iam.Decide(ctx, rt.registry, tok.ID, tok.RoleIDs, conn.Type(), connID, connStatus, operation, params)
 }
 
 // handleProxy is the transparent HTTP proxy handler. It extracts the connection
@@ -657,34 +598,15 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Policy evaluation — proxy requests go through the same pipeline. With IAM
-	// enabled, the action is the connector's `proxy_request` op and the HTTP
-	// method/path land in context (policies gate via context.http_method /
-	// context.param.path). With the legacy engine, the synthetic
-	// "proxy:METHOD:path" operation name is matched by rules.
+	// Policy evaluation — proxy requests go through the IAM pipeline: the action
+	// is the connector's `proxy_request` op and the HTTP method/path land in
+	// context (rules gate via context.http_method / context.param.path).
 	var decision *policy.PolicyDecision
-	if rt.iamEnabled() {
-		connStatus := ""
-		if c, e := rt.connections.Get(connID); e == nil {
-			connStatus = c.Status
-		}
-		decision, err = rt.iam.Decide(r.Context(), rt.registry, tok.ID, tok.RoleIDs, "http_proxy", connID, connStatus, "proxy_request", policyParams)
-	} else {
-		var evaluator policy.Evaluator
-		evaluator, err = rt.getEvaluatorForToken(tok, connID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "policy error")
-			return
-		}
-		decision, err = evaluator.Evaluate(r.Context(), &policy.PolicyRequest{
-			Operation:  operation,
-			Connection: connID,
-			Connector:  "http_proxy",
-			Phase:      "pre",
-			Params:     policyParams,
-			Metadata:   policyParams,
-		})
+	connStatus := ""
+	if c, e := rt.connections.Get(connID); e == nil {
+		connStatus = c.Status
 	}
+	decision, err = rt.iam.Decide(r.Context(), rt.registry, tok.ID, tok.RoleIDs, "http_proxy", connID, connStatus, "proxy_request", policyParams)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "policy evaluation failed")
 		return
@@ -801,34 +723,24 @@ func (rt *Router) tokenConnectionIDs(tok *tokens.Token) []string {
 // connection (spec §10) — so we do NOT pre-check here. In legacy mode the
 // connection must be bound by at least one of the token's roles.
 func (rt *Router) tokenConnectionAllowed(tok *tokens.Token, connID string) bool {
-	if rt.iamEnabled() {
-		return true
-	}
-	for _, c := range rt.tokenConnectionIDs(tok) {
-		if c == connID {
-			return true
-		}
-	}
-	return false
+	// IAM is the gate: the per-op Decide default-denies if no rule of any of the
+	// token's roles permits this connection. No separate binding pre-check.
+	return true
 }
 
 // tokenCandidateConnections lists connections to consider for Gmail alias
-// resolution. Legacy: the token's bound connections. IAM: all connections — the
-// per-op Decide is the real gate, so a pure-IAM role (no legacy binding) can
-// still resolve "me" to a Google connection (which Decide then allows or denies).
+// resolution. All connections are candidates — the per-op Decide is the real
+// gate, so "me" resolves to a Google connection which Decide then allows or denies.
 func (rt *Router) tokenCandidateConnections(tok *tokens.Token) []string {
-	if rt.iamEnabled() {
-		conns, err := rt.connections.List()
-		if err != nil {
-			return rt.tokenConnectionIDs(tok)
-		}
-		ids := make([]string, 0, len(conns))
-		for _, c := range conns {
-			ids = append(ids, c.ID)
-		}
-		return ids
+	conns, err := rt.connections.List()
+	if err != nil {
+		return nil
 	}
-	return rt.tokenConnectionIDs(tok)
+	ids := make([]string, 0, len(conns))
+	for _, c := range conns {
+		ids = append(ids, c.ID)
+	}
+	return ids
 }
 
 // tokenFromContext extracts the validated token from the request context.

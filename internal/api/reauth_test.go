@@ -26,7 +26,7 @@ func newReauthEnv(t *testing.T) *reauthEnv {
 	role := env.SetupConnectionAndRole(t, "test-conn", "read-only")
 	tok := env.CreateToken(t, role.ID)
 	srv := httptest.NewServer(api.NewRouter(
-		env.Tokens, env.Connections, env.Policies, env.Roles, env.Approval, env.Audit,
+		env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit,
 	).Handler())
 	t.Cleanup(srv.Close)
 	return &reauthEnv{Env: env, Token: tok, Server: srv}

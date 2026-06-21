@@ -13,32 +13,13 @@ import (
 	"github.com/trilitech/Sieve/internal/tokens"
 )
 
-// TestIAMWiring_FlagSwitchesEngine proves PR-D end to end at the HTTP layer: the
-// SAME request is decided by the IAM engine when iam_enabled="true" and by the
-// legacy evaluator otherwise. Setup: the role's binding lists the connection
-// (so connectionAllowed passes) but carries NO legacy policies (legacy =
-// deny-all); the IAM store has an allow policy. So:
-//   - iam ON  → 200 (IAM permit)
-//   - iam OFF → 403 (legacy: no policies for the connection)
-func TestIAMWiring_FlagSwitchesEngine(t *testing.T) {
+// TestIAMWiring_AllowsPermittedOp proves the IAM engine permits a granted op
+// through the live PEP. IAM is the sole authorization engine.
+func TestIAMWiring_AllowsPermittedOp(t *testing.T) {
 	env := setupIAMRouter(t)
-
 	allowURL := env.url + "/api/v1/connections/mock-conn/ops/list_emails"
-
-	// IAM enabled → permit.
-	if err := env.settingsSet("iam_enabled", "true"); err != nil {
-		t.Fatal(err)
-	}
 	if status, _ := apiPost(t, allowURL, env.tok, "{}"); status != 200 {
-		t.Fatalf("iam ON: expected 200 (IAM permit), got %d", status)
-	}
-
-	// IAM disabled → legacy path → 403 (the role has no legacy policies).
-	if err := env.settingsSet("iam_enabled", "false"); err != nil {
-		t.Fatal(err)
-	}
-	if status, _ := apiPost(t, allowURL, env.tok, "{}"); status != 403 {
-		t.Fatalf("iam OFF: expected 403 (legacy deny-all), got %d", status)
+		t.Fatalf("expected 200 (IAM permit), got %d", status)
 	}
 }
 
@@ -93,19 +74,17 @@ func setupIAMRouter(t *testing.T) iamRouterEnv {
 		t.Fatal(err)
 	}
 
-	iamSvc := iampolicies.NewService(env.DB)
-	if _, err := iamSvc.CreatePolicy("allow-mock", "",
+	if _, err := env.IAM.CreatePolicy("allow-mock", "",
 		fmt.Sprintf(`permit(principal in Sieve::Role::%q, action, resource in Sieve::Connection::"mock-conn");`, role.ID), true); err != nil {
 		t.Fatal(err)
 	}
 
-	router := api.NewRouter(env.Tokens, env.Connections, env.Policies, env.Roles, env.Approval, env.Audit)
-	router.SetIAM(iamSvc, env.Registry, env.Settings)
+	router := api.NewRouter(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit)
 	srv := httptest.NewServer(router.Handler())
 	t.Cleanup(srv.Close)
 
 	return iamRouterEnv{
-		url: srv.URL, tok: tokRes.PlaintextToken, roleID: role.ID, iam: iamSvc,
+		url: srv.URL, tok: tokRes.PlaintextToken, roleID: role.ID, iam: env.IAM,
 		settingsSet: env.Settings.Set, mock: env.Mock,
 	}
 }

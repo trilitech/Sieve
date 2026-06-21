@@ -59,11 +59,9 @@ import (
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/database"
-	"github.com/trilitech/Sieve/internal/iammigrate"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/mcp"
 	"github.com/trilitech/Sieve/internal/operator"
-	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/ratelimit"
 	"github.com/trilitech/Sieve/internal/roles"
@@ -459,17 +457,13 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	// --- Services ---
 	connSvc := connections.NewService(db, registry, keyring)
 	tokenSvc := tokens.NewService(db)
-	policiesSvc := policies.NewService(db)
+	iamSvc := iampolicies.NewService(db)
 	rolesSvc := roles.NewService(db)
 	approvalQ := approval.NewQueue(db)
 	auditLog := audit.NewLogger(db)
 	settingsSvc := settings.NewService(db)
 
 	scriptgenSvc := scriptgen.NewService(connSvc, settingsSvc)
-
-	if err := policiesSvc.SeedPresets(); err != nil {
-		return fmt.Errorf("seed policy presets: %w", err)
-	}
 
 	// Resolve Google OAuth credentials path (optional).
 	if googleCredsPath == "" {
@@ -484,10 +478,11 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 
 	// --- Web UI server (port 19816, human admin only) ---
 	webSrv := web.NewServer(
-		tokenSvc, connSvc, policiesSvc, rolesSvc, registry,
+		tokenSvc, connSvc, rolesSvc, registry,
 		approvalQ, auditLog, googleCredsPath, settingsSvc, scriptgenSvc,
 		keyring, db, webAddr,
 	)
+	webSrv.SetIAM(iamSvc, registry, settingsSvc)
 	defer webSrv.Close()
 
 	// Operator + session services drive the admin-authentication path.
@@ -537,7 +532,7 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	// else to the API router. Per CLAUDE.md the two-port split (web vs
 	// agent) is structural, not cosmetic — admin endpoints stay on 19816,
 	// agent endpoints stay on 19817.
-	apiRouter := api.NewRouter(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
+	apiRouter := api.NewRouter(tokenSvc, connSvc, iamSvc, registry, rolesSvc, approvalQ, auditLog)
 	// Per-IP token-bucket on the bearer-token validation path:
 	// failed auth depletes the bucket, success refunds, 429 + Retry-After
 	// on refusal. Settings-tuned; defaults: 10 failures per 60s window.
@@ -546,33 +541,13 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 		settingsSvc.RateLimitWindow()/time.Duration(max(settingsSvc.RateLimitFailures(), 1)),
 		0, // documented LRU bound
 	))
-	mcpSrv := mcp.NewServer(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
+	mcpSrv := mcp.NewServer(tokenSvc, connSvc, iamSvc, registry, rolesSvc, approvalQ, auditLog)
 
-	// IAM engine wiring (opt-in via the iam_enabled setting). When off, both
-	// surfaces use the legacy evaluator unchanged. The connections/tokens/roles
-	// stores are shared; credentials are never touched.
-	iamSvc := iampolicies.NewService(db)
-	apiRouter.SetIAM(iamSvc, registry, settingsSvc)
-	mcpSrv.SetIAM(iamSvc, registry, settingsSvc)
-
-	// Sieve runs on the IAM engine by default. An unset flag resolves to "true"
-	// (operators can pin "false" to stay on the legacy evaluator during the
-	// overlap window). On the first IAM start, the existing roles/policies are
-	// migrated to Cedar so behavior is preserved; the migration is fail-closed
-	// (un-migratable policies narrow access, never widen) and never touches
-	// connections/credentials.
+	// IAM (internal/iam) is the sole authorization engine. The iam_enabled
+	// setting is retained only for the admin "engine status" display; default it
+	// to "true" so a fresh DB reads consistently.
 	if v, _ := settingsSvc.Get("iam_enabled"); v == "" {
 		_ = settingsSvc.Set("iam_enabled", "true")
-	}
-	if v, _ := settingsSvc.Get("iam_enabled"); v == "true" {
-		if pols, perr := iamSvc.ListPolicies(); perr == nil && len(pols) == 0 {
-			if rep, merr := iammigrate.MigrateAll(policiesSvc, rolesSvc, connSvc, iamSvc); merr != nil {
-				log.Printf("sieve: IAM migration failed: %v", merr)
-			} else {
-				log.Printf("sieve: IAM migration: %d policies, %d filters created, %d manual-port items",
-					rep.PoliciesCreated, rep.FiltersCreated, len(rep.Manual))
-			}
-		}
 	}
 
 	agentMux := http.NewServeMux()

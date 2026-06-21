@@ -14,19 +14,19 @@ import (
 // Email represents a parsed Gmail message with full body and attachment data.
 // Returned by GetEmail and GetThread (the read-style operations).
 type Email struct {
-	ID            string    `json:"id"`
-	ThreadID      string    `json:"thread_id"`
-	From          string    `json:"from"`
-	To            []string  `json:"to"`
-	Cc            []string  `json:"cc,omitempty"`
-	Subject       string    `json:"subject"`
-	Body          string    `json:"body"`
-	BodyHTML      string    `json:"body_html,omitempty"`
-	Date          time.Time `json:"date"`
-	Labels        []string  `json:"labels"`
-	Snippet       string    `json:"snippet"`
-	HasAttachment bool              `json:"has_attachment"`
-	Attachments   []AttachmentMeta  `json:"attachments,omitempty"`
+	ID            string           `json:"id"`
+	ThreadID      string           `json:"thread_id"`
+	From          string           `json:"from"`
+	To            []string         `json:"to"`
+	Cc            []string         `json:"cc,omitempty"`
+	Subject       string           `json:"subject"`
+	Body          string           `json:"body"`
+	BodyHTML      string           `json:"body_html,omitempty"`
+	Date          time.Time        `json:"date"`
+	Labels        []string         `json:"labels"`
+	Snippet       string           `json:"snippet"`
+	HasAttachment bool             `json:"has_attachment"`
+	Attachments   []AttachmentMeta `json:"attachments,omitempty"`
 }
 
 // EmailStub is the lightweight shape returned by ListEmails. It deliberately

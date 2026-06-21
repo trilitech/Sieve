@@ -92,7 +92,6 @@ func TestIAMEnforce_ConditionOverGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	iamSvc := iampolicies.NewService(env.DB)
 	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
 		RoleID: role.ID, Effect: "allow", ConnectorType: "mock", OpScope: "write",
 		ConnectionIDs: []string{"mc"},
@@ -101,14 +100,13 @@ func TestIAMEnforce_ConditionOverGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := iamSvc.CreatePolicy("amount-cap", "", cedar, true); err != nil {
+	if _, err := env.IAM.CreatePolicy("amount-cap", "", cedar, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
 		t.Fatal(err)
 	}
-	router := api.NewRouter(env.Tokens, env.Connections, env.Policies, env.Roles, env.Approval, env.Audit)
-	router.SetIAM(iamSvc, env.Registry, env.Settings)
+	router := api.NewRouter(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit)
 	srv := httptest.NewServer(router.Handler())
 	t.Cleanup(srv.Close)
 

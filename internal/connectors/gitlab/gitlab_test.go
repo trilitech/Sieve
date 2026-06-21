@@ -158,8 +158,8 @@ func TestDoRequest_RejectsPathTraversal(t *testing.T) {
 		"/projects/../admin",
 		"/projects/%2e%2e/admin",
 		"/projects\\admin",
-		"projects/foo",     // missing leading slash
-		"/projects//foo",   // empty segment
+		"projects/foo",   // missing leading slash
+		"/projects//foo", // empty segment
 	} {
 		t.Run(bad, func(t *testing.T) {
 			_, err := conn.doRequest(context.Background(), "GET", bad, nil, nil)
