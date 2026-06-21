@@ -370,7 +370,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		resultJSON, _ := json.Marshal(result)
 		var reason string
 		if len(decision.Filters) > 0 {
-			filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
+			filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters, rt.registry.ContentFieldKeys(conn.Type()))
 			if ferr != nil {
 				rt.logAudit(tok, connID, operation, params, "response_filter_failed", ferr.Error(), time.Since(start).Milliseconds())
 				writeError(w, http.StatusInternalServerError, "response filter failed")
@@ -476,7 +476,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		resultJSON, _ := json.Marshal(result)
 		var approvedReason string
 		if len(decision.Filters) > 0 {
-			filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
+			filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters, rt.registry.ContentFieldKeys(conn.Type()))
 			if ferr != nil {
 				rt.logAudit(tok, connID, operation, params, "response_filter_failed", ferr.Error(), time.Since(start).Milliseconds())
 				writeError(w, http.StatusInternalServerError, "response filter failed")
@@ -1046,7 +1046,7 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 	resultJSON, _ := json.Marshal(result)
 	var reason string
 	if len(decision.Filters) > 0 {
-		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
+		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters, rt.registry.ContentFieldKeys(conn.Type()))
 		if ferr != nil {
 			rt.logAudit(tok, connID, operation, params, "response_filter_failed", ferr.Error(), time.Since(start).Milliseconds())
 			writeError(w, http.StatusInternalServerError, "response filter failed")

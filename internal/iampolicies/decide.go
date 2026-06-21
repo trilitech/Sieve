@@ -2,6 +2,7 @@ package iampolicies
 
 import (
 	"context"
+	"strings"
 
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/iam"
@@ -156,6 +157,12 @@ func runScriptGuard(ctx context.Context, g iam.Filter, req *policy.PolicyRequest
 // scripts directories (thin wrapper so the web layer doesn't import policy).
 func ValidateScriptPath(path string) error { return policy.ValidateScriptPath(path) }
 
+// ValidateScriptCommand checks a filter's interpreter against the command
+// allowlist (thin wrapper so the web layer doesn't import policy).
+func ValidateScriptCommand(command string) error {
+	return policy.ValidateCommand(command, policy.CurrentCommandAllowlist())
+}
+
 // ScriptCommand returns the interpreter the admin UI should store for a new
 // script filter: the operator allowlist's first entry, else the bundled default.
 func ScriptCommand() string {
@@ -165,6 +172,18 @@ func ScriptCommand() string {
 	return policy.DefaultCommand
 }
 
+// ScriptCommandFor returns the interpreter path for a guard/filter language:
+// JavaScript → Node, anything else → Python. Both must pass the command
+// allowlist at save + execution.
+func ScriptCommandFor(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "javascript", "js", "node":
+		return policy.DefaultNodeCommand
+	default:
+		return ScriptCommand()
+	}
+}
+
 // obligationsToFilters bridges IAM post-obligations to the existing
 // policy.ResponseFilter applier (which already supports redact/exclude/script).
 func obligationsToFilters(post []iam.Filter) []policy.ResponseFilter {
@@ -172,9 +191,9 @@ func obligationsToFilters(post []iam.Filter) []policy.ResponseFilter {
 	for _, f := range post {
 		switch f.Kind {
 		case iam.KindRedact:
-			out = append(out, policy.ResponseFilter{Label: f.Name, RedactPatterns: strSlice(f.Config["patterns"]), Match: str(f.Config["match"])})
+			out = append(out, policy.ResponseFilter{Label: f.Name, RedactPatterns: strSlice(f.Config["patterns"]), Match: str(f.Config["match"]), Fields: strSlice(f.Config["fields"])})
 		case iam.KindExcludeItems:
-			out = append(out, policy.ResponseFilter{Label: f.Name, ExcludePatterns: strSlice(f.Config["patterns"]), Match: str(f.Config["match"])})
+			out = append(out, policy.ResponseFilter{Label: f.Name, ExcludePatterns: strSlice(f.Config["patterns"]), Match: str(f.Config["match"]), Fields: strSlice(f.Config["fields"])})
 		case iam.KindScriptFilter:
 			out = append(out, policy.ResponseFilter{
 				Label:         f.Name,

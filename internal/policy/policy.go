@@ -49,9 +49,97 @@ type ResponseFilter struct {
 	// "regex". It applies to both ExcludePatterns and RedactPatterns, so exclude
 	// and redact are equally powerful (no more "exclude is literal, redact is
 	// regex" asymmetry).
-	Match         string `json:"match,omitempty"`
-	ScriptPath    string `json:"script_path,omitempty"`    // post-filter script
-	ScriptCommand string `json:"script_command,omitempty"` // e.g. "python3"
+	Match string `json:"match,omitempty"`
+	// Fields optionally narrows redact/exclude to a subset of the connector's
+	// content fields (by JSON key name). Empty ⇒ all of the connector's content
+	// fields (passed to ApplyResponseFilters). redact/exclude apply ONLY within
+	// these fields' string values, never the whole serialized blob — so base64
+	// attachments and metadata are untouched.
+	Fields        []string `json:"fields,omitempty"`
+	ScriptPath    string   `json:"script_path,omitempty"`    // post-filter script
+	ScriptCommand string   `json:"script_command,omitempty"` // e.g. "python3" or "node"
+}
+
+// fieldSet builds the effective set of content-field keys for a filter: the
+// filter's own subset if it set one, else the connector's content fields. An
+// empty result means "no field restriction" → whole-response matching (the
+// back-compat / auth-scrub path).
+func (f ResponseFilter) fieldSet(contentFields []string) map[string]bool {
+	keys := f.Fields
+	if len(keys) == 0 {
+		keys = contentFields
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		set[k] = true
+	}
+	return set
+}
+
+// redactInFields walks decoded JSON and replaces regex matches with [REDACTED]
+// in the string value of any map key in `fields`, recursively. Returns whether
+// anything changed. Non-content fields (ids, base64 attachment data, metadata)
+// are never touched. Returns the count of fields modified.
+func redactInFields(v any, fields map[string]bool, res []*regexp.Regexp) bool {
+	changed := false
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if s, ok := val.(string); ok && fields[k] {
+				ns := s
+				for _, re := range res {
+					ns = re.ReplaceAllString(ns, "[REDACTED]")
+				}
+				if ns != s {
+					x[k] = ns
+					changed = true
+				}
+				continue
+			}
+			if redactInFields(val, fields, res) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if redactInFields(e, fields, res) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// matchInFields reports whether any regex matches the string value of a map key
+// in `fields`, anywhere in v. Used by exclude to drop a list item based on its
+// CONTENT fields only (not encoded/metadata fields).
+func matchInFields(v any, fields map[string]bool, res []*regexp.Regexp) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if s, ok := val.(string); ok && fields[k] {
+				for _, re := range res {
+					if re.MatchString(s) {
+						return true
+					}
+				}
+				continue
+			}
+			if matchInFields(val, fields, res) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if matchInFields(e, fields, res) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // compileFilterPattern compiles one pattern under a Match mode into a regexp:
@@ -63,6 +151,34 @@ func compileFilterPattern(pattern, match string) (*regexp.Regexp, error) {
 		return regexp.Compile(pattern)
 	}
 	return regexp.Compile("(?i)" + regexp.QuoteMeta(pattern))
+}
+
+// compileFilters compiles a pattern list under a match mode, skipping any that
+// fail to compile (best-effort, as before).
+func compileFilters(patterns []string, match string) []*regexp.Regexp {
+	res := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		if re, err := compileFilterPattern(p, match); err == nil {
+			res = append(res, re)
+		}
+	}
+	return res
+}
+
+func anyMatch(res []*regexp.Regexp, s string) bool {
+	for _, re := range res {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
+func redactLabel(f ResponseFilter) string {
+	if f.Label != "" {
+		return f.Label
+	}
+	return "redacted"
 }
 
 // Redaction describes a region of a field that should be masked.
@@ -127,7 +243,7 @@ func (e *ResponseFilterError) Unwrap() error { return e.Err }
 // fail closed (e.g. surface a deny decision) rather than leak un-redacted
 // content. Non-script filter errors (a regex that fails to compile is
 // already best-effort skipped) do NOT raise this error.
-func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte, string, error) {
+func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter, contentFields []string) ([]byte, string, error) {
 	if len(filters) == 0 {
 		return responseJSON, "", nil
 	}
@@ -136,28 +252,20 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte
 	var actions []string
 
 	for _, f := range filters {
-		// Exclude: drop list items (or the whole response) matching ANY pattern,
-		// interpreted per f.Match (contains|regex) — same matching model as redact.
+		// Effective content-field set for this filter (nil ⇒ whole-response —
+		// the back-compat / auth-scrub path).
+		fields := f.fieldSet(contentFields)
+
+		// Exclude: drop list items matching ANY pattern. Field-aware when the
+		// connector declares content fields (match only those fields, so a hit
+		// inside base64/metadata never drops the item); whole-item otherwise.
 		if len(f.ExcludePatterns) > 0 {
-			res := make([]*regexp.Regexp, 0, len(f.ExcludePatterns))
-			for _, p := range f.ExcludePatterns {
-				if re, err := compileFilterPattern(p, f.Match); err == nil {
-					res = append(res, re)
-				}
-			}
-			matchAny := func(s string) bool {
-				for _, re := range res {
-					if re.MatchString(s) {
-						return true
-					}
-				}
-				return false
-			}
+			res := compileFilters(f.ExcludePatterns, f.Match)
 
 			var data map[string]any
 			if err := json.Unmarshal([]byte(result), &data); err != nil {
-				// Not a JSON object — match against the whole response.
-				if matchAny(result) {
+				// Not a JSON object — only whole-response mode can match it.
+				if fields == nil && anyMatch(res, result) {
 					result = ""
 					actions = append(actions, "response filtered: matched exclude pattern")
 				}
@@ -174,8 +282,14 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte
 				var filtered []any
 				removed := 0
 				for _, item := range items {
-					itemJSON, _ := json.Marshal(item)
-					if matchAny(string(itemJSON)) {
+					hit := false
+					if fields == nil {
+						itemJSON, _ := json.Marshal(item)
+						hit = anyMatch(res, string(itemJSON))
+					} else {
+						hit = matchInFields(item, fields, res)
+					}
+					if hit {
 						removed++
 					} else {
 						filtered = append(filtered, item)
@@ -198,19 +312,28 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte
 			}
 		}
 
-		// Redact: mask matches of ANY pattern with [REDACTED], per f.Match.
-		for _, pattern := range f.RedactPatterns {
-			re, err := compileFilterPattern(pattern, f.Match)
-			if err != nil {
-				continue
-			}
-			newResult := re.ReplaceAllString(result, "[REDACTED]")
-			if newResult != result {
-				result = newResult
-				if f.Label != "" {
-					actions = append(actions, f.Label)
-				} else {
-					actions = append(actions, "redacted")
+		// Redact: mask matches with [REDACTED]. Field-aware (only content-field
+		// string values) when content fields are declared; whole-response
+		// otherwise (back-compat / the connector-agnostic auth-value scrub).
+		if len(f.RedactPatterns) > 0 {
+			res := compileFilters(f.RedactPatterns, f.Match)
+			if fields == nil {
+				for _, re := range res {
+					nr := re.ReplaceAllString(result, "[REDACTED]")
+					if nr != result {
+						result = nr
+						actions = append(actions, redactLabel(f))
+					}
+				}
+			} else {
+				var data any
+				if err := json.Unmarshal([]byte(result), &data); err == nil {
+					if redactInFields(data, fields, res) {
+						if rewritten, mErr := json.Marshal(data); mErr == nil {
+							result = string(rewritten)
+							actions = append(actions, redactLabel(f))
+						}
+					}
 				}
 			}
 		}

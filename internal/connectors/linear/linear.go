@@ -91,6 +91,12 @@ func Meta() connector.ConnectorMeta {
 		Description: "Read and write Linear issues, comments, and teams via personal API key.",
 		Category:    "Project Management",
 		Operations:  operations,
+		// Issue/comment text is the filterable content; ids/states are metadata.
+		ContentFields: []connector.ContentField{
+			{Key: "title", Label: "Title"},
+			{Key: "description", Label: "Description"},
+			{Key: "body", Label: "Comment body"},
+		},
 		SetupFields: []connector.Field{
 			{
 				Name:        "api_key",

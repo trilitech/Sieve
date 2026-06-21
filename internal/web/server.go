@@ -469,7 +469,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /iam/guardrails", s.handleIAMGuardrailCreate)
 	mux.HandleFunc("POST /iam/guardrails/{id}/delete", s.handleIAMGuardrailDelete)
 	mux.HandleFunc("POST /iam/guardrails/{id}/enabled", s.handleIAMGuardrailSetEnabled)
-	mux.HandleFunc("POST /iam/toggle", s.handleIAMToggle)
 	mux.HandleFunc("POST /iam/explore", s.handleIAMExplore)
 
 	// Script generation API

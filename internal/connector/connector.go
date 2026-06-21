@@ -114,8 +114,17 @@ type RuleCondition struct {
 	Key     string // form key
 	Label   string
 	Help    string
-	Kind    string // "number" | "string" | "domain_allowlist"
+	Kind    string // "number" | "string" | "domain_allowlist" | "one_of"
 	CtxPath string // Cedar path, e.g. "context.param.amount", "context.recipient_domains"
+}
+
+// ContentField names a response text field that is safe/intended for content
+// filtering (redact/exclude). Key is the JSON field name as it appears in the
+// connector's response (e.g. "body", "subject"); Label is the operator-facing
+// name shown as a checkbox in the filter UI.
+type ContentField struct {
+	Key   string
+	Label string
 }
 
 // ContextEnricher optionally adds derived context attributes to a request
@@ -160,6 +169,15 @@ type ConnectorMeta struct {
 	// builder offers only operation + connection scoping for this connector.
 	RuleScopes     []RuleScope     `json:"-"`
 	RuleConditions []RuleCondition `json:"-"`
+
+	// ContentFields declares the response's text fields safe/intended for content
+	// filtering (redact/exclude) — e.g. an email's subject + body, NOT its id,
+	// labels, or base64 attachment data. Response filters apply ONLY within these
+	// fields' string values (matched by key name, anywhere in the response), so a
+	// 16-digit run inside a base64 MIME part is never redacted and metadata is
+	// never dropped. Empty ⇒ filters fall back to whole-response matching (e.g.
+	// the http_proxy auth-value scrub, which must catch the secret anywhere).
+	ContentFields []ContentField `json:"-"`
 
 	// EnrichContext optionally derives extra request-context attributes (e.g.
 	// recipient_domains for a send) that connector RuleConditions reference via
@@ -249,6 +267,24 @@ func (r *Registry) HasType(connectorType string) bool {
 func (r *Registry) Meta(connectorType string) (ConnectorMeta, bool) {
 	m, ok := r.metas[connectorType]
 	return m, ok
+}
+
+// ContentFieldKeys returns the response content-field JSON keys for a connector
+// type (for field-aware response filtering), or nil if it declares none — in
+// which case filters fall back to whole-response matching.
+func (r *Registry) ContentFieldKeys(connectorType string) []string {
+	if r == nil {
+		return nil
+	}
+	m, ok := r.metas[connectorType]
+	if !ok || len(m.ContentFields) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m.ContentFields))
+	for _, c := range m.ContentFields {
+		keys = append(keys, c.Key)
+	}
+	return keys
 }
 
 // Catalog returns all connector metadata grouped by category.

@@ -496,7 +496,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	// NOT reach the agent.
 	var reason string
 	if len(decision.Filters) > 0 {
-		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
+		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters, s.registry.ContentFieldKeys(conn.ConnectorType))
 		if ferr != nil {
 			// Log the detailed failure server-side; keep the
 			// agent-facing message generic so internal details (script

@@ -107,6 +107,10 @@ func Meta() connector.ConnectorMeta {
 		Description: "Read channels, search messages, post replies via OAuth or pasted bot token.",
 		Category:    "Communication",
 		Operations:  operations,
+		// Message text is the filterable content; ids/timestamps/users are metadata.
+		ContentFields: []connector.ContentField{
+			{Key: "text", Label: "Message text"},
+		},
 		SetupFields: []connector.Field{
 			{
 				Name:        "bot_token",

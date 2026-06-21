@@ -102,6 +102,14 @@ type iamFilterView struct {
 	Kind string
 }
 
+// iamContentFieldView is one selectable content field in the redact/exclude
+// filter form. The union across connectors (a filter lives in the shared
+// library); leaving all unchecked applies to every connector's content fields.
+type iamContentFieldView struct {
+	Key   string
+	Label string
+}
+
 // iamBuilderData is the set of inputs the visual rule builder needs (shared by
 // the "Add a rule" form on iam.html and the edit form on iam_edit.html). It is
 // filled by populateBuilderData.
@@ -111,6 +119,9 @@ type iamBuilderData struct {
 	// Filters is the filter-library list, rendered server-side both in the
 	// library card and as the builder's response-filter/guard checkboxes.
 	Filters []iamFilterView
+	// ContentFields is the de-duped union of connectors' declared content fields,
+	// shown as checkboxes in the redact/exclude filter form (narrow the scope).
+	ContentFields []iamContentFieldView
 	// Catalog maps connector type → {operations, connections} for the
 	// client-side form (populate op + connection checkboxes when the connector
 	// dropdown changes). Rendered via the `json` template func into a
@@ -266,6 +277,7 @@ func (s *Server) populateBuilderData(data *iamBuilderData) {
 	}
 
 	catalog := map[string]map[string]any{}
+	contentUnion := map[string]string{} // key → label, de-duped across connectors
 	reg := s.iamRegistry
 	if reg == nil {
 		reg = s.registry
@@ -295,6 +307,11 @@ func (s *Server) populateBuilderData(data *iamBuilderData) {
 			for _, c := range m.RuleConditions {
 				conds = append(conds, iamCondView{Key: c.Key, Label: c.Label, Help: c.Help, Kind: c.Kind, CtxPath: c.CtxPath})
 			}
+			for _, cf := range m.ContentFields {
+				if _, ok := contentUnion[cf.Key]; !ok {
+					contentUnion[cf.Key] = cf.Label
+				}
+			}
 
 			data.Connectors = append(data.Connectors, iamConnectorOption{Type: m.Type, Name: m.Name})
 			catalog[m.Type] = map[string]any{
@@ -303,6 +320,11 @@ func (s *Server) populateBuilderData(data *iamBuilderData) {
 		}
 	}
 	sort.Slice(data.Connectors, func(i, j int) bool { return data.Connectors[i].Name < data.Connectors[j].Name })
+
+	for k, label := range contentUnion {
+		data.ContentFields = append(data.ContentFields, iamContentFieldView{Key: k, Label: label})
+	}
+	sort.Slice(data.ContentFields, func(i, j int) bool { return data.ContentFields[i].Label < data.ContentFields[j].Label })
 
 	// Filter library: rendered server-side in the library card and the
 	// builder's response-filter checkboxes, and mirrored into the catalog so
@@ -395,6 +417,12 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 		} else {
 			config["match"] = "contains"
 		}
+		// Optional content-field subset (checkboxes). Empty ⇒ apply to ALL of the
+		// connector's content fields at request time (the safe default — base64/
+		// metadata are never touched regardless).
+		if fields := nonEmptyStrings(r.Form["fields"]); len(fields) > 0 {
+			config["fields"] = fields
+		}
 	case string(iam.KindScriptGuard):
 		kind = iam.KindScriptGuard
 		path := strings.TrimSpace(r.FormValue("script_path"))
@@ -402,7 +430,14 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "script path rejected: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		config["command"] = iampolicies.ScriptCommand()
+		// Language selector → interpreter (Python or JavaScript/Node). Validate it
+		// against the command allowlist before storing.
+		command := iampolicies.ScriptCommandFor(r.FormValue("language"))
+		if err := iampolicies.ValidateScriptCommand(command); err != nil {
+			http.Error(w, "script runtime rejected: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		config["command"] = command
 		config["path"] = path
 	default:
 		http.Error(w, "unknown filter kind", http.StatusBadRequest)
@@ -1049,29 +1084,6 @@ func (s *Server) uniqueGuardrailName(base string) string {
 			return cand
 		}
 	}
-}
-
-// handleIAMToggle sets the iam_enabled flag (POST /iam/toggle, field enabled).
-func (s *Server) handleIAMToggle(w http.ResponseWriter, r *http.Request) {
-	if s.iamSettings == nil {
-		http.Redirect(w, r, "/iam", http.StatusSeeOther)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	enabled := "false"
-	if r.FormValue("enabled") == "true" {
-		enabled = "true"
-	}
-	if err := s.iamSettings.Set("iam_enabled", enabled); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.toggle", "iam_enabled",
-		map[string]any{"enabled": enabled}, "success")
-	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 
 // handleIAMExplore runs the decision explorer (POST /iam/explore).

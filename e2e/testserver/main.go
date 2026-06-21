@@ -71,11 +71,42 @@ func main() {
 	}
 	secrets.DefaultArgon2Params = saved
 
-	// Allowlist an available Python so authored script_guard filters actually
-	// execute in the demo / e2e (prod ships /opt/sieve-py and uses the default).
+	// Allowlist an available Python (and Node, if present) so authored
+	// script_guard/script_filter policies actually execute in the demo / e2e
+	// (prod ships /opt/sieve-py and uses the bundled default).
+	var allowCmds []string
 	if py, lerr := exec.LookPath("python3"); lerr == nil {
-		policy.SetCommandAllowlist([]string{py})
+		allowCmds = append(allowCmds, py)
 	}
+	if nd, lerr := exec.LookPath("node"); lerr == nil {
+		allowCmds = append(allowCmds, nd)
+	}
+	if len(allowCmds) > 0 {
+		policy.SetCommandAllowlist(allowCmds)
+	}
+
+	// Provide a writable scripts directory with sample guards so an operator
+	// poking the demo can create a script_guard/filter without prod's
+	// /opt/sieve-py path allowlist. (Demo only — prod uses the bundled dir.)
+	scriptDir := filepath.Join(dir, "scripts")
+	must(os.MkdirAll(scriptDir, 0o755))
+	const sampleGuardPy = `import sys, json
+# Sample script_guard (Python): deny a send whose body contains "secret".
+req = json.load(sys.stdin)
+body = ((req.get("params") or {}).get("body")) or ""
+print(json.dumps({"action": "deny", "reason": "blocked: contains 'secret'"}
+                 if "secret" in body.lower() else {"action": "allow"}))
+`
+	const sampleGuardJS = `// Sample script_guard (JavaScript): deny a send whose body contains "secret".
+const req = JSON.parse(require('fs').readFileSync(0, 'utf8') || '{}');
+const body = ((req.params || {}).body || '').toLowerCase();
+console.log(JSON.stringify(body.includes('secret')
+  ? {action: 'deny', reason: "blocked: contains 'secret'"}
+  : {action: 'allow'}));
+`
+	must(os.WriteFile(filepath.Join(scriptDir, "block_secret.py"), []byte(sampleGuardPy), 0o600))
+	must(os.WriteFile(filepath.Join(scriptDir, "block_secret.js"), []byte(sampleGuardJS), 0o600))
+	policy.SetScriptDirs([]string{scriptDir})
 
 	// Set up mock connector registry.
 	registry := connector.NewRegistry()

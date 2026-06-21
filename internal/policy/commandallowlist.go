@@ -3,6 +3,7 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -91,7 +92,7 @@ func ValidateCommand(cmd string, allowlist []string) error {
 	}
 	effective := allowlist
 	if len(effective) == 0 {
-		effective = []string{DefaultCommand}
+		effective = defaultCommands()
 	}
 	// First pass: literal match (cheap; also handles paths that don't
 	// resolve, e.g., the bundled Python interpreter in tests that don't
@@ -126,9 +127,27 @@ func ValidateCommand(cmd string, allowlist []string) error {
 }
 
 // DefaultCommand is the bundled Python interpreter Sieve ships in its
-// Docker image. Operators who haven't customised the allowlist get this
-// as the sole permitted command.
+// Docker image. Guards/filters can be written in Python or JavaScript;
+// DefaultCommand + DefaultNodeCommand are the two runtimes permitted when the
+// operator hasn't customised the allowlist.
 const DefaultCommand = "/opt/sieve-py/bin/python3"
+
+// DefaultNodeCommand is the Node.js runtime for JavaScript guards/filters,
+// resolved from PATH at startup (falls back to /usr/bin/node if not found).
+var DefaultNodeCommand = func() string {
+	if p, err := exec.LookPath("node"); err == nil {
+		return p
+	}
+	return "/usr/bin/node"
+}()
+
+// defaultCommands is the effective command allowlist when the operator hasn't
+// configured one: the bundled Python plus Node — the two supported script
+// languages (same trust level; both gated by this allowlist + the script-path
+// allowlist).
+func defaultCommands() []string {
+	return []string{DefaultCommand, DefaultNodeCommand}
+}
 
 // --- script path allowlist ---
 // script_guard/script_filter reference a script FILE by path (operators point

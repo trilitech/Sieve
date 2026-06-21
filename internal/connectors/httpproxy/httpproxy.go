@@ -478,7 +478,10 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 		// cannot return ResponseFilterError here. A construction error from
 		// a future script-based scrub would propagate as a fatal Execute
 		// error, since returning the raw response would leak the auth value.
-		scrubbed, _, err := policy.ApplyResponseFilters(respBody, []policy.ResponseFilter{scrubFilter})
+		// nil content fields ⇒ whole-response scrub: the auth value must be
+		// redacted wherever it appears (incl. error bodies), not just in named
+		// fields.
+		scrubbed, _, err := policy.ApplyResponseFilters(respBody, []policy.ResponseFilter{scrubFilter}, nil)
 		if err != nil {
 			return nil, fmt.Errorf("http_proxy: scrub filter failed: %w", err)
 		}
@@ -690,7 +693,9 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 		return "", false, fmt.Errorf("response exceeds %d byte filter limit", maxFilteredBodySize)
 	}
 
-	respBody, filterSummary, filterErr := policy.ApplyResponseFilters(respBody, filters)
+	// http_proxy responses are arbitrary bodies (no declared content fields), so
+	// filters apply whole-response.
+	respBody, filterSummary, filterErr := policy.ApplyResponseFilters(respBody, filters, nil)
 	if filterErr != nil {
 		// A response filter failed to construct or run — surface as a 502
 		// rather than return the un-redacted body. The caller's audit log

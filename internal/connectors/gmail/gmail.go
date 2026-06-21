@@ -64,6 +64,18 @@ var Meta = connector.ConnectorMeta{
 			Help:    "Sends allowed only if every recipient domain is in this list",
 		},
 	},
+	// ContentFields are the response text fields safe for content filtering.
+	// Redact/exclude apply ONLY within these — NOT id/thread_id/labels/date or
+	// attachment data (a 16-digit run in a base64 MIME part is never redacted).
+	ContentFields: []connector.ContentField{
+		{Key: "subject", Label: "Subject"},
+		{Key: "body", Label: "Body"},
+		{Key: "body_html", Label: "Body (HTML)"},
+		{Key: "snippet", Label: "Snippet"},
+		{Key: "from", Label: "From"},
+		{Key: "to", Label: "To"},
+		{Key: "cc", Label: "Cc"},
+	},
 	// Bridge the pure EnrichContext method to the Meta func field the PDP calls
 	// (no configured instance / keyring needed — the method ignores its
 	// receiver). Populates context.recipient_domains for the domain_allowlist

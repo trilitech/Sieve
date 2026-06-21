@@ -64,6 +64,12 @@ func Meta() connector.ConnectorMeta {
 				HelpText: "GitHub user logins (one per line; case-insensitive) whose forks Sieve accepts as cross-fork PR heads via github_create_pr. Empty = deny all cross-fork heads. Wildcards are NOT honoured. The escape-hatch github_request op is unaffected."},
 		},
 		Operations: operations,
+		// Issue/PR/commit text is the filterable content; ids/shas/refs are metadata.
+		ContentFields: []connector.ContentField{
+			{Key: "title", Label: "Title"},
+			{Key: "body", Label: "Body"},
+			{Key: "message", Label: "Commit message"},
+		},
 		ResourceTypes: []connector.ResourceType{
 			{Name: "Sieve::Github::Owner"},
 			{Name: "Sieve::Github::Repo", Parent: "Sieve::Github::Owner"},
