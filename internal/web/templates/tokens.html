@@ -15,7 +15,7 @@
   <main class="ml-64 p-8">
     <div class="max-w-6xl">
       <h1 class="text-2xl font-bold text-white mb-2">API Tokens</h1>
-      <p class="text-sm text-slate-400 mb-6">Tokens authenticate agents. Each token is bound to a role that defines what it can access.</p>
+      <p class="text-sm text-slate-400 mb-6">Tokens authenticate agents. Each token is bound to <strong>exactly one</strong> role, which defines everything it can access — to combine permissions, put all the needed rules on one role.</p>
 
       <!-- Plaintext Token Alert -->
       {{if .PlaintextToken}}

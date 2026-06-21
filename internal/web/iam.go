@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/trilitech/Sieve/internal/connector"
@@ -113,6 +114,10 @@ type iamPageData struct {
 	Policies   []iamPolicyView
 	CSRFToken  string
 
+	// Error is a friendly message shown as a banner when a POST fails
+	// validation (e.g. a condition with no value) — never a raw error page.
+	Error string
+
 	// Builder inputs (shared with the edit page).
 	iamBuilderData
 
@@ -141,6 +146,9 @@ type iamPolicyView struct {
 type iamEditPageData struct {
 	Active    string
 	CSRFToken string
+
+	// Error is a friendly banner shown when an edit submission fails validation.
+	Error string
 
 	// HasSpec is false for raw/migrated rules — the template then renders a
 	// "no structured form" notice instead of the builder.
@@ -184,6 +192,13 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 
 	s.populateBuilderData(&data.iamBuilderData)
 	s.render(w, r, "iam", data)
+}
+
+// renderIAMError re-renders the IAM page with a friendly error banner instead of
+// a raw error page when a form submission fails validation. The operator sees
+// what went wrong and the rest of the page (rules, library) is intact.
+func (s *Server) renderIAMError(w http.ResponseWriter, r *http.Request, msg string) {
+	s.renderIAM(w, r, &iamPageData{Error: msg})
 }
 
 // populateBuilderData fills the roles list, connector dropdown, and the
@@ -488,7 +503,23 @@ func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string
 				continue
 			}
 			op := r.FormValue("cond_" + c.Key + "_op")
-			val := r.FormValue("cond_" + c.Key + "_val")
+			val := strings.TrimSpace(r.FormValue("cond_" + c.Key + "_val"))
+			// Friendly, specific validation — an enabled condition with no (or a
+			// bad) value must never reach the Cedar compiler as a raw error.
+			if val == "" {
+				return spec, "", "", &parseError{
+					msg:  "Enter a value for the \"" + c.Label + "\" condition, or uncheck it.",
+					code: http.StatusBadRequest,
+				}
+			}
+			if c.Kind == "number" {
+				if _, err := strconv.ParseInt(val, 10, 64); err != nil {
+					return spec, "", "", &parseError{
+						msg:  "The \"" + c.Label + "\" condition needs a whole number (you entered \"" + val + "\").",
+						code: http.StatusBadRequest,
+					}
+				}
+			}
 			spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
 				Kind:    c.Kind,
 				CtxPath: c.CtxPath,
@@ -524,18 +555,18 @@ type parseError struct {
 func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 	spec, summary, formStateJSON, perr := s.parseBuilderForm(r)
 	if perr != nil {
-		http.Error(w, perr.msg, perr.code)
+		s.renderIAMError(w, r, perr.msg)
 		return
 	}
 
 	meta := s.connectorMeta(spec.ConnectorType)
 	cedar, err := iampolicies.BuildRuleCedar(spec, meta.Operations)
 	if err != nil {
-		http.Error(w, "could not build rule: "+err.Error(), http.StatusBadRequest)
+		s.renderIAMError(w, r, "Could not build rule: "+err.Error())
 		return
 	}
 	if err := s.iam.ValidateCedar(cedar); err != nil {
-		http.Error(w, "generated rule did not validate: "+err.Error(), http.StatusInternalServerError)
+		s.renderIAMError(w, r, "Generated rule did not validate: "+err.Error())
 		return
 	}
 
@@ -543,10 +574,13 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = summary
 	}
+	// Auto-uniquify so cloning a rule ("save as a new rule for another role")
+	// or any same-named create never fails on the UNIQUE name constraint.
+	name = s.uniqueRuleName(name)
 
 	pol, err := s.iam.CreatePolicy(name, summary, cedar, true)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.renderIAMError(w, r, err.Error())
 		return
 	}
 	// Persist the structured form-state so the rule can be reloaded into the
@@ -591,7 +625,14 @@ func (s *Server) handleIAMPolicyEditPage(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, "/iam", http.StatusSeeOther)
 		return
 	}
-	id := r.PathValue("id")
+	s.renderEditPage(w, r, r.PathValue("id"), "")
+}
+
+// renderEditPage renders the edit-in-place form for one rule, optionally with a
+// friendly error banner. Shared by the GET edit page and the update handler's
+// validation-failure path so a bad edit re-renders the form instead of a raw
+// error page.
+func (s *Server) renderEditPage(w http.ResponseWriter, r *http.Request, id, errMsg string) {
 	pol, err := s.iam.GetPolicy(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -599,6 +640,7 @@ func (s *Server) handleIAMPolicyEditPage(w http.ResponseWriter, r *http.Request)
 	}
 	data := &iamEditPageData{
 		Active:   "iam",
+		Error:    errMsg,
 		PolicyID: pol.ID,
 		Name:     pol.Name,
 		HasSpec:  pol.SpecJSON != "",
@@ -632,18 +674,18 @@ func (s *Server) handleIAMPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 
 	spec, summary, formStateJSON, perr := s.parseBuilderForm(r)
 	if perr != nil {
-		http.Error(w, perr.msg, perr.code)
+		s.renderEditPage(w, r, id, perr.msg)
 		return
 	}
 
 	meta := s.connectorMeta(spec.ConnectorType)
 	cedar, err := iampolicies.BuildRuleCedar(spec, meta.Operations)
 	if err != nil {
-		http.Error(w, "could not build rule: "+err.Error(), http.StatusBadRequest)
+		s.renderEditPage(w, r, id, "Could not build rule: "+err.Error())
 		return
 	}
 	if err := s.iam.ValidateCedar(cedar); err != nil {
-		http.Error(w, "generated rule did not validate: "+err.Error(), http.StatusInternalServerError)
+		s.renderEditPage(w, r, id, "Generated rule did not validate: "+err.Error())
 		return
 	}
 
@@ -662,6 +704,28 @@ func (s *Server) handleIAMPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.update", id,
 		map[string]any{"name": name, "mode": "builder"}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// uniqueRuleName returns base, or base with a numeric suffix, so that it does
+// not collide with an existing policy name (the column is UNIQUE).
+func (s *Server) uniqueRuleName(base string) string {
+	pols, err := s.iam.ListPolicies()
+	if err != nil {
+		return base
+	}
+	taken := make(map[string]bool, len(pols))
+	for _, p := range pols {
+		taken[p.Name] = true
+	}
+	if !taken[base] {
+		return base
+	}
+	for i := 2; ; i++ {
+		cand := base + " (" + strconv.Itoa(i) + ")"
+		if !taken[cand] {
+			return cand
+		}
+	}
 }
 
 // connectorMeta returns the connector's metadata (operations + rule

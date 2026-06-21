@@ -24,6 +24,12 @@
       </div>
       {{else}}
 
+      {{if .Error}}
+      <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-6">
+        <p class="text-sm text-red-300">{{.Error}}</p>
+      </div>
+      {{end}}
+
       <!-- Engine toggle -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
         <div class="flex items-center justify-between">
@@ -50,7 +56,7 @@
       <!-- Roles -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
         <h2 class="text-lg font-semibold text-white mb-1">Roles</h2>
-        <p class="text-xs text-slate-500 mb-4">A role is a named set of permissions. Create a role, give it rules below, then issue tokens for it on the Tokens page.</p>
+        <p class="text-xs text-slate-500 mb-4">A role is a named set of permissions (the rules below that target it). Each token is issued for <strong>exactly one</strong> role — so build a role that holds everything that token should be able to do. To reuse a rule across roles, edit it and “Save as a new rule” for the other role.</p>
         <form method="POST" action="/iam/roles" class="flex items-end gap-3 mb-5">
           <div>
             <label class="block text-sm font-medium text-slate-400 mb-1.5">New role name</label>
@@ -76,7 +82,11 @@
       <!-- Filter & guard library -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
         <h2 class="text-lg font-semibold text-white mb-1">Filter &amp; guard library</h2>
-        <p class="text-xs text-slate-500 mb-5">Author reusable response filters and pre-execution guards by name, then attach them to rules above. No Cedar required.</p>
+        <p class="text-xs text-slate-400 mb-2">Reusable, named transforms and guards. Author one here, then attach it to any rule in that rule's <strong>“Response filters &amp; guards”</strong> section. A rule with no filter attached runs unfiltered.</p>
+        <ul class="text-xs text-slate-500 mb-5 space-y-1 list-disc list-inside">
+          <li><strong class="text-slate-300">Redact</strong> and <strong class="text-slate-300">Exclude items</strong> run <em>after</em> the operation — they transform the response the agent receives.</li>
+          <li><strong class="text-slate-300">Script guard</strong> runs <em>before</em> the operation — it inspects the request and can allow, deny, or require approval. This is how you control “what can be sent”.</li>
+        </ul>
         <form method="POST" action="/iam/filters" id="filter-form">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div>
@@ -106,7 +116,7 @@
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Patterns</label>
             <textarea name="patterns" rows="4" placeholder="One regular expression per line, e.g.&#10;\b\d{16}\b&#10;\b\d{3}-\d{2}-\d{4}\b"
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
-            <p class="text-xs text-slate-500 mt-1">Each line is one regex; matches are masked in the response.</p>
+            <p class="text-xs text-slate-500 mt-1">Runs <strong>after</strong> the operation. One regular expression per line (RE2 syntax); every match anywhere in the response is replaced with <code>***</code>. Example: <code>\b\d{3}-\d{2}-\d{4}\b</code> masks US SSNs.</p>
           </div>
 
           <!-- exclude_items config -->
@@ -114,15 +124,30 @@
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Exclude text</label>
             <input type="text" name="text" placeholder="e.g. confidential"
                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <p class="text-xs text-slate-500 mt-1">List items containing this text are dropped from the response.</p>
+            <p class="text-xs text-slate-500 mt-1">Runs <strong>after</strong> the operation. When the response is a list, any item whose text contains this string is dropped before the agent sees it.</p>
           </div>
 
           <!-- script_guard config -->
           <div id="filter-cfg-script_guard" class="mt-5 hidden">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Guard script (Python)</label>
-            <textarea name="script" rows="8" placeholder="import sys, json&#10;req = json.load(sys.stdin)&#10;print(json.dumps({&quot;action&quot;: &quot;allow&quot;, &quot;reason&quot;: &quot;ok&quot;}))"
+            <textarea name="script" rows="9"
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
-            <p class="text-xs text-slate-500 mt-1">Contract: reads JSON <code>{operation, params, ...}</code> on stdin, writes <code>{"action":"allow|deny|approval_required","reason":"..."}</code> on stdout.</p>
+            <div class="text-xs text-slate-500 mt-2 space-y-2 rounded-lg bg-slate-900/60 border border-slate-700 p-3">
+              <p>Runs <strong>before</strong> the operation, in Sieve's sandboxed Python, with a 5-second timeout.</p>
+              <p><strong class="text-slate-300">Reads</strong> a JSON request on <code>stdin</code>:</p>
+              <pre class="text-slate-400 whitespace-pre-wrap">{"operation": "send_email", "connector": "google",
+ "connection": "work",
+ "params": {"to": ["a@x.com"], "subject": "...", "body": "..."}}</pre>
+              <p><strong class="text-slate-300">Writes</strong> a JSON decision on <code>stdout</code>: <code>{"action": "allow"}</code>, <code>{"action": "deny", "reason": "..."}</code>, or <code>{"action": "approval_required"}</code>. Anything else — bad output, an exception, or a timeout — is treated as <strong>deny</strong> (fail-closed).</p>
+              <p class="text-slate-300">Example — block sends whose body contains “secret”:</p>
+              <pre class="text-slate-400 whitespace-pre-wrap">import sys, json
+req = json.load(sys.stdin)
+body = (req.get("params") or {}).get("body", "")
+if "secret" in body.lower():
+    print(json.dumps({"action": "deny", "reason": "contains 'secret'"}))
+else:
+    print(json.dumps({"action": "allow"}))</pre>
+            </div>
           </div>
 
           <button type="submit" class="mt-6 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Add filter</button>
@@ -260,7 +285,8 @@
                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
           </div>
 
-          <button type="submit" class="mt-6 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Add rule</button>
+          <p id="rb-error" class="text-sm text-red-400 mt-4 hidden"></p>
+          <button type="submit" class="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Add rule</button>
         </form>
       </div>
 
@@ -508,8 +534,15 @@
             row.appendChild(op);
           }
           const val = document.createElement('input');
-          val.type = 'text'; val.name = 'cond_' + c.key + '_val';
-          val.placeholder = c.kind === 'domain_allowlist' ? 'example.com, trilitech.com' : (c.kind === 'number' ? '1000' : 'value');
+          val.name = 'cond_' + c.key + '_val';
+          if (c.kind === 'number') {
+            val.type = 'number'; val.step = '1'; val.placeholder = 'enter a number, e.g. 1000';
+          } else if (c.kind === 'domain_allowlist') {
+            val.type = 'text'; val.placeholder = 'example.com, trilitech.com';
+          } else {
+            val.type = 'text'; val.placeholder = 'enter a value';
+          }
+          val.dataset.condValue = c.key;
           val.className = 'rounded bg-slate-900 border border-slate-600 px-2 py-1 text-sm text-white flex-1 min-w-[8rem]';
           row.appendChild(val);
           if (c.help) {

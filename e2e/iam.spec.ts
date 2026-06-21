@@ -172,6 +172,52 @@ test.describe('Sieve running on the IAM engine', () => {
     await expect(page.locator('body')).not.toContainText(allowSummary);
   });
 
+  test('a checked condition with no value gives a friendly error, not a raw one', async ({ page }) => {
+    await loginOperator(page, s);
+    await page.goto(`${s.web_url}/iam`);
+
+    await page.fill('form[action="/iam/roles"] input[name="name"]', 'pw-empty-cond');
+    await page.locator('form[action="/iam/roles"] button[type="submit"]').click();
+
+    await page.selectOption('#rule-form select[name="role_id"]', { label: 'pw-empty-cond' });
+    await page.selectOption('#rule-form select[name="effect"]', 'allow');
+    await page.selectOption('#rb-connector', 'anthropic');
+    await page.check('input[name="cond_max_tokens"]'); // enabled, value left blank
+    await page.locator('#rule-form button[type="submit"]').click();
+
+    // Friendly, specific message — never the raw compiler error.
+    await expect(page.locator('body')).toContainText(/Enter a value for the .*Max tokens.* condition/i);
+    await expect(page.locator('body')).not.toContainText('numeric condition needs an integer value');
+  });
+
+  test('reuse a rule on another role via "Save as a new rule"', async ({ page }) => {
+    await loginOperator(page, s);
+    await page.goto(`${s.web_url}/iam`);
+
+    await page.fill('form[action="/iam/roles"] input[name="name"]', 'pw-src-role');
+    await page.locator('form[action="/iam/roles"] button[type="submit"]').click();
+    await page.fill('form[action="/iam/roles"] input[name="name"]', 'pw-dst-role');
+    await page.locator('form[action="/iam/roles"] button[type="submit"]').click();
+
+    await page.selectOption('#rule-form select[name="role_id"]', { label: 'pw-src-role' });
+    await page.selectOption('#rule-form select[name="effect"]', 'allow');
+    await page.selectOption('#rb-connector', 'mock');
+    await page.selectOption('#rb-opscope', 'read');
+    await page.locator('#rule-form button[type="submit"]').click();
+
+    const srcSummary = 'Allow read-only operations on mock (any connection) — role: pw-src-role';
+    await expect(page.locator('body')).toContainText(srcSummary);
+
+    // Edit → switch role → save as a NEW rule (original preserved).
+    const row = page.locator('tr', { hasText: srcSummary });
+    await row.getByRole('link', { name: 'Edit' }).click();
+    await page.selectOption('#rule-form select[name="role_id"]', { label: 'pw-dst-role' });
+    await page.locator('button', { hasText: 'Save as a new rule' }).click();
+
+    await expect(page.locator('body')).toContainText('role: pw-dst-role');
+    await expect(page.locator('body')).toContainText('role: pw-src-role');
+  });
+
   test('author a custom script guard in the UI; the gateway enforces it', async ({ page }) => {
     await loginOperator(page, s);
     await page.goto(`${s.web_url}/iam`);

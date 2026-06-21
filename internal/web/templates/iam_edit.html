@@ -19,6 +19,12 @@
         <h1 class="text-2xl font-bold text-white mt-2">Edit rule</h1>
       </div>
 
+      {{if .Error}}
+      <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-6">
+        <p class="text-sm text-red-300">{{.Error}}</p>
+      </div>
+      {{end}}
+
       {{if not .HasSpec}}
       <!-- Rules without a stored structured form (raw Cedar / migrated) can't be
            reloaded into the builder — there's nothing to prefill. -->
@@ -138,8 +144,10 @@
                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
           </div>
 
-          <div class="mt-6 flex items-center gap-3">
+          <p class="text-xs text-slate-500 mt-6">Reuse this rule for another role: change <strong>Role</strong> above, then “Save as a new rule”. The original is left unchanged.</p>
+          <div class="mt-2 flex items-center gap-3">
             <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Save changes</button>
+            <button type="submit" formaction="/iam/policies" class="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600 transition-colors">Save as a new rule</button>
             <a href="/iam" class="text-sm text-slate-400 hover:text-slate-200">Cancel</a>
           </div>
         </form>
