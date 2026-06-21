@@ -58,8 +58,8 @@
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <option value="allow">Allow</option>
                 <option value="deny">Deny</option>
-                <option value="require_approval">Require approval</option>
               </select>
+              <p class="text-xs text-slate-500 mt-1">Rules grant access. Approval / filters are guardrails on the IAM page.</p>
             </div>
 
             <!-- Connector -->
@@ -122,32 +122,15 @@
             <div id="rb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
           </div>
 
-          <!-- Response filters & guards (filter-library obligations) -->
-          {{if .Filters}}
-          <div class="mt-5">
-            <label class="block text-sm font-medium text-slate-400 mb-2">Response filters &amp; guards <span class="text-slate-600">(optional)</span></label>
-            <p class="text-xs text-slate-500 mb-2">Attach library filters to this rule. Guards run before the operation (may deny); response filters run on the result.</p>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 rounded-lg bg-slate-900 border border-slate-700 p-3">
-              {{range .Filters}}
-              <label class="flex items-center gap-2 text-sm text-slate-200">
-                <input type="checkbox" name="filters" value="{{.Name}}" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
-                <span>{{.Name}} <span class="text-slate-500">({{.Kind}})</span></span>
-              </label>
-              {{end}}
-            </div>
-          </div>
-          {{end}}
-
           <div class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Rule name <span class="text-slate-600">(optional)</span></label>
             <input type="text" name="name" value="{{.Name}}" placeholder="auto-generated from the rule if blank"
                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
           </div>
 
-          <p class="text-xs text-slate-500 mt-6">Reuse this rule for another role: change <strong>Role</strong> above, then “Save as a new rule”. The original is left unchanged.</p>
+          <p class="text-xs text-slate-500 mt-6">To reuse this rule's bundle elsewhere, assign its <strong>role</strong> to another token (Tokens page) — a token can compose several roles. No need to copy rules between roles.</p>
           <div class="mt-2 flex items-center gap-3">
             <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Save changes</button>
-            <button type="submit" formaction="/iam/policies" class="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600 transition-colors">Save as a new rule</button>
             <a href="/iam" class="text-sm text-slate-400 hover:text-slate-200">Cancel</a>
           </div>
         </form>
@@ -348,12 +331,6 @@
             if (opSel && c.op) opSel.value = c.op;
             const valInp = document.querySelector('#rb-conds input[name="cond_' + cssEsc(c.key) + '_val"]');
             if (valInp && c.value != null) valInp.value = c.value;
-          }
-
-          // Filters are server-rendered static checkboxes — tick by value.
-          for (const name of (spec.filters || [])) {
-            const cb = document.querySelector('#rule-form input[name="filters"][value="' + cssEsc(name) + '"]');
-            if (cb) cb.checked = true;
           }
 
           // Re-evaluate condition visibility now that effect is set.

@@ -124,6 +124,7 @@ type iamPageData struct {
 	Configured bool
 	Enabled    bool
 	Policies   []iamPolicyView
+	Guardrails []iamGuardrailView
 	CSRFToken  string
 
 	// Error is a friendly message shown as a banner when a POST fails
@@ -149,6 +150,12 @@ type iamPageData struct {
 // structured spec). Raw/migrated rules (SpecJSON == "") have no form to reload.
 type iamPolicyView struct {
 	iampolicies.StoredPolicy
+	HasSpec bool
+}
+
+// iamGuardrailView wraps a StoredGuardrail for the guardrails list.
+type iamGuardrailView struct {
+	iampolicies.StoredGuardrail
 	HasSpec bool
 }
 
@@ -200,6 +207,16 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 	data.Policies = make([]iamPolicyView, 0, len(pols))
 	for _, p := range pols {
 		data.Policies = append(data.Policies, iamPolicyView{StoredPolicy: p, HasSpec: p.SpecJSON != ""})
+	}
+
+	guards, err := s.iam.ListGuardrails()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data.Guardrails = make([]iamGuardrailView, 0, len(guards))
+	for _, g := range guards {
+		data.Guardrails = append(data.Guardrails, iamGuardrailView{StoredGuardrail: g, HasSpec: g.SpecJSON != ""})
 	}
 
 	s.populateBuilderData(&data.iamBuilderData)
@@ -586,8 +603,9 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = summary
 	}
-	// Auto-uniquify so cloning a rule ("save as a new rule for another role")
-	// or any same-named create never fails on the UNIQUE name constraint.
+	// Auto-uniquify so any same-named create never fails on the UNIQUE name
+	// constraint. (Reuse across roles is composition — assign a role to a token,
+	// or compose roles on a token — not cloning rules.)
 	name = s.uniqueRuleName(name)
 
 	pol, err := s.iam.CreatePolicy(name, summary, cedar, true)
@@ -817,6 +835,156 @@ func (s *Server) handleIAMPolicySetEnabled(w http.ResponseWriter, r *http.Reques
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.set_enabled", id,
 		map[string]any{"enabled": enabled}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// handleIAMGuardrailCreate compiles the guardrail form into a permit-only
+// obligation overlay (POST /iam/guardrails). It reuses parseBuilderForm (the
+// guardrail form posts the same field names); for a guardrail the obligation is
+// approval (the approval checkbox posts effect="require_approval") and/or library
+// filters — the allow/deny of a grant is irrelevant here. BuildGuardrailCedar
+// emits a permit carrying @approval/@filters over the rule's scope; the engine's
+// second pass attaches it to any matching allowed request, regardless of which
+// rule granted it (spec §7.2), so composition can't bypass it.
+func (s *Server) handleIAMGuardrailCreate(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	spec, _, formStateJSON, perr := s.parseBuilderForm(r)
+	if perr != nil {
+		s.renderIAMError(w, r, perr.msg)
+		return
+	}
+	if spec.Effect != "require_approval" && len(spec.Filters) == 0 {
+		s.renderIAMError(w, r, "A guardrail must impose approval and/or at least one filter — otherwise it does nothing.")
+		return
+	}
+
+	meta := s.connectorMeta(spec.ConnectorType)
+	cedar, err := iampolicies.BuildGuardrailCedar(spec, meta.Operations)
+	if err != nil {
+		s.renderIAMError(w, r, "Could not build guardrail: "+err.Error())
+		return
+	}
+
+	summary := guardrailSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
+	name := r.FormValue("name")
+	if name == "" {
+		name = summary
+	}
+	name = s.uniqueGuardrailName(name)
+
+	g, err := s.iam.CreateGuardrail(name, summary, cedar, true)
+	if err != nil {
+		s.renderIAMError(w, r, err.Error())
+		return
+	}
+	_ = s.iam.SetGuardrailSpec(g.ID, formStateJSON)
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.create", g.ID,
+		map[string]any{"name": name}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// handleIAMGuardrailDelete removes a guardrail (POST /iam/guardrails/{id}/delete).
+func (s *Server) handleIAMGuardrailDelete(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.iam.DeleteGuardrail(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.delete", id, nil, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// handleIAMGuardrailSetEnabled enables/disables a guardrail
+// (POST /iam/guardrails/{id}/enabled, field enabled="true"/"false").
+func (s *Server) handleIAMGuardrailSetEnabled(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+	enabled := r.FormValue("enabled") == "true"
+	if err := s.iam.SetGuardrailEnabled(id, enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.set_enabled", id,
+		map[string]any{"enabled": enabled}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// guardrailSummary renders a one-line operator-readable description of a guardrail.
+func guardrailSummary(spec iampolicies.RuleSpec, roleName string, connLabels []string) string {
+	var obl []string
+	if spec.Effect == "require_approval" {
+		obl = append(obl, "Require approval")
+	}
+	if len(spec.Filters) > 0 {
+		obl = append(obl, "filters["+strings.Join(spec.Filters, ", ")+"]")
+	}
+	var b strings.Builder
+	if len(obl) == 0 {
+		b.WriteString("(no obligation)")
+	} else {
+		b.WriteString(strings.Join(obl, " + "))
+	}
+	switch spec.OpScope {
+	case "all":
+		b.WriteString(" for all operations")
+	case "read":
+		b.WriteString(" for read-only operations")
+	case "write":
+		b.WriteString(" for write operations")
+	case "specific":
+		b.WriteString(" for [" + strings.Join(spec.Operations, ", ") + "]")
+	}
+	b.WriteString(" on " + spec.ConnectorType)
+	if len(connLabels) > 0 {
+		b.WriteString(" (" + strings.Join(connLabels, ", ") + ")")
+	} else {
+		b.WriteString(" (any connection)")
+	}
+	if roleName == "" {
+		b.WriteString(" — any role")
+	} else {
+		b.WriteString(" — role: " + roleName)
+	}
+	return b.String()
+}
+
+// uniqueGuardrailName avoids the UNIQUE name collision for guardrails.
+func (s *Server) uniqueGuardrailName(base string) string {
+	gs, err := s.iam.ListGuardrails()
+	if err != nil {
+		return base
+	}
+	taken := make(map[string]bool, len(gs))
+	for _, g := range gs {
+		taken[g.Name] = true
+	}
+	if !taken[base] {
+		return base
+	}
+	for i := 2; ; i++ {
+		cand := base + " (" + strconv.Itoa(i) + ")"
+		if !taken[cand] {
+			return cand
+		}
+	}
 }
 
 // handleIAMToggle sets the iam_enabled flag (POST /iam/toggle, field enabled).
