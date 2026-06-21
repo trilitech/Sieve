@@ -44,14 +44,22 @@ func TestIAMEnforce_ScriptGuardOverGateway(t *testing.T) {
 		iam.KindScriptGuard, 0, map[string]any{"command": py, "inline": apiGuardScript}); err != nil {
 		t.Fatal(err)
 	}
-	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+	spec := iampolicies.RuleSpec{
 		RoleID: env.roleID, Effect: "allow", ConnectorType: "mock", OpScope: "write",
 		ConnectionIDs: []string{"mock-conn"}, Filters: []string{"block-secret"},
-	}, nil)
+	}
+	grant, err := iampolicies.BuildRuleCedar(spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.iam.CreatePolicy("send-guarded", "", cedar, true); err != nil {
+	if _, err := env.iam.CreatePolicy("send-guarded", "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := iampolicies.BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.iam.CreateGuardrail("send-guarded-g", "", guard, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -147,14 +155,22 @@ func TestIAMEnforce_RedactOverGateway(t *testing.T) {
 		map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}}); err != nil {
 		t.Fatal(err)
 	}
-	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+	spec := iampolicies.RuleSpec{
 		RoleID: env.roleID, Effect: "allow", ConnectorType: "mock", OpScope: "read",
 		ConnectionIDs: []string{"mock-conn"}, Filters: []string{"redact-ssn"},
-	}, nil)
+	}
+	grant, err := iampolicies.BuildRuleCedar(spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.iam.CreatePolicy("read-redact", "", cedar, true); err != nil {
+	if _, err := env.iam.CreatePolicy("read-redact", "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := iampolicies.BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.iam.CreateGuardrail("read-redact-g", "", guard, true); err != nil {
 		t.Fatal(err)
 	}
 

@@ -19,7 +19,7 @@ var builderOps = []connector.OperationDef{
 // Cedar and behaves as intended — the answer to "is the builder Cedar-compatible".
 func decideEngine(t *testing.T, cedar string) *iam.Engine {
 	t.Helper()
-	eng, err := iam.NewEngine([]iam.Policy{{ID: "p1", Cedar: cedar}}, iam.MapFilterLibrary{})
+	eng, err := iam.NewEngine([]iam.Policy{{ID: "p1", Cedar: cedar}}, nil, iam.MapFilterLibrary{})
 	if err != nil {
 		t.Fatalf("generated Cedar did NOT compile:\n%s\nerr: %v", cedar, err)
 	}
@@ -60,7 +60,7 @@ func TestBuildRuleCedar_DenyForbidsOverPermit(t *testing.T) {
 	// allow-all + deny-write → write denied, read allowed (forbid overrides).
 	allow, _ := BuildRuleCedar(RuleSpec{RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "all"}, builderOps)
 	deny, _ := BuildRuleCedar(RuleSpec{RoleID: "R", Effect: "deny", ConnectorType: "google", OpScope: "write"}, builderOps)
-	eng, err := iam.NewEngine([]iam.Policy{{ID: "a", Cedar: allow}, {ID: "d", Cedar: deny}}, iam.MapFilterLibrary{})
+	eng, err := iam.NewEngine([]iam.Policy{{ID: "a", Cedar: allow}, {ID: "d", Cedar: deny}}, nil, iam.MapFilterLibrary{})
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -90,22 +90,33 @@ func TestBuildRuleCedar_SpecificOps(t *testing.T) {
 }
 
 func TestBuildRuleCedar_RequireApproval(t *testing.T) {
-	cedar, err := BuildRuleCedar(RuleSpec{
-		RoleID: "R", Effect: "require_approval", ConnectorType: "google", OpScope: "write",
-	}, builderOps)
+	spec := RuleSpec{RoleID: "R", Effect: "require_approval", ConnectorType: "google", OpScope: "write"}
+	// The GRANT must not carry the obligation (it would be stripped by a sibling
+	// grant under composition, spec §7.0); @approval lives on the GUARDRAIL.
+	grant, err := BuildRuleCedar(spec, builderOps)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(cedar, "@approval") {
-		t.Fatalf("require_approval must emit an @approval annotation:\n%s", cedar)
+	if strings.Contains(grant, "@approval") {
+		t.Fatalf("grant must NOT carry @approval (obligations live in guardrails):\n%s", grant)
 	}
-	eng := decideEngine(t, cedar)
+	guard, err := BuildGuardrailCedar(spec, builderOps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(guard, "@approval") {
+		t.Fatalf("require_approval must emit an @approval guardrail:\n%s", guard)
+	}
+	eng, err := iam.NewEngine([]iam.Policy{{ID: "g", Cedar: grant}}, []iam.Policy{{ID: "h", Cedar: guard}}, iam.MapFilterLibrary{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
 	d, _ := eng.Decide(reqFor("R", "google", "work", "send_email", false))
 	if !d.Allow {
-		t.Errorf("require_approval is a permit (gated), should resolve Allow at the engine")
+		t.Errorf("the grant should allow the send")
 	}
 	if !d.Obligations.Approval {
-		t.Errorf("require_approval must surface an approval obligation")
+		t.Errorf("the guardrail must surface an approval obligation")
 	}
 }
 
@@ -216,18 +227,27 @@ func TestBuildRuleCedar_DomainAllowlist(t *testing.T) {
 }
 
 func TestBuildRuleCedar_Filters(t *testing.T) {
-	cedar, err := BuildRuleCedar(RuleSpec{
+	spec := RuleSpec{
 		RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "read",
 		Filters: []string{"redact-ssn"},
-	}, nil)
+	}
+	// Grant carries no @filters; the obligation is on the guardrail (spec §7.2).
+	grant, err := BuildRuleCedar(spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(cedar, `@filters("redact-ssn")`) {
-		t.Fatalf("expected @filters annotation, got:\n%s", cedar)
+	if strings.Contains(grant, "@filters") {
+		t.Fatalf("grant must NOT carry @filters (obligations live in guardrails):\n%s", grant)
+	}
+	guard, err := BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(guard, `@filters("redact-ssn")`) {
+		t.Fatalf("expected @filters guardrail, got:\n%s", guard)
 	}
 	lib := iam.MapFilterLibrary{"redact-ssn": iam.Filter{Name: "redact-ssn", Kind: iam.KindRedact}}
-	eng, err := iam.NewEngine([]iam.Policy{{ID: "p1", Cedar: cedar}}, lib)
+	eng, err := iam.NewEngine([]iam.Policy{{ID: "g", Cedar: grant}}, []iam.Policy{{ID: "h", Cedar: guard}}, lib)
 	if err != nil {
 		t.Fatalf("compile with filter lib: %v", err)
 	}

@@ -33,6 +33,20 @@ type StoredPolicy struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// StoredGuardrail is a persisted guardrail (spec §7.2): a permit-only Cedar
+// overlay carrying @approval/@filters annotations, evaluated in the second pass
+// to attach obligations to an allowed request. Same shape as StoredPolicy but a
+// distinct table and a permit-only save check.
+type StoredGuardrail struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Cedar       string    `json:"cedar"`
+	SpecJSON    string    `json:"spec_json"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // Service is the IAM storage service. It caches the compiled engine and
 // rebuilds it lazily after any policy/filter mutation (invalidate()).
 type Service struct {
@@ -179,6 +193,123 @@ func (s *Service) EnabledPolicies() ([]iam.Policy, error) {
 	return out, nil
 }
 
+// --- guardrails (spec §7.2: permit-only obligation overlays) ---
+
+// CreateGuardrail stores a new guardrail after enforcing the permit-only
+// invariant. A forbid (or unparseable Cedar) is rejected here, including via the
+// raw-Cedar escape hatch.
+func (s *Service) CreateGuardrail(name, description, cedar string, enabled bool) (*StoredGuardrail, error) {
+	if err := iam.ValidateGuardrailCedar(cedar); err != nil {
+		return nil, err
+	}
+	id := generateID()
+	now := time.Now().UTC()
+	_, err := s.db.DB.Exec(
+		`INSERT INTO iam_guardrails (id, name, description, cedar_text, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, name, description, cedar, boolToInt(enabled), now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert iam guardrail: %w", err)
+	}
+	s.invalidate()
+	return &StoredGuardrail{ID: id, Name: name, Description: description, Cedar: cedar, Enabled: enabled, CreatedAt: now}, nil
+}
+
+// UpdateGuardrail modifies a guardrail (permit-only re-validated).
+func (s *Service) UpdateGuardrail(id, name, description, cedar string, enabled bool) error {
+	if err := iam.ValidateGuardrailCedar(cedar); err != nil {
+		return err
+	}
+	res, err := s.db.DB.Exec(
+		`UPDATE iam_guardrails SET name = ?, description = ?, cedar_text = ?, enabled = ? WHERE id = ?`,
+		name, description, cedar, boolToInt(enabled), id,
+	)
+	if err != nil {
+		return fmt.Errorf("update iam guardrail: %w", err)
+	}
+	s.invalidate()
+	return mustAffect(res, id)
+}
+
+// SetGuardrailEnabled toggles a guardrail's enabled flag.
+func (s *Service) SetGuardrailEnabled(id string, enabled bool) error {
+	res, err := s.db.DB.Exec(`UPDATE iam_guardrails SET enabled = ? WHERE id = ?`, boolToInt(enabled), id)
+	if err != nil {
+		return fmt.Errorf("set guardrail enabled: %w", err)
+	}
+	s.invalidate()
+	return mustAffect(res, id)
+}
+
+// SetGuardrailSpec stores the structured builder form (JSON) for edit-in-place.
+func (s *Service) SetGuardrailSpec(id, specJSON string) error {
+	res, err := s.db.DB.Exec(`UPDATE iam_guardrails SET spec_json = ? WHERE id = ?`, specJSON, id)
+	if err != nil {
+		return fmt.Errorf("set guardrail spec: %w", err)
+	}
+	return mustAffect(res, id)
+}
+
+// GetGuardrail returns a guardrail by id.
+func (s *Service) GetGuardrail(id string) (*StoredGuardrail, error) {
+	row := s.db.DB.QueryRow(
+		`SELECT id, name, description, cedar_text, spec_json, enabled, created_at FROM iam_guardrails WHERE id = ?`, id)
+	var g StoredGuardrail
+	var enabled int
+	if err := row.Scan(&g.ID, &g.Name, &g.Description, &g.Cedar, &g.SpecJSON, &enabled, &g.CreatedAt); err != nil {
+		return nil, fmt.Errorf("get iam guardrail %q: %w", id, err)
+	}
+	g.Enabled = enabled != 0
+	return &g, nil
+}
+
+// ListGuardrails returns all stored guardrails (enabled and not).
+func (s *Service) ListGuardrails() ([]StoredGuardrail, error) {
+	rows, err := s.db.DB.Query(
+		`SELECT id, name, description, cedar_text, spec_json, enabled, created_at FROM iam_guardrails ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list iam guardrails: %w", err)
+	}
+	defer rows.Close()
+	var out []StoredGuardrail
+	for rows.Next() {
+		var g StoredGuardrail
+		var enabled int
+		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &g.Cedar, &g.SpecJSON, &enabled, &g.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan iam guardrail: %w", err)
+		}
+		g.Enabled = enabled != 0
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// DeleteGuardrail removes a guardrail.
+func (s *Service) DeleteGuardrail(id string) error {
+	res, err := s.db.DB.Exec(`DELETE FROM iam_guardrails WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete iam guardrail: %w", err)
+	}
+	s.invalidate()
+	return mustAffect(res, id)
+}
+
+// EnabledGuardrails returns the enabled guardrails as iam.Policy for NewEngine's
+// guardrail set.
+func (s *Service) EnabledGuardrails() ([]iam.Policy, error) {
+	all, err := s.ListGuardrails()
+	if err != nil {
+		return nil, err
+	}
+	var out []iam.Policy
+	for _, g := range all {
+		if g.Enabled {
+			out = append(out, iam.Policy{ID: g.ID, Cedar: g.Cedar})
+		}
+	}
+	return out, nil
+}
+
 // --- filters ---
 
 // CreateFilter stores a filter-library entry.
@@ -224,21 +355,38 @@ func (s *Service) ListFilters() ([]iam.Filter, error) {
 	return out, rows.Err()
 }
 
-// FilterInUse reports whether any stored policy's Cedar references the named
-// filter in an @filters annotation. The admin UI refuses to delete an in-use
-// filter, since removing it would fail-close every rule that references it.
+// FilterInUse reports whether any stored guardrail (or, for back-compat, policy)
+// references the named filter in an @filters annotation. The admin UI refuses to
+// delete an in-use filter, since removing it would fail-close every guardrail
+// that references it. @filters live on guardrails (spec §7.2); legacy policies
+// are still scanned in case a migrated rule retained one.
 func (s *Service) FilterInUse(name string) (bool, error) {
+	refsName := func(cedar string) bool {
+		for _, m := range filtersAnnRE.FindAllStringSubmatch(cedar, -1) {
+			for _, n := range strings.Fields(m[1]) {
+				if n == name {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	guards, err := s.ListGuardrails()
+	if err != nil {
+		return false, err
+	}
+	for _, g := range guards {
+		if refsName(g.Cedar) {
+			return true, nil
+		}
+	}
 	pols, err := s.ListPolicies()
 	if err != nil {
 		return false, err
 	}
 	for _, p := range pols {
-		for _, m := range filtersAnnRE.FindAllStringSubmatch(p.Cedar, -1) {
-			for _, n := range strings.Fields(m[1]) {
-				if n == name {
-					return true, nil
-				}
-			}
+		if refsName(p.Cedar) {
+			return true, nil
 		}
 	}
 	return false, nil
@@ -318,11 +466,15 @@ func (s *Service) BuildEngine() (*iam.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	guards, err := s.EnabledGuardrails()
+	if err != nil {
+		return nil, err
+	}
 	lib, err := s.FilterLibrary()
 	if err != nil {
 		return nil, err
 	}
-	return iam.NewEngine(pols, lib)
+	return iam.NewEngine(pols, guards, lib)
 }
 
 // ValidateCedar reports whether cedar parses and compiles as a single IAM policy
@@ -334,7 +486,7 @@ func (s *Service) ValidateCedar(cedar string) error {
 	if err != nil {
 		return err
 	}
-	_, err = iam.NewEngine([]iam.Policy{{ID: "_validate", Cedar: cedar}}, lib)
+	_, err = iam.NewEngine([]iam.Policy{{ID: "_validate", Cedar: cedar}}, nil, lib)
 	return err
 }
 

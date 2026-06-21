@@ -68,24 +68,50 @@ func BuildScopeID(format, connID string, fields map[string]string) string {
 	return out
 }
 
-// BuildRuleCedar compiles a RuleSpec into a single Cedar statement.
+// BuildRuleCedar compiles a RuleSpec into a single Cedar GRANT statement
+// (permit/forbid) — no obligations. Obligations (approval, filters) are authored
+// as guardrails and compiled by BuildGuardrailCedar (spec §7.2): an obligation on
+// a grant would be silently stripped by a sibling grant under composition (§7.0).
+// `require_approval` is an allow at the grant layer; its approval obligation is
+// the companion guardrail.
 func BuildRuleCedar(spec RuleSpec, ops []connector.OperationDef) (string, error) {
 	if spec.ConnectorType == "" {
 		return "", fmt.Errorf("connector type is required")
 	}
 
-	var anns []string
 	var head string
 	switch spec.Effect {
-	case "allow":
+	case "allow", "require_approval":
 		head = "permit"
 	case "deny":
 		head = "forbid"
-	case "require_approval":
-		head = "permit"
-		anns = append(anns, `@approval("required")`)
 	default:
 		return "", fmt.Errorf("unknown effect %q", spec.Effect)
+	}
+
+	principal := principalClause(spec.RoleID)
+	action, err := actionClause(spec, ops)
+	if err != nil {
+		return "", err
+	}
+	when, err := whenClause(spec)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s(\n  %s,\n  %s,\n  resource\n)%s;", head, principal, action, when), nil
+}
+
+// BuildGuardrailCedar compiles a RuleSpec's OBLIGATIONS (approval and/or filters)
+// into a permit-only guardrail (spec §7.2), or "" when the rule carries none. The
+// guardrail matches the rule's (principal, action, resource) scope but NOT its
+// attribute conditions, so it covers EVERY allowed request in that scope —
+// composition-safe (no sibling grant can route around it, §7.0) and fail-safe
+// (broader coverage = more constraint, never less). `ops` is needed to resolve a
+// "specific" op scope.
+func BuildGuardrailCedar(spec RuleSpec, ops []connector.OperationDef) (string, error) {
+	var anns []string
+	if spec.Effect == "require_approval" {
+		anns = append(anns, `@approval("required")`)
 	}
 	if len(spec.Filters) > 0 {
 		for _, f := range spec.Filters {
@@ -95,27 +121,23 @@ func BuildRuleCedar(spec RuleSpec, ops []connector.OperationDef) (string, error)
 		}
 		anns = append(anns, fmt.Sprintf("@filters(%s)", cedarString(strings.Join(spec.Filters, " "))))
 	}
-	annotation := ""
-	if len(anns) > 0 {
-		annotation = strings.Join(anns, "\n") + "\n"
+	if len(anns) == 0 {
+		return "", nil
 	}
-
-	principal := "principal"
-	if spec.RoleID != "" {
-		principal = "principal in " + iam.TypeRole + "::" + cedarString(spec.RoleID)
-	}
-
 	action, err := actionClause(spec, ops)
 	if err != nil {
 		return "", err
 	}
+	return fmt.Sprintf("%s\npermit(\n  %s,\n  %s,\n  resource\n) when { %s };",
+		strings.Join(anns, "\n"), principalClause(spec.RoleID), action, resourceScopeTerm(spec)), nil
+}
 
-	when, err := whenClause(spec)
-	if err != nil {
-		return "", err
+// principalClause renders the principal scope for a role id ("" ⇒ any principal).
+func principalClause(roleID string) string {
+	if roleID == "" {
+		return "principal"
 	}
-
-	return fmt.Sprintf("%s%s(\n  %s,\n  %s,\n  resource\n)%s;", annotation, head, principal, action, when), nil
+	return "principal in " + iam.TypeRole + "::" + cedarString(roleID)
 }
 
 func actionClause(spec RuleSpec, ops []connector.OperationDef) (string, error) {
@@ -148,29 +170,31 @@ func actionClause(spec RuleSpec, ops []connector.OperationDef) (string, error) {
 	}
 }
 
-// whenClause builds the `when { … }` constraining the resource and any
-// conditions. The resource constraint is the most specific available:
-// scopes > specific connections > the connector (gate).
-func whenClause(spec RuleSpec) (string, error) {
-	var terms []string
-
+// resourceScopeTerm builds the Cedar resource constraint, most specific first:
+// scopes > specific connections > the connector (the connector-gate).
+func resourceScopeTerm(spec RuleSpec) string {
 	switch {
 	case len(spec.Scopes) > 0:
 		refs := make([]string, 0, len(spec.Scopes))
 		for _, s := range spec.Scopes {
 			refs = append(refs, s.EntityType+"::"+cedarString(s.ID))
 		}
-		terms = append(terms, "resource in ["+strings.Join(refs, ", ")+"]")
+		return "resource in [" + strings.Join(refs, ", ") + "]"
 	case len(spec.ConnectionIDs) > 0:
 		refs := make([]string, 0, len(spec.ConnectionIDs))
 		for _, c := range spec.ConnectionIDs {
 			refs = append(refs, iam.TypeConnection+"::"+cedarString(c))
 		}
-		terms = append(terms, "resource in ["+strings.Join(refs, ", ")+"]")
+		return "resource in [" + strings.Join(refs, ", ") + "]"
 	default:
-		terms = append(terms, "resource in "+iam.TypeConnector+"::"+cedarString(spec.ConnectorType))
+		return "resource in " + iam.TypeConnector + "::" + cedarString(spec.ConnectorType)
 	}
+}
 
+// whenClause builds the `when { … }` constraining the resource and any
+// conditions (for a GRANT rule).
+func whenClause(spec RuleSpec) (string, error) {
+	terms := []string{resourceScopeTerm(spec)}
 	for _, c := range spec.Conditions {
 		expr, err := conditionExpr(c)
 		if err != nil {
@@ -178,7 +202,6 @@ func whenClause(spec RuleSpec) (string, error) {
 		}
 		terms = append(terms, expr)
 	}
-
 	return " when { " + strings.Join(terms, " && ") + " }", nil
 }
 

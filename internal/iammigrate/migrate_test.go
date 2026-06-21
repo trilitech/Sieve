@@ -70,9 +70,13 @@ func newDecide(t *testing.T, cfg map[string]any, connType, role, conn, token, op
 	for _, f := range res.Filters {
 		lib[f.Name] = f
 	}
-	eng, err := iam.NewEngine([]iam.Policy{{ID: "p", Cedar: res.Cedar}}, lib)
+	var guardrails []iam.Policy
+	if res.Guardrails != "" {
+		guardrails = []iam.Policy{{ID: "g", Cedar: res.Guardrails}}
+	}
+	eng, err := iam.NewEngine([]iam.Policy{{ID: "p", Cedar: res.Cedar}}, guardrails, lib)
 	if err != nil {
-		t.Fatalf("migrated Cedar did not compile: %v\n%s", err, res.Cedar)
+		t.Fatalf("migrated Cedar did not compile: %v\ngrants:\n%s\nguardrails:\n%s", err, res.Cedar, res.Guardrails)
 	}
 	d, err := eng.Decide(newReq(connType, role, conn, token, op, params))
 	if err != nil {
@@ -185,13 +189,19 @@ func TestMigrate_ResponseFilterToLibrary(t *testing.T) {
 	if len(res.Filters) != 1 || res.Filters[0].Kind != iam.KindRedact {
 		t.Fatalf("expected one redact filter, got %+v", res.Filters)
 	}
-	if !strings.Contains(res.Cedar, "@filters(") {
-		t.Errorf("permit should reference the filter via @filters; got:\n%s", res.Cedar)
+	// @filters lives on the GUARDRAIL now (spec §7.2), not on the grant.
+	if strings.Contains(res.Cedar, "@filters(") {
+		t.Errorf("grant must NOT carry @filters; got:\n%s", res.Cedar)
 	}
-	// The migrated policy must still compile + the engine must resolve the filter.
+	if !strings.Contains(res.Guardrails, "@filters(") {
+		t.Errorf("the guardrail should reference the filter via @filters; got:\n%s", res.Guardrails)
+	}
+	// Both documents must compile + the engine must resolve the filter.
 	lib := iam.MapFilterLibrary{res.Filters[0].Name: res.Filters[0]}
-	if _, err := iam.NewEngine([]iam.Policy{{ID: "p", Cedar: res.Cedar}}, lib); err != nil {
-		t.Fatalf("migrated policy with @filters did not compile: %v", err)
+	if _, err := iam.NewEngine(
+		[]iam.Policy{{ID: "p", Cedar: res.Cedar}},
+		[]iam.Policy{{ID: "g", Cedar: res.Guardrails}}, lib); err != nil {
+		t.Fatalf("migrated grant+guardrail did not compile: %v", err)
 	}
 }
 

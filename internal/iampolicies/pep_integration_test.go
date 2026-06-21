@@ -39,7 +39,14 @@ func TestPEP_Integration(t *testing.T) {
 		`permit(principal in Sieve::Role::"r1", action in Sieve::Action::"github/read", resource in Sieve::Github::Owner::"ghc/acme");`, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.CreatePolicy("gh-pr-approval", "",
+	// Grant: allow PR creation on acme.
+	if _, err := svc.CreatePolicy("gh-pr", "",
+		`permit(principal in Sieve::Role::"r1", action == Sieve::Action::"github/github_create_pr", resource in Sieve::Github::Owner::"ghc/acme");`, true); err != nil {
+		t.Fatal(err)
+	}
+	// Guardrail: PR creation on acme needs approval (obligation lives in the
+	// guardrail set, spec §7.2 — permit-only, collected in pass 2).
+	if _, err := svc.CreateGuardrail("gh-pr-approval", "",
 		`@approval("required") permit(principal in Sieve::Role::"r1", action == Sieve::Action::"github/github_create_pr", resource in Sieve::Github::Owner::"ghc/acme");`, true); err != nil {
 		t.Fatal(err)
 	}

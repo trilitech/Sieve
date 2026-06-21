@@ -12,9 +12,10 @@ import (
 
 // AllReport summarizes a full legacy→IAM migration.
 type AllReport struct {
-	PoliciesCreated int
-	FiltersCreated  int
-	Manual          []ManualItem
+	PoliciesCreated   int
+	GuardrailsCreated int
+	FiltersCreated    int
+	Manual            []ManualItem
 }
 
 // MigrateAll converts every legacy role-binding's `rules` policies into IAM
@@ -39,6 +40,7 @@ func MigrateAll(
 
 	for _, role := range rs {
 		var stmts []string
+		var guardStmts []string
 		var filters []iam.Filter
 
 		for _, b := range role.Bindings {
@@ -66,6 +68,9 @@ func MigrateAll(
 				if res.Cedar != "" {
 					stmts = append(stmts, res.Cedar)
 				}
+				if res.Guardrails != "" {
+					guardStmts = append(guardStmts, res.Guardrails)
+				}
 				filters = append(filters, res.Filters...)
 				rep.Manual = append(rep.Manual, res.Manual...)
 			}
@@ -82,6 +87,12 @@ func MigrateAll(
 			if _, err := iamSvc.CreatePolicy("mig:"+role.Name, "migrated from role "+role.Name,
 				strings.Join(stmts, "\n\n"), true); err == nil {
 				rep.PoliciesCreated++
+			}
+		}
+		if len(guardStmts) > 0 {
+			if _, err := iamSvc.CreateGuardrail("mig:"+role.Name, "migrated obligations from role "+role.Name,
+				strings.Join(guardStmts, "\n\n"), true); err == nil {
+				rep.GuardrailsCreated++
 			}
 		}
 	}

@@ -10,43 +10,84 @@ import (
 	"github.com/cedar-policy/cedar-go/types"
 )
 
-// Engine is the PDP. It holds the compiled Cedar PolicySet and the filter
-// library, and answers Decide. It is the ONLY type that touches cedar-go.
+// Engine is the PDP. It holds TWO compiled Cedar PolicySets — the GRANTS set
+// (the allow/deny decision) and the GUARDRAILS set (global obligation overlays) —
+// plus the filter library, and answers Decide. It is the ONLY type that touches
+// cedar-go. The two-set / two-pass design is the spec §7 obligation model: an
+// obligation binds the OUTCOME, never a particular grant, so composition cannot
+// strip it.
 type Engine struct {
-	set *cedar.PolicySet
-	lib FilterLibrary
+	grants     *cedar.PolicySet
+	guardrails *cedar.PolicySet
+	lib        FilterLibrary
 }
 
-// NewEngine compiles the given policies into one Cedar PolicySet. Each policy's
-// statements are added under a stable id "pol:<policyID>#<idx>" (spec §9.3), so
-// diag.Reasons maps back to a source policy + statement. A policy whose Cedar
-// fails to parse is returned as an error (the caller — PR-C/PR-D — surfaces it as
-// a broken policy rather than silently dropping it).
-func NewEngine(policies []Policy, lib FilterLibrary) (*Engine, error) {
+// buildPolicySet compiles a list of Sieve policies into one Cedar PolicySet,
+// each statement under a stable id "<prefix>:<policyID>#<idx>" (spec §9.3) so
+// diag.Reasons maps back to a source rule/guardrail + statement.
+func buildPolicySet(prefix string, policies []Policy) (*cedar.PolicySet, error) {
 	set := cedar.NewPolicySet()
 	for _, p := range policies {
 		list, err := cedar.NewPolicyListFromBytes(p.ID, []byte(p.Cedar))
 		if err != nil {
-			return nil, fmt.Errorf("iam: policy %q: %w", p.ID, err)
+			return nil, fmt.Errorf("iam: %s %q: %w", prefix, p.ID, err)
 		}
 		for i, stmt := range list {
-			pid := types.PolicyID("pol:" + p.ID + "#" + strconv.Itoa(i))
-			// Guard against duplicate Sieve policy IDs silently overwriting
-			// statements (Add replaces in place). Storage enforces unique ids;
-			// this catches a programming/seed error loudly instead.
+			pid := types.PolicyID(prefix + ":" + p.ID + "#" + strconv.Itoa(i))
 			if set.Get(pid) != nil {
-				return nil, fmt.Errorf("iam: duplicate policy id %q", p.ID)
+				return nil, fmt.Errorf("iam: duplicate %s id %q", prefix, p.ID)
 			}
 			set.Add(pid, stmt)
 		}
 	}
+	return set, nil
+}
+
+// NewEngine compiles the grant rules and the guardrails into their two PolicySets.
+// Grant ids keep the legacy "pol:" prefix (back-compat with audit/explorer);
+// guardrails use "guard:". A policy whose Cedar fails to parse is an error (the
+// caller surfaces it as broken rather than silently dropping it).
+func NewEngine(grants []Policy, guardrails []Policy, lib FilterLibrary) (*Engine, error) {
+	g, err := buildPolicySet("pol", grants)
+	if err != nil {
+		return nil, err
+	}
+	h, err := buildPolicySet("guard", guardrails)
+	if err != nil {
+		return nil, err
+	}
 	if lib == nil {
 		lib = MapFilterLibrary{}
 	}
-	return &Engine{set: set, lib: lib}, nil
+	return &Engine{grants: g, guardrails: h, lib: lib}, nil
 }
 
-// Decide evaluates the request and resolves obligations. It performs no I/O.
+// ValidateGuardrailCedar enforces the permit-only invariant on guardrail Cedar
+// (spec §7.2): every statement must be a `permit`. A `forbid` in the guardrail
+// set would flip the guardrail pass's Reasons semantics (on a deny, diag.Reasons
+// holds satisfied forbids, not matched permits) and silently drop obligations —
+// so it is rejected at save, including via the raw-Cedar escape hatch. Also
+// rejects unparseable or empty guardrail text.
+func ValidateGuardrailCedar(cedarText string) error {
+	list, err := cedar.NewPolicyListFromBytes("_guardrail", []byte(cedarText))
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("a guardrail must contain at least one permit statement")
+	}
+	for _, stmt := range list {
+		if stmt.Effect() != cedar.Permit {
+			return fmt.Errorf("a guardrail must be a `permit` — it only ADDS an obligation (approval/filters) to an already-allowed request; `forbid` is not allowed in the guardrail set (spec §7.2)")
+		}
+	}
+	return nil
+}
+
+// Decide runs the two-pass evaluation (spec §7.3). Pass 1 (grants) yields the
+// allow/deny decision. Pass 2 (guardrails, only on allow) collects obligations
+// from EVERY guardrail that matched or errored — independent of which grant
+// fired, so composition cannot strip an obligation. Performs no I/O.
 func (e *Engine) Decide(r Request) (Decision, error) {
 	entities, err := buildEntityMap(r.Entities)
 	if err != nil {
@@ -63,8 +104,8 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 		Context:   ctx,
 	}
 
-	dec, diag := e.set.IsAuthorized(entities, req)
-
+	// Pass 1 — grants: the decision.
+	dec, diag := e.grants.IsAuthorized(entities, req)
 	out := Decision{Allow: bool(dec)}
 	for _, d := range diag.Errors {
 		out.EvalErrors = append(out.EvalErrors, EvalError{PolicyID: string(d.PolicyID), Message: d.Message})
@@ -72,20 +113,14 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 	for _, reason := range diag.Reasons {
 		out.Determining = append(out.Determining, string(reason.PolicyID))
 	}
-
 	if dec != cedar.Allow {
 		out.Reason = e.denyReason(diag.Reasons)
 		return out, nil
 	}
 
-	// Allow: collect obligations from the determining permits' annotations.
-	perPermit := make([]map[string]string, 0, len(diag.Reasons))
-	for _, reason := range diag.Reasons {
-		if p := e.set.Get(reason.PolicyID); p != nil {
-			perPermit = append(perPermit, annotationsToMap(p.Annotations()))
-		}
-	}
-	obl, err := collectObligations(perPermit, e.lib)
+	// Pass 2 — guardrails: obligations bind the outcome (spec §7.0/§7.3).
+	perGuardrail := e.matchedGuardrails(entities, req)
+	obl, err := collectObligations(perGuardrail, e.lib)
 	if err != nil {
 		// Fail closed: an unresolvable obligation denies rather than allowing
 		// without the intended guard/filter.
@@ -95,12 +130,41 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 	return out, nil
 }
 
+// matchedGuardrails runs the guardrail pass and returns the annotation maps of
+// every guardrail that MATCHED (diag.Reasons — the set is permit-only, spec §7.2,
+// so on Allow these are exactly the satisfied guardrails) OR ERRORED
+// (diag.Errors). An errored guardrail is treated as matched — fail-SAFE, the
+// mirror of the grant fail-closed rule: a guardrail whose condition can't be
+// evaluated still imposes its obligation rather than silently dropping it
+// (spec §7.3/§7.6 polarity).
+func (e *Engine) matchedGuardrails(entities types.EntityMap, req cedar.Request) []map[string]string {
+	_, hdiag := e.guardrails.IsAuthorized(entities, req)
+	seen := make(map[types.PolicyID]bool)
+	var out []map[string]string
+	add := func(pid types.PolicyID) {
+		if seen[pid] {
+			return
+		}
+		seen[pid] = true
+		if p := e.guardrails.Get(pid); p != nil {
+			out = append(out, annotationsToMap(p.Annotations()))
+		}
+	}
+	for _, reason := range hdiag.Reasons {
+		add(reason.PolicyID)
+	}
+	for _, d := range hdiag.Errors {
+		add(d.PolicyID) // fail-safe: an errored guardrail still imposes its obligation
+	}
+	return out
+}
+
 // denyReason builds a human-readable reason from the determining forbids'
 // @deny_message annotations, falling back to the default-deny message.
 func (e *Engine) denyReason(reasons []types.DiagnosticReason) string {
 	var msgs []string
 	for _, reason := range reasons {
-		if p := e.set.Get(reason.PolicyID); p != nil {
+		if p := e.grants.Get(reason.PolicyID); p != nil {
 			if m := strings.TrimSpace(string(p.Annotations()[types.Ident(annDenyMsg)])); m != "" {
 				msgs = append(msgs, m)
 			}

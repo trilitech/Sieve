@@ -40,14 +40,22 @@ func TestMCP_ScriptGuardEnforced(t *testing.T) {
 		map[string]any{"command": py, "inline": mcpGuardScript}); err != nil {
 		t.Fatal(err)
 	}
-	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+	spec := iampolicies.RuleSpec{
 		RoleID: role.ID, Effect: "allow", ConnectorType: "mock", OpScope: "write",
 		ConnectionIDs: []string{"test-conn"}, Filters: []string{"block-secret"},
-	}, nil)
+	}
+	grant, err := iampolicies.BuildRuleCedar(spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := iamSvc.CreatePolicy("send-guarded", "", cedar, true); err != nil {
+	if _, err := iamSvc.CreatePolicy("send-guarded", "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := iampolicies.BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := iamSvc.CreateGuardrail("send-guarded-g", "", guard, true); err != nil {
 		t.Fatal(err)
 	}
 

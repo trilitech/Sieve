@@ -40,14 +40,24 @@ func TestDecide_ScriptGuardBlocksSend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+	spec := iampolicies.RuleSpec{
 		RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "write",
 		Filters: []string{"block-secret"},
-	}, nil)
+	}
+	// Grant (allow the write) + the companion guardrail carrying the script_guard
+	// obligation (spec §7.2). The guard runs in pass 2 and can deny.
+	grant, err := iampolicies.BuildRuleCedar(spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.CreatePolicy("send-with-guard", "", cedar, true); err != nil {
+	if _, err := svc.CreatePolicy("send-with-guard", "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := iampolicies.BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateGuardrail("send-with-guard-g", "", guard, true); err != nil {
 		t.Fatal(err)
 	}
 

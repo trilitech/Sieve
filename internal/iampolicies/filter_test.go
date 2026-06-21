@@ -18,14 +18,15 @@ func TestFilterInUse(t *testing.T) {
 	if _, err := svc.CreateFilter("unused", "", iam.KindRedact, 0, map[string]any{"patterns": []any{"y"}}); err != nil {
 		t.Fatal(err)
 	}
-	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+	// @filters live on a guardrail now (spec §7.2); attach "used" via one.
+	guard, err := iampolicies.BuildGuardrailCedar(iampolicies.RuleSpec{
 		RoleID: "R", Effect: "allow", ConnectorType: "mock", OpScope: "read",
 		Filters: []string{"used"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.CreatePolicy("p", "", cedar, true); err != nil {
+	if _, err := svc.CreateGuardrail("g", "", guard, true); err != nil {
 		t.Fatal(err)
 	}
 

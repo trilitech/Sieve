@@ -70,7 +70,12 @@ func TestStorage_FilterLibraryRoundTrip(t *testing.T) {
 		map[string]any{"patterns": []string{`\b\d{16}\b`}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.CreatePolicy("read-scrub", "",
+	// Grant (allow the read) + guardrail (the scrub obligation, spec §7.2).
+	if _, err := svc.CreatePolicy("read-grant", "",
+		`permit(principal in Sieve::Role::"r1", action in Sieve::Action::"read", resource in Sieve::Connection::"c1");`, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateGuardrail("read-scrub", "",
 		`@filters("scrub-ccn") permit(principal in Sieve::Role::"r1", action in Sieve::Action::"read", resource in Sieve::Connection::"c1");`, true); err != nil {
 		t.Fatal(err)
 	}

@@ -23,9 +23,10 @@ import (
 
 // Result is the output of migrating one legacy policy as bound to (role, conn).
 type Result struct {
-	Cedar   string       // the emitted Cedar document (may be empty if all default-deny)
-	Filters []iam.Filter // filter-library entries referenced by @filters
-	Manual  []ManualItem // rules that need a human port (rich match, scripts, llm)
+	Cedar      string       // the GRANT document (permit/forbid; may be empty if all default-deny)
+	Guardrails string       // the GUARDRAIL document (permit-only @approval/@filters overlays); spec §7.2
+	Filters    []iam.Filter // filter-library entries referenced by @filters
+	Manual     []ManualItem // rules that need a human port (rich match, scripts, llm)
 }
 
 // ManualItem flags a rule/policy the migrator refused to auto-translate.
@@ -49,18 +50,21 @@ func MigrateRulesBinding(connType, role, conn string, p PolicyInput) (Result, er
 		return Result{}, fmt.Errorf("iammigrate: %q is not a rules policy: %w", p.ID, err)
 	}
 
-	var stmts []string
+	var grants, guardrails []string
 	var filters []iam.Filter
 	var manual []ManualItem
 
 	for i, r := range cfg.Rules {
-		stmt, fs, man := translateRule(connType, role, conn, p.ID, i, r)
+		grant, guard, fs, man := translateRule(connType, role, conn, p.ID, i, r)
 		if man != nil {
 			manual = append(manual, *man)
 			continue
 		}
-		if stmt != "" {
-			stmts = append(stmts, stmt)
+		if grant != "" {
+			grants = append(grants, grant)
+		}
+		if guard != "" {
+			guardrails = append(guardrails, guard)
 		}
 		filters = append(filters, fs...)
 	}
@@ -68,12 +72,17 @@ func MigrateRulesBinding(connType, role, conn string, p PolicyInput) (Result, er
 	// DefaultAction: "deny" (or empty) → nothing (Cedar default-deny). "allow"
 	// → a trailing broad permit on this connection.
 	if cfg.DefaultAction == "allow" {
-		stmts = append(stmts, fmt.Sprintf(
+		grants = append(grants, fmt.Sprintf(
 			`@id(%q) permit(principal in Sieve::Role::%q, action, resource in Sieve::Connection::%q);`,
 			fmt.Sprintf("mig:%s:%s:default-allow", p.ID, conn), role, conn))
 	}
 
-	return Result{Cedar: strings.Join(stmts, "\n\n"), Filters: dedupeFilters(filters), Manual: manual}, nil
+	return Result{
+		Cedar:      strings.Join(grants, "\n\n"),
+		Guardrails: strings.Join(guardrails, "\n\n"),
+		Filters:    dedupeFilters(filters),
+		Manual:     manual,
+	}, nil
 }
 
 // PolicyInput is the subset of a stored policy the migrator needs (decoupled
@@ -83,10 +92,15 @@ type PolicyInput struct {
 	Config map[string]any // the rules evaluator config (RulesConfig shape)
 }
 
-func translateRule(connType, role, conn, polID string, idx int, r policy.Rule) (string, []iam.Filter, *ManualItem) {
+// translateRule returns (grant, guardrail, filters, manual). The grant is the
+// plain permit/forbid (no obligations); the guardrail (when the rule carries an
+// approval/filter obligation) is a permit-only overlay carrying @approval/@filters
+// over the same scope (spec §7.2 — obligations live in the guardrail set so
+// composition can't strip them, §7.0).
+func translateRule(connType, role, conn, polID string, idx int, r policy.Rule) (grant, guardrail string, fs []iam.Filter, man *ManualItem) {
 	// Only Operations-based matches translate cleanly. Anything richer → manual.
 	if richMatch(r.Match) {
-		return "", nil, &ManualItem{PolicyID: polID, Rule: idx,
+		return "", "", nil, &ManualItem{PolicyID: polID, Rule: idx,
 			Reason: "rule match uses fields beyond `operations` (glob/substring/content/service-specific) — port by hand or as a script_guard"}
 	}
 	ops := matchedOps(r.Match)
@@ -95,32 +109,38 @@ func translateRule(connType, role, conn, polID string, idx int, r policy.Rule) (
 	switch r.Action {
 	case "allow", "filter":
 		fs, ann := ruleFilters(polID, idx, r)
-		return permit(id, ann, role, conn, connType, ops), fs, nil
+		grant = permit(id, nil, role, conn, connType, ops)
+		if len(ann) > 0 {
+			guardrail = permit(id+":g", ann, role, conn, connType, ops)
+		}
+		return grant, guardrail, fs, nil
 
 	case "deny":
 		// H1: an unconditional catch-all deny is legacy "default deny" — Cedar
 		// gives that for free. Emitting a catch-all forbid would override ALL
 		// permits. So a catch-all deny emits NOTHING.
 		if len(ops) == 0 {
-			return "", nil, nil
+			return "", "", nil, nil
 		}
 		msg := r.Reason
 		if msg == "" {
 			msg = fmt.Sprintf("denied by rule %d", idx+1)
 		}
-		return forbid(id, msg, role, conn, connType, ops), nil, nil
+		return forbid(id, msg, role, conn, connType, ops), "", nil, nil
 
 	case "approval_required":
 		fs, ann := ruleFilters(polID, idx, r)
-		ann = append([]string{`@approval("required")`}, ann...)
-		return permit(id, ann, role, conn, connType, ops), fs, nil
+		grant = permit(id, nil, role, conn, connType, ops)
+		gann := append([]string{`@approval("required")`}, ann...)
+		guardrail = permit(id+":g", gann, role, conn, connType, ops)
+		return grant, guardrail, fs, nil
 
 	case "script":
-		return "", nil, &ManualItem{PolicyID: polID, Rule: idx,
+		return "", "", nil, &ManualItem{PolicyID: polID, Rule: idx,
 			Reason: "rule action=script — port to a script_guard filter-library entry"}
 
 	default:
-		return "", nil, &ManualItem{PolicyID: polID, Rule: idx,
+		return "", "", nil, &ManualItem{PolicyID: polID, Rule: idx,
 			Reason: "unknown rule action " + r.Action}
 	}
 }

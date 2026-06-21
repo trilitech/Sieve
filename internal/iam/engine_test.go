@@ -84,7 +84,19 @@ type fixtureUIDs struct {
 
 func mustEngine(t *testing.T, lib FilterLibrary, policies ...Policy) *Engine {
 	t.Helper()
-	e, err := NewEngine(policies, lib)
+	e, err := NewEngine(policies, nil, lib)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	return e
+}
+
+// mustEngineG builds a two-pass engine: a plain `grant` (pass 1 allow/deny) plus
+// an obligation-bearing `guardrail` (pass 2). This is how obligations are tested
+// under the spec §7 model — never as annotations on a grant.
+func mustEngineG(t *testing.T, lib FilterLibrary, grant, guardrail string) *Engine {
+	t.Helper()
+	e, err := NewEngine([]Policy{{ID: "grant", Cedar: grant}}, []Policy{{ID: "guard", Cedar: guardrail}}, lib)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
@@ -185,11 +197,13 @@ func TestEngine_Obligations_ApprovalAndFilters(t *testing.T) {
 		"biz-hours":  {Name: "biz-hours", Kind: KindScriptGuard},
 		"redact-ccn": {Name: "redact-ccn", Kind: KindRedact, Order: 5},
 	}
-	e := mustEngine(t, lib, Policy{ID: "p", Cedar: `
+	grant := `permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`
+	guard := `
 @approval("required")
 @filters("scrub-pii biz-hours redact-ccn")
 @audit_label("sensitive_read")
-permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`})
+permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`
+	e := mustEngineG(t, lib, grant, guard)
 
 	d, _ := e.Decide(Request{Principal: u.tok, Action: u.listEmails, Resource: u.workMsg, Entities: b.slice()})
 	if !d.Allow {
@@ -215,12 +229,33 @@ permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/g
 // doesn't resolve must DENY, not allow un-filtered (spec §7.5).
 func TestEngine_Obligations_UnknownFilter_FailsClosed(t *testing.T) {
 	b, u := fixture()
-	e := mustEngine(t, MapFilterLibrary{}, Policy{ID: "p", Cedar: `
+	grant := `permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`
+	guard := `
 @filters("does-not-exist")
-permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`})
+permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`
+	e := mustEngineG(t, MapFilterLibrary{}, grant, guard)
 	d, _ := e.Decide(Request{Principal: u.tok, Action: u.listEmails, Resource: u.workMsg, Entities: b.slice()})
 	if d.Allow {
 		t.Fatal("unknown filter reference must fail closed (deny)")
+	}
+}
+
+// TestEngine_GuardrailFailsSafe: a guardrail whose condition ERRORS (here an
+// unguarded access to an absent context attribute) must STILL impose its
+// obligation. The engine collects errored guardrails (Reasons ∪ Errors) — the
+// mirror of the grant fail-closed rule (spec §7.3/§7.6). Skipping it would
+// silently drop the approval (fail-open), the bug this polarity prevents.
+func TestEngine_GuardrailFailsSafe(t *testing.T) {
+	b, u := fixture()
+	grant := `permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`
+	guard := `@approval("required") permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail") when { context.nope == "x" };`
+	e := mustEngineG(t, nil, grant, guard)
+	d, _ := e.Decide(Request{Principal: u.tok, Action: u.listEmails, Resource: u.workMsg, Entities: b.slice()})
+	if !d.Allow {
+		t.Fatal("grant should allow the read")
+	}
+	if !d.Obligations.Approval {
+		t.Error("an errored guardrail must STILL impose its obligation (fail-safe: Reasons ∪ Errors)")
 	}
 }
 
@@ -230,8 +265,9 @@ permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/g
 func TestEngine_Monotonicity(t *testing.T) {
 	b, u := fixture()
 	lib := MapFilterLibrary{"scrub": {Name: "scrub", Kind: KindScriptFilter}}
-	bare := mustEngine(t, lib, Policy{ID: "p", Cedar: `permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`})
-	withObl := mustEngine(t, lib, Policy{ID: "p", Cedar: `@approval("required") @filters("scrub") permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`})
+	grant := `permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`
+	bare := mustEngine(t, lib, Policy{ID: "p", Cedar: grant})
+	withObl := mustEngineG(t, lib, grant, `@approval("required") @filters("scrub") permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"google/gmail.read", resource in Sieve::Connection::"work-gmail");`)
 
 	r := Request{Principal: u.tok, Action: u.listEmails, Resource: u.workMsg, Entities: b.slice()}
 	d1, _ := bare.Decide(r)
@@ -257,7 +293,7 @@ func TestEngine_Determining(t *testing.T) {
 // TestEngine_BrokenPolicyRejected: NewEngine surfaces a parse error rather than
 // silently dropping a malformed policy.
 func TestEngine_BrokenPolicyRejected(t *testing.T) {
-	_, err := NewEngine([]Policy{{ID: "bad", Cedar: `this is not cedar`}}, nil)
+	_, err := NewEngine([]Policy{{ID: "bad", Cedar: `this is not cedar`}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected NewEngine to reject unparseable Cedar")
 	}
@@ -267,7 +303,7 @@ func TestEngine_BrokenPolicyRejected(t *testing.T) {
 // cedar PolicyID and silently overwrite; NewEngine must reject loudly.
 func TestEngine_DuplicatePolicyID(t *testing.T) {
 	p := `permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"read", resource in Sieve::Connector::"google");`
-	_, err := NewEngine([]Policy{{ID: "dup", Cedar: p}, {ID: "dup", Cedar: p}}, nil)
+	_, err := NewEngine([]Policy{{ID: "dup", Cedar: p}, {ID: "dup", Cedar: p}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected NewEngine to reject duplicate policy ids")
 	}
@@ -278,15 +314,18 @@ func TestEngine_DuplicatePolicyID(t *testing.T) {
 // int→Long, and bool conversions, and the has-guarded fail-closed shape (§7.6).
 func TestEngine_ContextConversion(t *testing.T) {
 	b, u := fixture()
-	e := mustEngine(t, nil, Policy{ID: "send", Cedar: `
-@approval("required")
+	// The internal-only restriction is a GRANT condition (it changes allow→deny);
+	// the approval is the obligation → a guardrail (spec §7.2).
+	grant := `
 permit(principal in Sieve::Role::"assistant", action == Sieve::Action::"google/send_email", resource in Sieve::Connection::"work-gmail")
 when {
   context has recipient_domains &&
   ["trilitech.com"].containsAll(context.recipient_domains) &&
   context.attempt == 1 &&
   context.urgent == false
-};`})
+};`
+	guard := `@approval("required") permit(principal in Sieve::Role::"assistant", action == Sieve::Action::"google/send_email", resource in Sieve::Connection::"work-gmail");`
+	e := mustEngineG(t, nil, grant, guard)
 
 	base := func(ctx map[string]any) Request {
 		return Request{Principal: u.tok, Action: u.sendEmail, Resource: u.work, Entities: b.slice(), Context: ctx}

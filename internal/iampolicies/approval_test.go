@@ -17,13 +17,23 @@ func TestDecide_ApprovalRequired(t *testing.T) {
 	env := testenv.New(t)
 	svc := iampolicies.NewService(env.DB)
 
-	cedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+	spec := iampolicies.RuleSpec{
 		RoleID: "R", Effect: "require_approval", ConnectorType: "mock", OpScope: "write",
-	}, nil)
+	}
+	// Grant (allow the write) + the companion guardrail (the approval obligation,
+	// spec §7.2 — obligations live in the guardrail set, not on the grant).
+	grant, err := iampolicies.BuildRuleCedar(spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.CreatePolicy("needs-approval", "", cedar, true); err != nil {
+	if _, err := svc.CreatePolicy("needs-approval", "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := iampolicies.BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateGuardrail("needs-approval-g", "", guard, true); err != nil {
 		t.Fatal(err)
 	}
 
