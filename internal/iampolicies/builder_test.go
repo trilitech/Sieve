@@ -27,7 +27,7 @@ func decideEngine(t *testing.T, cedar string) *iam.Engine {
 }
 
 func reqFor(roleID, connType, connID, op string, readOnly bool) iam.Request {
-	return iam.BuildRequest("tok", roleID, nil, connType, connID, "active",
+	return iam.BuildRequest("tok", []string{roleID}, connType, connID, "active",
 		connector.OperationDef{Name: op, ReadOnly: readOnly}, nil)
 }
 
@@ -142,7 +142,7 @@ func ownerReq(roleID, connID, owner string) iam.Request {
 			return []connector.ResourceRef{{Type: "Sieve::Github::Owner", ID: cid + "/" + owner}}
 		},
 	}
-	return iam.BuildRequest("tok", roleID, nil, "github", connID, "active", od, nil)
+	return iam.BuildRequest("tok", []string{roleID}, "github", connID, "active", od, nil)
 }
 
 func TestBuildRuleCedar_ResourceScope(t *testing.T) {
@@ -172,7 +172,7 @@ func TestBuildRuleCedar_NumberCondition(t *testing.T) {
 	}
 	eng := decideEngine(t, cedar)
 	mk := func(amount int) iam.Request {
-		return iam.BuildRequest("tok", "R", nil, "anthropic", "ap", "active",
+		return iam.BuildRequest("tok", []string{"R"}, "anthropic", "ap", "active",
 			connector.OperationDef{Name: "complete"}, map[string]any{"amount": amount})
 	}
 	if d, _ := eng.Decide(mk(500)); !d.Allow {
@@ -195,7 +195,7 @@ func TestBuildRuleCedar_DomainAllowlist(t *testing.T) {
 	// Build a send request and inject recipient_domains into context (the PEP
 	// enricher does this in the live path).
 	mk := func(domains ...string) iam.Request {
-		req := iam.BuildRequest("tok", "R", nil, "google", "work", "active",
+		req := iam.BuildRequest("tok", []string{"R"}, "google", "work", "active",
 			connector.OperationDef{Name: "send_email"}, nil)
 		set := make([]any, len(domains))
 		for i, d := range domains {

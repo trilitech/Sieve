@@ -26,15 +26,11 @@ import (
 func (s *Service) Decide(
 	ctx context.Context,
 	reg *connector.Registry,
-	tokenID, roleID, connType, connID, connStatus, op string,
+	tokenID string, roleIDs []string, connType, connID, connStatus, op string,
 	params map[string]any,
 ) (*policy.PolicyDecision, error) {
 	_ = ctx
 	eng, err := s.Engine()
-	if err != nil {
-		return nil, err
-	}
-	groups, err := s.GroupsForRole(roleID)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +39,7 @@ func (s *Service) Decide(
 		Operation: op, Connection: connID, Connector: connType,
 		Params: params, Metadata: params, Phase: "pre",
 	}
-	req := iam.BuildRequest(tokenID, roleID, groups, connType, connID, connStatus, opDef, params)
+	req := iam.BuildRequest(tokenID, roleIDs, connType, connID, connStatus, opDef, params)
 
 	// Connector-derived context (e.g. recipient_domains) that RuleConditions
 	// reference. Pure func on Meta — no configured instance / keyring needed.

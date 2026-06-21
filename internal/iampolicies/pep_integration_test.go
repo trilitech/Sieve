@@ -48,13 +48,9 @@ func TestPEP_Integration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The PEP helper: resolve groups + build the request from the taxonomy.
+	// The PEP helper: build the request from the taxonomy for a single-role token.
 	decide := func(op connector.OperationDef, params map[string]any) iam.Decision {
-		groups, err := svc.GroupsForRole("r1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		req := iam.BuildRequest("t1", "r1", groups, "github", "ghc", "active", op, params)
+		req := iam.BuildRequest("t1", []string{"r1"}, "github", "ghc", "active", op, params)
 		d, err := eng.Decide(req)
 		if err != nil {
 			t.Fatal(err)

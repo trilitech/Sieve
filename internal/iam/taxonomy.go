@@ -132,8 +132,8 @@ func ResolveResource(connType, connID string, op connector.OperationDef, params 
 // connection's type + status (connections.Get), and the op's OperationDef (from
 // the connector's Meta().Operations). The connection entity is annotated with
 // connection_status so a policy may gate on it.
-func BuildRequest(tokenID, roleID string, roleGroups []string, connType, connID, connStatus string, op connector.OperationDef, params map[string]any) Request {
-	pUID, pEnts := PrincipalEntities(tokenID, roleID, roleGroups)
+func BuildRequest(tokenID string, roleIDs []string, connType, connID, connStatus string, op connector.OperationDef, params map[string]any) Request {
+	pUID, pEnts := PrincipalEntities(tokenID, roleIDs)
 	aUID, aEnts := ResolveAction(connType, op)
 	rUID, rEnts := ResolveResource(connType, connID, op, params)
 
@@ -187,23 +187,20 @@ func buildContext(params map[string]any) map[string]any {
 	return ctx
 }
 
-// PrincipalEntities builds the token→role→role-groups chain for the store.
-// (The principal side comes from the role store, not connector metadata; this
-// helper lives here so the whole entity-store vocabulary is in one place.)
-func PrincipalEntities(tokenID, roleID string, roleGroups []string) (EntityUID, []Entity) {
+// PrincipalEntities builds the token→roles chain for the entity store. A token
+// is `in` EVERY role assigned to it (RBAC composition, spec §5.1), so a rule
+// targeting any of those roles applies; the agent's capability is the union.
+// (The principal side comes from the role/token stores, not connector metadata;
+// this helper lives here so the whole entity-store vocabulary is in one place.)
+func PrincipalEntities(tokenID string, roleIDs []string) (EntityUID, []Entity) {
 	tokenUID := EntityUID{Type: TypeToken, ID: tokenID}
-	roleUID := EntityUID{Type: TypeRole, ID: roleID}
-
-	groupUIDs := make([]EntityUID, len(roleGroups))
-	for i, g := range roleGroups {
-		groupUIDs[i] = EntityUID{Type: TypeRoleGroup, ID: g}
+	roleUIDs := make([]EntityUID, len(roleIDs))
+	for i, r := range roleIDs {
+		roleUIDs[i] = EntityUID{Type: TypeRole, ID: r}
 	}
-	ents := []Entity{
-		{UID: tokenUID, Parents: []EntityUID{roleUID}},
-		{UID: roleUID, Parents: groupUIDs},
-	}
-	for _, g := range groupUIDs {
-		ents = append(ents, Entity{UID: g})
+	ents := []Entity{{UID: tokenUID, Parents: roleUIDs}}
+	for _, r := range roleUIDs {
+		ents = append(ents, Entity{UID: r})
 	}
 	return tokenUID, ents
 }

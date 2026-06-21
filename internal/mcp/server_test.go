@@ -10,8 +10,8 @@ import (
 
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/mcp"
-	mockconn "github.com/trilitech/Sieve/internal/testing/mockconnector"
 	"github.com/trilitech/Sieve/internal/roles"
+	mockconn "github.com/trilitech/Sieve/internal/testing/mockconnector"
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 	"github.com/trilitech/Sieve/internal/tokens"
 )

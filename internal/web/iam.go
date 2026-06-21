@@ -13,6 +13,18 @@ import (
 	"github.com/trilitech/Sieve/internal/roles"
 )
 
+// nonEmptyStrings drops empty entries from a form's multi-value slice (an
+// unselected <select multiple> posts a single "" we don't want).
+func nonEmptyStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // iam.go implements the /iam admin page: IAM role creation, a VISUAL rules
 // builder (role → effect → connector → operations → connections, compiled to
 // Cedar so an operator never writes Cedar), a raw-Cedar "advanced" escape hatch,
@@ -123,7 +135,7 @@ type iamPageData struct {
 
 	// Decision-explorer round-trip fields.
 	ExploreDone      bool
-	ExploreRoleID    string
+	ExploreRoleIDs   []string
 	ExploreConnID    string
 	ExploreConnType  string
 	ExploreOperation string
@@ -839,7 +851,7 @@ func (s *Server) handleIAMExplore(w http.ResponseWriter, r *http.Request) {
 
 	data := &iamPageData{
 		ExploreDone:      true,
-		ExploreRoleID:    r.FormValue("role_id"),
+		ExploreRoleIDs:   nonEmptyStrings(r.Form["role_id"]),
 		ExploreConnID:    r.FormValue("connection_id"),
 		ExploreConnType:  r.FormValue("connector_type"),
 		ExploreOperation: r.FormValue("operation"),
@@ -862,7 +874,7 @@ func (s *Server) handleIAMExplore(w http.ResponseWriter, r *http.Request) {
 		r.Context(),
 		s.iamRegistry,
 		"explorer",
-		data.ExploreRoleID,
+		data.ExploreRoleIDs,
 		data.ExploreConnType,
 		data.ExploreConnID,
 		"active",

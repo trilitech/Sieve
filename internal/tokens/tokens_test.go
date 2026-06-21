@@ -40,8 +40,8 @@ func TestCreateAndValidate(t *testing.T) {
 	if result.Token.Name != "my-token" {
 		t.Fatalf("expected name 'my-token', got %q", result.Token.Name)
 	}
-	if result.Token.RoleID != role.ID {
-		t.Fatalf("expected role ID %q, got %q", role.ID, result.Token.RoleID)
+	if result.Token.RoleIDs[0] != role.ID {
+		t.Fatalf("expected role ID %q, got %q", role.ID, result.Token.RoleIDs[0])
 	}
 
 	validated, err := tokenSvc.Validate(result.PlaintextToken)
@@ -51,8 +51,8 @@ func TestCreateAndValidate(t *testing.T) {
 	if validated.ID != result.Token.ID {
 		t.Fatalf("expected token ID %q, got %q", result.Token.ID, validated.ID)
 	}
-	if validated.RoleID != role.ID {
-		t.Fatalf("expected role ID %q, got %q", role.ID, validated.RoleID)
+	if validated.RoleIDs[0] != role.ID {
+		t.Fatalf("expected role ID %q, got %q", role.ID, validated.RoleIDs[0])
 	}
 }
 
@@ -494,8 +494,8 @@ func TestCreateTokenNonexistentRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create token with nonexistent role: %v", err)
 	}
-	if result.Token.RoleID != "nonexistent-role-id" {
-		t.Fatalf("expected role ID 'nonexistent-role-id', got %q", result.Token.RoleID)
+	if result.Token.RoleIDs[0] != "nonexistent-role-id" {
+		t.Fatalf("expected role ID 'nonexistent-role-id', got %q", result.Token.RoleIDs[0])
 	}
 
 	// The token should still validate (token validation doesn't check role).
@@ -503,7 +503,7 @@ func TestCreateTokenNonexistentRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate token with nonexistent role: %v", err)
 	}
-	if validated.RoleID != "nonexistent-role-id" {
-		t.Fatalf("expected role ID 'nonexistent-role-id', got %q", validated.RoleID)
+	if validated.RoleIDs[0] != "nonexistent-role-id" {
+		t.Fatalf("expected role ID 'nonexistent-role-id', got %q", validated.RoleIDs[0])
 	}
 }

@@ -347,11 +347,10 @@ else:
         <form method="POST" action="/iam/explore">
           <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Role</label>
-              <select name="role_id"
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Roles <span class="text-slate-500">(a token composes one or more)</span></label>
+              <select name="role_id" multiple size="4"
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="">—</option>
-                {{range .Roles}}<option value="{{.ID}}" {{if eq .ID $.ExploreRoleID}}selected{{end}}>{{.Name}}</option>{{end}}
+                {{range .Roles}}<option value="{{.ID}}" {{if strInSlice $.ExploreRoleIDs .ID}}selected{{end}}>{{.Name}}</option>{{end}}
               </select>
             </div>
             <div>

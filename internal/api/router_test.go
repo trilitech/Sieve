@@ -744,7 +744,7 @@ func TestStory86_DeletedRoleCannotResolve(t *testing.T) {
 	}
 
 	// But trying to get the role fails.
-	_, err = env.Roles.Get(tokenResult.RoleID)
+	_, err = env.Roles.Get(tokenResult.RoleIDs[0])
 	if err == nil {
 		t.Fatal("story 86: expected error getting deleted role")
 	}

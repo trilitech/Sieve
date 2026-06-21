@@ -31,7 +31,7 @@ func TestDecide_ApprovalRequired(t *testing.T) {
 	m := mockconnector.New("mock")
 	reg.Register(m.Meta(), m.Factory())
 
-	d, err := svc.Decide(context.Background(), reg, "tok", "R", "mock", "c", "active", "send_email",
+	d, err := svc.Decide(context.Background(), reg, "tok", []string{"R"}, "mock", "c", "active", "send_email",
 		map[string]any{"to": []string{"a@b.com"}, "subject": "s", "body": "x"})
 	if err != nil {
 		t.Fatal(err)

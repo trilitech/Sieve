@@ -35,7 +35,7 @@ var testOps = map[string]connector.OperationDef{
 
 func newReq(connType, role, conn, token, op string, params map[string]any) iam.Request {
 	od := testOps[op]
-	pUID, pEnts := iam.PrincipalEntities(token, role, nil)
+	pUID, pEnts := iam.PrincipalEntities(token, []string{role})
 	aUID, aEnts := iam.ResolveAction(connType, od)
 	rUID, rEnts := iam.ResolveResource(connType, conn, od, params)
 	ents := append(append(append([]iam.Entity{}, pEnts...), aEnts...), rEnts...)

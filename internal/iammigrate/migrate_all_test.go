@@ -14,7 +14,7 @@ import (
 // mockReq builds an IAM request for a mock-connector op (as the live PIP would).
 func mockReq(roleID, connID, op string, readOnly bool) iam.Request {
 	od := connector.OperationDef{Name: op, ReadOnly: readOnly}
-	pUID, pEnts := iam.PrincipalEntities("t1", roleID, nil)
+	pUID, pEnts := iam.PrincipalEntities("t1", []string{roleID})
 	aUID, aEnts := iam.ResolveAction("mock", od)
 	rUID, rEnts := iam.ResolveResource("mock", connID, od, nil)
 	ents := append(append(append([]iam.Entity{}, pEnts...), aEnts...), rEnts...)

@@ -55,7 +55,7 @@ func TestDecide_ScriptGuardBlocksSend(t *testing.T) {
 	reg.Register(gmail.Meta, gmail.Factory)
 
 	send := func(body string) *policy.PolicyDecision {
-		d, err := svc.Decide(context.Background(), reg, "tok", "R", "google", "work", "active", "send_email",
+		d, err := svc.Decide(context.Background(), reg, "tok", []string{"R"}, "google", "work", "active", "send_email",
 			map[string]any{"to": []string{"a@b.com"}, "subject": "s", "body": body})
 		if err != nil {
 			t.Fatalf("decide: %v", err)

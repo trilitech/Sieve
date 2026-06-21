@@ -23,7 +23,7 @@ func testDB(t *testing.T) *database.DB {
 // on connection c1 by role r1's token, via the taxonomy (as PR-D's PIP will).
 func listEmailsReq(connID string) iam.Request {
 	op := connector.OperationDef{Name: "list_emails", ReadOnly: true}
-	pUID, pEnts := iam.PrincipalEntities("t1", "r1", nil)
+	pUID, pEnts := iam.PrincipalEntities("t1", []string{"r1"})
 	aUID, aEnts := iam.ResolveAction("google", op)
 	rUID, rEnts := iam.ResolveResource("google", connID, op, nil)
 	ents := append(append(append([]iam.Entity{}, pEnts...), aEnts...), rEnts...)
@@ -87,35 +87,34 @@ func TestStorage_FilterLibraryRoundTrip(t *testing.T) {
 	}
 }
 
-// TestStorage_RoleGroups: a policy scoped to a role-group matches a role in it.
-func TestStorage_RoleGroups(t *testing.T) {
+// TestStorage_MultiRoleComposition: a token assigned multiple roles is `in` all
+// of them, so a rule targeting ANY one of its roles applies (RBAC union, §5.1).
+// This is the composition primitive that replaced role-groups.
+func TestStorage_MultiRoleComposition(t *testing.T) {
 	svc := NewService(testDB(t))
-	gid, err := svc.CreateRoleGroup("readers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.AddRoleToGroup(gid, "r1"); err != nil {
-		t.Fatal(err)
-	}
-	groups, err := svc.GroupsForRole("r1")
-	if err != nil || len(groups) != 1 || groups[0] != gid {
-		t.Fatalf("GroupsForRole = %v, %v; want [%s]", groups, err, gid)
-	}
-
-	if _, err := svc.CreatePolicy("rg-read", "",
-		`permit(principal in Sieve::RoleGroup::"`+gid+`", action in Sieve::Action::"read", resource in Sieve::Connection::"c1");`, true); err != nil {
+	if _, err := svc.CreatePolicy("email-read", "",
+		`permit(principal in Sieve::Role::"email-access", action in Sieve::Action::"read", resource in Sieve::Connection::"c1");`, true); err != nil {
 		t.Fatal(err)
 	}
 	eng, _ := svc.BuildEngine()
-	// build request with the role's group in the principal chain
 	op := connector.OperationDef{Name: "list_emails", ReadOnly: true}
-	pUID, pEnts := iam.PrincipalEntities("t1", "r1", groups)
+	// Token assigned BOTH roles; the rule targets only "email-access". The token
+	// is `in` email-access (among its set), so the rule applies.
+	pUID, pEnts := iam.PrincipalEntities("t1", []string{"llm-access", "email-access"})
 	aUID, aEnts := iam.ResolveAction("google", op)
 	rUID, rEnts := iam.ResolveResource("google", "c1", op, nil)
 	ents := append(append(append([]iam.Entity{}, pEnts...), aEnts...), rEnts...)
 	d, _ := eng.Decide(iam.Request{Principal: pUID, Action: aUID, Resource: rUID, Entities: ents})
 	if !d.Allow {
-		t.Fatal("role-group policy should allow a role in the group")
+		t.Fatal("multi-role token should be allowed by a rule targeting one of its roles")
+	}
+
+	// A rule targeting a role the token does NOT have must not apply.
+	pUID2, pEnts2 := iam.PrincipalEntities("t2", []string{"llm-access"})
+	ents2 := append(append(append([]iam.Entity{}, pEnts2...), aEnts...), rEnts...)
+	d2, _ := eng.Decide(iam.Request{Principal: pUID2, Action: aUID, Resource: rUID, Entities: ents2})
+	if d2.Allow {
+		t.Fatal("token without the targeted role must be denied (default-deny)")
 	}
 }
 

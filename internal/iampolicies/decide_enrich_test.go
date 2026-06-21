@@ -36,7 +36,7 @@ func TestDecide_GmailRecipientDomain(t *testing.T) {
 	reg.Register(gmail.Meta, gmail.Factory)
 
 	decide := func(to string) string {
-		d, err := svc.Decide(context.Background(), reg, "tok", "R", "google", "work", "active", "send_email",
+		d, err := svc.Decide(context.Background(), reg, "tok", []string{"R"}, "google", "work", "active", "send_email",
 			map[string]any{"to": []string{to}, "subject": "s", "body": "b"})
 		if err != nil {
 			t.Fatalf("decide: %v", err)

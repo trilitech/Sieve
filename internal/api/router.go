@@ -245,12 +245,6 @@ func (rt *Router) listConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	role, err := rt.roles.Get(tok.RoleID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "role not found: "+err.Error())
-		return
-	}
-
 	type connInfo struct {
 		ID          string `json:"id"`
 		Connector   string `json:"connector"`
@@ -258,7 +252,7 @@ func (rt *Router) listConnections(w http.ResponseWriter, r *http.Request) {
 		Status      string `json:"status"`
 	}
 
-	connIDs := role.ConnectionIDs()
+	connIDs := rt.tokenConnectionIDs(tok)
 	result := make([]connInfo, 0, len(connIDs))
 	for _, connID := range connIDs {
 		conn, err := rt.connections.Get(connID)
@@ -290,14 +284,10 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	connID := r.PathValue("conn")
 	operation := r.PathValue("operation")
 
-	role, err := rt.roles.Get(tok.RoleID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "role not found: "+err.Error())
-		return
-	}
-
-	// Verify the connection is in the role's allowed list.
-	if !connectionAllowed(role, connID) {
+	// Verify the token may reach this connection. In IAM mode the rules are the
+	// gate (the engine default-denies if no rule permits); in legacy mode the
+	// connection must be bound by at least one of the token's roles.
+	if !rt.tokenConnectionAllowed(tok, connID) {
 		writeError(w, http.StatusForbidden, fmt.Sprintf("connection %q not allowed for this token", connID))
 		return
 	}
@@ -345,7 +335,7 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	// Evaluate policy. The decision SOURCE is the IAM engine when enabled, else
 	// the legacy evaluator; both yield a *policy.PolicyDecision, so all
 	// downstream control flow is identical.
-	decision, err := rt.decide(r.Context(), tok, role, conn, connID, operation, params)
+	decision, err := rt.decide(r.Context(), tok, conn, connID, operation, params)
 	if err != nil {
 		writeError(w, http.StatusForbidden, fmt.Sprintf("policy error: %v", err))
 		return
@@ -535,15 +525,17 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 // per-(role,connection) evaluator. Both return a *policy.PolicyDecision, so the
 // caller's allow/deny/approval handling is identical either way. Errors
 // fail closed (the caller maps them to 403).
-func (rt *Router) decide(ctx context.Context, tok *tokens.Token, role *roles.Role, conn connector.Connector, connID, operation string, params map[string]any) (*policy.PolicyDecision, error) {
+func (rt *Router) decide(ctx context.Context, tok *tokens.Token, conn connector.Connector, connID, operation string, params map[string]any) (*policy.PolicyDecision, error) {
 	if rt.iamEnabled() {
 		connStatus := ""
 		if c, err := rt.connections.Get(connID); err == nil {
 			connStatus = c.Status
 		}
-		return rt.iam.Decide(ctx, rt.registry, tok.ID, role.ID, conn.Type(), connID, connStatus, operation, params)
+		// RBAC: the token's whole role set composes (spec §5.1); the engine
+		// default-denies if no rule of any role permits this op on this connection.
+		return rt.iam.Decide(ctx, rt.registry, tok.ID, tok.RoleIDs, conn.Type(), connID, connStatus, operation, params)
 	}
-	evaluator, err := rt.getEvaluator(role, connID)
+	evaluator, err := rt.getEvaluatorForToken(tok, connID)
 	if err != nil {
 		return nil, err
 	}
@@ -557,12 +549,22 @@ func (rt *Router) decide(ctx context.Context, tok *tokens.Token, role *roles.Rol
 	})
 }
 
-// getEvaluator builds a composite evaluator from the policies assigned to a
-// specific connection within a role.
-func (rt *Router) getEvaluator(role *roles.Role, connID string) (policy.Evaluator, error) {
-	policyIDs := role.PoliciesForConnection(connID)
+// getEvaluatorForToken builds a legacy composite evaluator from the union of the
+// policies bound to connID across ALL of the token's roles (multi-role). For a
+// single-role token this is exactly the one role's policies (back-compat).
+func (rt *Router) getEvaluatorForToken(tok *tokens.Token, connID string) (policy.Evaluator, error) {
+	seen := map[string]bool{}
+	var policyIDs []string
+	for _, role := range rt.rolesForToken(tok) {
+		for _, pid := range role.PoliciesForConnection(connID) {
+			if !seen[pid] {
+				seen[pid] = true
+				policyIDs = append(policyIDs, pid)
+			}
+		}
+	}
 	if len(policyIDs) == 0 {
-		return nil, fmt.Errorf("no policies for connection %q in role %q — access denied", connID, role.Name)
+		return nil, fmt.Errorf("no policies for connection %q — access denied", connID)
 	}
 	return rt.policies.BuildEvaluator(policyIDs)
 }
@@ -595,13 +597,7 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		proxyPath = "/" + parts[1]
 	}
 
-	role, err := rt.roles.Get(tok.RoleID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "role not found: "+err.Error())
-		return
-	}
-
-	if !connectionAllowed(role, connID) {
+	if !rt.tokenConnectionAllowed(tok, connID) {
 		writeError(w, http.StatusForbidden, fmt.Sprintf("connection %q not allowed", connID))
 		return
 	}
@@ -672,10 +668,10 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if c, e := rt.connections.Get(connID); e == nil {
 			connStatus = c.Status
 		}
-		decision, err = rt.iam.Decide(r.Context(), rt.registry, tok.ID, role.ID, "http_proxy", connID, connStatus, "proxy_request", policyParams)
+		decision, err = rt.iam.Decide(r.Context(), rt.registry, tok.ID, tok.RoleIDs, "http_proxy", connID, connStatus, "proxy_request", policyParams)
 	} else {
 		var evaluator policy.Evaluator
-		evaluator, err = rt.getEvaluator(role, connID)
+		evaluator, err = rt.getEvaluatorForToken(tok, connID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "policy error")
 			return
@@ -769,6 +765,70 @@ func connectionAllowed(role *roles.Role, connID string) bool {
 		}
 	}
 	return false
+}
+
+// rolesForToken resolves every role assigned to a token (RBAC composition,
+// spec §5.1). Missing roles are skipped — a deleted role simply grants nothing.
+func (rt *Router) rolesForToken(tok *tokens.Token) []*roles.Role {
+	out := make([]*roles.Role, 0, len(tok.RoleIDs))
+	for _, rid := range tok.RoleIDs {
+		if r, err := rt.roles.Get(rid); err == nil {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// tokenConnectionIDs is the union of connection IDs bound across all the token's
+// roles (the legacy binding view; used for discovery/listing).
+func (rt *Router) tokenConnectionIDs(tok *tokens.Token) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, role := range rt.rolesForToken(tok) {
+		for _, c := range role.ConnectionIDs() {
+			if !seen[c] {
+				seen[c] = true
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
+// tokenConnectionAllowed gates connection access for a token. In IAM mode the
+// rules are the gate — an IAM role need not carry a legacy binding, and the
+// engine default-denies if no rule of any assigned role permits the op on this
+// connection (spec §10) — so we do NOT pre-check here. In legacy mode the
+// connection must be bound by at least one of the token's roles.
+func (rt *Router) tokenConnectionAllowed(tok *tokens.Token, connID string) bool {
+	if rt.iamEnabled() {
+		return true
+	}
+	for _, c := range rt.tokenConnectionIDs(tok) {
+		if c == connID {
+			return true
+		}
+	}
+	return false
+}
+
+// tokenCandidateConnections lists connections to consider for Gmail alias
+// resolution. Legacy: the token's bound connections. IAM: all connections — the
+// per-op Decide is the real gate, so a pure-IAM role (no legacy binding) can
+// still resolve "me" to a Google connection (which Decide then allows or denies).
+func (rt *Router) tokenCandidateConnections(tok *tokens.Token) []string {
+	if rt.iamEnabled() {
+		conns, err := rt.connections.List()
+		if err != nil {
+			return rt.tokenConnectionIDs(tok)
+		}
+		ids := make([]string, 0, len(conns))
+		for _, c := range conns {
+			ids = append(ids, c.ID)
+		}
+		return ids
+	}
+	return rt.tokenConnectionIDs(tok)
 }
 
 // tokenFromContext extracts the validated token from the request context.
@@ -934,10 +994,11 @@ func (rt *Router) approvalStatus(w http.ResponseWriter, r *http.Request) {
 
 // resolveGmailConnection resolves a Gmail userId to a connection ID.
 // "me" resolves to the first gmail connection. A specific alias is looked up directly.
-func (rt *Router) resolveGmailConnection(role *roles.Role, userId string) (string, error) {
+func (rt *Router) resolveGmailConnection(tok *tokens.Token, userId string) (string, error) {
 	if userId != "me" {
-		// Treat userId as a connection alias — verify it's allowed and is gmail
-		if !connectionAllowed(role, userId) {
+		// Treat userId as a connection alias — verify it's allowed and is gmail.
+		// (IAM: per-op Decide is the real gate; this only resolves the alias.)
+		if !rt.tokenConnectionAllowed(tok, userId) {
 			return "", fmt.Errorf("connection %q not allowed for this token", userId)
 		}
 		conn, err := rt.connections.Get(userId)
@@ -950,8 +1011,8 @@ func (rt *Router) resolveGmailConnection(role *roles.Role, userId string) (strin
 		return userId, nil
 	}
 
-	// "me" — find the first gmail connection
-	for _, connID := range role.ConnectionIDs() {
+	// "me" — find the first gmail connection this token can resolve.
+	for _, connID := range rt.tokenCandidateConnections(tok) {
 		conn, err := rt.connections.Get(connID)
 		if err != nil {
 			continue
@@ -972,18 +1033,12 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 		return
 	}
 
-	role, err := rt.roles.Get(tok.RoleID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "role not found: "+err.Error())
-		return
-	}
-
 	userId := r.PathValue("userId")
 	if userId == "" {
 		userId = "me"
 	}
 
-	connID, err := rt.resolveGmailConnection(role, userId)
+	connID, err := rt.resolveGmailConnection(tok, userId)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1002,7 +1057,7 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 	}
 
 	// Policy check (IAM decision source when enabled, else legacy).
-	decision, err := rt.decide(r.Context(), tok, role, conn, connID, operation, params)
+	decision, err := rt.decide(r.Context(), tok, conn, connID, operation, params)
 	if err != nil {
 		writeError(w, http.StatusForbidden, "policy error: "+err.Error())
 		return
@@ -1105,12 +1160,6 @@ func (rt *Router) gmailListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	role, err := rt.roles.Get(tok.RoleID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "role not found")
-		return
-	}
-
 	type userInfo struct {
 		ID          string `json:"id"`
 		DisplayName string `json:"displayName"`
@@ -1118,7 +1167,7 @@ func (rt *Router) gmailListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var users []userInfo
-	for _, connID := range role.ConnectionIDs() {
+	for _, connID := range rt.tokenCandidateConnections(tok) {
 		conn, err := rt.connections.Get(connID)
 		if err != nil {
 			continue

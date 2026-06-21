@@ -268,8 +268,8 @@ func (e *Env) CreateToken(t *testing.T, roleID string) string {
 	t.Helper()
 
 	result, err := e.Tokens.Create(&tokens.CreateRequest{
-		Name:   "test-token",
-		RoleID: roleID,
+		Name:    "test-token",
+		RoleIDs: []string{roleID},
 	})
 	if err != nil {
 		t.Fatalf("create token: %v", err)

@@ -15,7 +15,7 @@
   <main class="ml-64 p-8">
     <div class="max-w-6xl">
       <h1 class="text-2xl font-bold text-white mb-2">API Tokens</h1>
-      <p class="text-sm text-slate-400 mb-6">Tokens authenticate agents. Each token is bound to <strong>exactly one</strong> role, which defines everything it can access — to combine permissions, put all the needed rules on one role.</p>
+      <p class="text-sm text-slate-400 mb-6">Tokens authenticate agents. Each token is assigned <strong>one or more roles</strong>; the agent can do the <strong>union</strong> of everything those roles allow. Build reusable roles (e.g. "email-access", "llm-access") and compose them per token — no need to cram unrelated permissions onto one role.</p>
 
       <!-- Plaintext Token Alert -->
       {{if .PlaintextToken}}
@@ -50,14 +50,14 @@
                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
             </div>
             <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Role</label>
-              <select name="role_id" required
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Roles <span class="text-slate-500 font-normal">(select one or more — ⌘/Ctrl-click)</span></label>
+              <select name="role_id" multiple required size="5"
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="">Select a role...</option>
                 {{range .Roles}}
-                <option value="{{.ID}}">{{.Name}} ({{len .Bindings}} connections)</option>
+                <option value="{{.ID}}">{{.Name}}</option>
                 {{end}}
               </select>
+              <p class="text-xs text-slate-500 mt-1">The agent gets the union of every selected role.</p>
             </div>
             <div>
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Expires In</label>
@@ -102,7 +102,7 @@
             {{range .Tokens}}
             <tr class="hover:bg-slate-700/30 transition-colors">
               <td class="px-6 py-4 text-sm font-medium text-white">{{.Name}}</td>
-              <td class="px-6 py-4 text-sm text-slate-300">{{mapGet $.RoleNames .RoleID}}</td>
+              <td class="px-6 py-4 text-sm text-slate-300">{{joinNames $.RoleNames .RoleIDs}}</td>
               <td class="px-6 py-4 text-sm text-slate-400">{{timeAgo .CreatedAt}}</td>
               <td class="px-6 py-4 text-sm text-slate-400">
                 {{if .ExpiresAt}}{{timeUntil (derefTime .ExpiresAt)}}{{else}}<span class="text-slate-600">Never</span>{{end}}

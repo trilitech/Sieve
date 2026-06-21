@@ -128,8 +128,8 @@ func main() {
 	mustErr(err, "create role")
 
 	tokResult, err := tokenSvc.Create(&tokens.CreateRequest{
-		Name:   "seed-token",
-		RoleID: role.ID,
+		Name:    "seed-token",
+		RoleIDs: []string{role.ID},
 	})
 	mustErr(err, "create token")
 

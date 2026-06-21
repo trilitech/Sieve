@@ -124,11 +124,12 @@ func (s *Server) iamEnabled() bool {
 
 // decide is the MCP decision source: IAM when enabled, else the legacy
 // evaluator. Both return a *policy.PolicyDecision.
-func (s *Server) decide(ctx context.Context, tok *tokens.Token, role *roles.Role, connType, connID, connStatus, op string, params map[string]any) (*policy.PolicyDecision, error) {
+func (s *Server) decide(ctx context.Context, tok *tokens.Token, connType, connID, connStatus, op string, params map[string]any) (*policy.PolicyDecision, error) {
 	if s.iamEnabled() {
-		return s.iam.Decide(ctx, s.registry, tok.ID, role.ID, connType, connID, connStatus, op, params)
+		// RBAC: the token's whole role set composes (spec §5.1).
+		return s.iam.Decide(ctx, s.registry, tok.ID, tok.RoleIDs, connType, connID, connStatus, op, params)
 	}
-	evaluator, err := s.getEvaluator(role, connID)
+	evaluator, err := s.getEvaluatorForToken(tok, connID)
 	if err != nil {
 		return nil, err
 	}
@@ -237,18 +238,9 @@ func (s *Server) handleInitialize(id any) *JSONRPCResponse {
 
 // handleToolsList builds and returns tool definitions based on the token's connections.
 func (s *Server) handleToolsList(id any, tok *tokens.Token) *JSONRPCResponse {
-	role, err := s.roles.Get(tok.RoleID)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "role not found: " + err.Error()},
-		}
-	}
-
 	var tools []ToolDef
 
-	connIDs := role.ConnectionIDs()
+	connIDs := s.tokenConnectionIDs(tok)
 	// Determine if there are multiple connections (affects tool naming).
 	multiConn := len(connIDs) > 1
 
@@ -386,18 +378,8 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		return s.handleProposePolicy(id, tok, start, call.Arguments)
 	}
 
-	// Resolve the role for this token.
-	role, err := s.roles.Get(tok.RoleID)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "role not found: " + err.Error()},
-		}
-	}
-
 	// Resolve connection and operation from the tool name.
-	connID, opName, err := s.resolveToolCall(role, call)
+	connID, opName, err := s.resolveToolCall(tok, call)
 	if err != nil {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -406,10 +388,10 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		}
 	}
 
-	// Security: verify the resolved connection is in the role's allow-list.
+	// Security: verify the resolved connection is reachable by this token.
 	// This prevents an agent from accessing connections it wasn't granted,
 	// even if it crafts a tool name or "connection" argument manually.
-	if !s.tokenHasConnection(role, connID) {
+	if !s.tokenHasConnection(tok, connID) {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      id,
@@ -447,7 +429,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	// decision SOURCE is the IAM engine when enabled, else the legacy
 	// evaluator; both return a *policy.PolicyDecision so deny/approval_required
 	// handling below is identical.
-	decision, err := s.decide(ctx, tok, role, conn.ConnectorType, connID, conn.Status, opName, call.Arguments)
+	decision, err := s.decide(ctx, tok, conn.ConnectorType, connID, conn.Status, opName, call.Arguments)
 	if err != nil {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -644,17 +626,8 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 
 // handleListConnections returns the token's available connections.
 func (s *Server) handleListConnections(id any, tok *tokens.Token, start time.Time) *JSONRPCResponse {
-	role, err := s.roles.Get(tok.RoleID)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "role not found: " + err.Error()},
-		}
-	}
-
 	var conns []map[string]string
-	for _, connID := range role.ConnectionIDs() {
+	for _, connID := range s.tokenConnectionIDs(tok) {
 		conn, err := s.connections.Get(connID)
 		if err != nil {
 			continue
@@ -710,30 +683,27 @@ func (s *Server) handleListPolicies(id any, tok *tokens.Token, start time.Time) 
 }
 
 func (s *Server) handleGetMyPolicy(id any, tok *tokens.Token, start time.Time) *JSONRPCResponse {
-	role, err := s.roles.Get(tok.RoleID)
-	if err != nil {
-		return &JSONRPCResponse{JSONRPC: "2.0", ID: id, Error: &JSONRPCError{Code: -32000, Message: "role not found: " + err.Error()}}
-	}
-
 	var results []map[string]any
-	for _, binding := range role.Bindings {
-		var bindingPolicies []map[string]any
-		for _, pid := range binding.PolicyIDs {
-			p, err := s.policies.Get(pid)
-			if err != nil {
-				return &JSONRPCResponse{JSONRPC: "2.0", ID: id, Error: &JSONRPCError{Code: -32000, Message: err.Error()}}
+	for _, role := range s.rolesForToken(tok) {
+		for _, binding := range role.Bindings {
+			var bindingPolicies []map[string]any
+			for _, pid := range binding.PolicyIDs {
+				p, err := s.policies.Get(pid)
+				if err != nil {
+					return &JSONRPCResponse{JSONRPC: "2.0", ID: id, Error: &JSONRPCError{Code: -32000, Message: err.Error()}}
+				}
+				bindingPolicies = append(bindingPolicies, map[string]any{
+					"id":     p.ID,
+					"name":   p.Name,
+					"type":   p.PolicyType,
+					"config": p.PolicyConfig,
+				})
 			}
-			bindingPolicies = append(bindingPolicies, map[string]any{
-				"id":     p.ID,
-				"name":   p.Name,
-				"type":   p.PolicyType,
-				"config": p.PolicyConfig,
+			results = append(results, map[string]any{
+				"connection_id": binding.ConnectionID,
+				"policies":      bindingPolicies,
 			})
 		}
-		results = append(results, map[string]any{
-			"connection_id": binding.ConnectionID,
-			"policies":      bindingPolicies,
-		})
 	}
 
 	resultJSON, _ := json.Marshal(results)
@@ -964,7 +934,7 @@ func (s *Server) handleProposePolicy(id any, tok *tokens.Token, start time.Time,
 // When there are multiple connections, the tool name may be prefixed with the
 // connector type, and a "connection" argument may be provided. For single
 // connections the tool name maps directly to the operation.
-func (s *Server) resolveToolCall(role *roles.Role, call ToolCallParams) (connID string, opName string, err error) {
+func (s *Server) resolveToolCall(tok *tokens.Token, call ToolCallParams) (connID string, opName string, err error) {
 	// If a "connection" argument is explicitly provided, use it.
 	if connArg, ok := call.Arguments["connection"]; ok {
 		connIDStr, ok := connArg.(string)
@@ -990,7 +960,7 @@ func (s *Server) resolveToolCall(role *roles.Role, call ToolCallParams) (connID 
 
 	// Single connection: use the only available connection.
 	// Reverse the dot-to-underscore normalization applied when building tool names.
-	connIDs := role.ConnectionIDs()
+	connIDs := s.tokenConnectionIDs(tok)
 	if len(connIDs) == 1 {
 		return connIDs[0], denormalizeDots(call.Name), nil
 	}
@@ -1006,9 +976,14 @@ func (s *Server) resolveToolCall(role *roles.Role, call ToolCallParams) (connID 
 	return "", "", fmt.Errorf("cannot resolve connection for tool %q; provide a 'connection' argument", call.Name)
 }
 
-// tokenHasConnection checks whether the given connection ID is in the role's allowed list.
-func (s *Server) tokenHasConnection(role *roles.Role, connID string) bool {
-	for _, c := range role.ConnectionIDs() {
+// tokenHasConnection checks whether the token may reach the connection. IAM mode
+// defers to per-op Decide (the rules are the gate); legacy mode checks the union
+// of the token's roles' bound connections.
+func (s *Server) tokenHasConnection(tok *tokens.Token, connID string) bool {
+	if s.iamEnabled() {
+		return true
+	}
+	for _, c := range s.tokenConnectionIDs(tok) {
 		if c == connID {
 			return true
 		}
@@ -1016,14 +991,50 @@ func (s *Server) tokenHasConnection(role *roles.Role, connID string) bool {
 	return false
 }
 
-// getEvaluator creates a composite evaluator from the policies assigned to a
-// specific connection within a role. Different connections in the same role can
-// have different policies. Returns a deny-all evaluator if the connection has
-// no policies in the role.
-func (s *Server) getEvaluator(role *roles.Role, connID string) (policy.Evaluator, error) {
-	policyIDs := role.PoliciesForConnection(connID)
+// rolesForToken resolves every role assigned to a token (RBAC, spec §5.1).
+// Missing roles are skipped.
+func (s *Server) rolesForToken(tok *tokens.Token) []*roles.Role {
+	out := make([]*roles.Role, 0, len(tok.RoleIDs))
+	for _, rid := range tok.RoleIDs {
+		if r, err := s.roles.Get(rid); err == nil {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// tokenConnectionIDs is the union of connection IDs bound across all the token's
+// roles (used for tool-list discovery).
+func (s *Server) tokenConnectionIDs(tok *tokens.Token) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, role := range s.rolesForToken(tok) {
+		for _, c := range role.ConnectionIDs() {
+			if !seen[c] {
+				seen[c] = true
+				out = append(out, c)
+			}
+		}
+	}
+	return out
+}
+
+// getEvaluatorForToken creates a legacy composite evaluator from the union of the
+// policies bound to connID across ALL the token's roles. For a single-role token
+// this is exactly that role's policies (back-compat).
+func (s *Server) getEvaluatorForToken(tok *tokens.Token, connID string) (policy.Evaluator, error) {
+	seen := map[string]bool{}
+	var policyIDs []string
+	for _, role := range s.rolesForToken(tok) {
+		for _, pid := range role.PoliciesForConnection(connID) {
+			if !seen[pid] {
+				seen[pid] = true
+				policyIDs = append(policyIDs, pid)
+			}
+		}
+	}
 	if len(policyIDs) == 0 {
-		return nil, fmt.Errorf("no policies for connection %q in role %q — access denied", connID, role.Name)
+		return nil, fmt.Errorf("no policies for connection %q — access denied", connID)
 	}
 	return s.policies.BuildEvaluator(policyIDs)
 }

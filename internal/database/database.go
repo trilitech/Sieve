@@ -217,6 +217,7 @@ func (db *DB) migrate() error {
 		name             TEXT NOT NULL UNIQUE,
 		token_hash       TEXT NOT NULL,
 		role_id          TEXT NOT NULL,
+		role_ids         TEXT NOT NULL DEFAULT '[]',
 		created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
 		expires_at       DATETIME,
 		revoked          INTEGER DEFAULT 0
@@ -388,6 +389,20 @@ func (db *DB) migrate() error {
 	if err := addColumnIfMissing(db, "iam_policies", "spec_json",
 		`ALTER TABLE iam_policies ADD COLUMN spec_json TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add iam_policies.spec_json: %w", err)
+	}
+
+	// tokens.role_ids: a token is now assigned a SET of roles (RBAC, spec §5.1).
+	// Additive; backfill the JSON array from the legacy single role_id so existing
+	// tokens keep working (the IAM engine composes the union of role_ids).
+	if err := addColumnIfMissing(db, "tokens", "role_ids",
+		`ALTER TABLE tokens ADD COLUMN role_ids TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return fmt.Errorf("add tokens.role_ids: %w", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE tokens SET role_ids = json_array(role_id)
+		 WHERE (role_ids IS NULL OR role_ids = '' OR role_ids = '[]') AND role_id != ''`,
+	); err != nil {
+		return fmt.Errorf("backfill tokens.role_ids: %w", err)
 	}
 
 	if hasOldColumn {

@@ -214,6 +214,25 @@ func funcMap() template.FuncMap {
 			}
 			return key // fallback to showing the key itself
 		},
+		"strInSlice": func(haystack []string, needle string) bool {
+			for _, s := range haystack {
+				if s == needle {
+					return true
+				}
+			}
+			return false
+		},
+		"joinNames": func(m map[string]string, ids []string) string {
+			parts := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if v, ok := m[id]; ok {
+					parts = append(parts, v)
+				} else {
+					parts = append(parts, id)
+				}
+			}
+			return strings.Join(parts, ", ")
+		},
 		"add": func(a, b int) int {
 			return a + b
 		},
@@ -1315,10 +1334,12 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := r.FormValue("name")
-	roleID := r.FormValue("role_id")
+	// A token composes one or more roles (RBAC). The multi-select posts role_id
+	// repeatedly; accept the legacy single value too.
+	roleIDs := nonEmptyStrings(r.Form["role_id"])
 
-	if roleID == "" {
-		http.Error(w, "a role is required", http.StatusBadRequest)
+	if len(roleIDs) == 0 {
+		http.Error(w, "at least one role is required", http.StatusBadRequest)
 		return
 	}
 
@@ -1334,7 +1355,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.tokens.Create(&tokens.CreateRequest{
 		Name:      name,
-		RoleID:    roleID,
+		RoleIDs:   roleIDs,
 		ExpiresIn: expiresIn,
 	})
 	if err != nil {
@@ -1345,7 +1366,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 	// audit.RedactSensitive via the LogOperator helper. Failures don't
 	// block the user-visible response — best-effort persistence.
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "token.create", result.Token.ID,
-		map[string]any{"name": name, "role_id": roleID}, "success")
+		map[string]any{"name": name, "role_ids": roleIDs}, "success")
 
 	// Re-fetch list for rendering
 	toks, err := s.tokens.List()
