@@ -150,7 +150,7 @@ func TestIAMEnforce_RedactOverGateway(t *testing.T) {
 		"emails": []any{map[string]any{"id": "1", "note": "ssn 123-45-6789 on file"}},
 	})
 	if _, err := env.iam.CreateFilter("redact-ssn", "mask US SSNs", iam.KindRedact, 0,
-		map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}}); err != nil {
+		map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}, "match": "regex"}); err != nil {
 		t.Fatal(err)
 	}
 	spec := iampolicies.RuleSpec{

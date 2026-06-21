@@ -353,18 +353,31 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 	var kind iam.FilterKind
 	config := map[string]any{}
 	switch kindStr {
-	case string(iam.KindRedact):
-		kind = iam.KindRedact
+	case string(iam.KindRedact), string(iam.KindExcludeItems):
+		// redact and exclude share the SAME matching model: a list of patterns
+		// interpreted by a match mode (contains|regex). redact masks matches;
+		// exclude drops list items that match.
+		if kindStr == string(iam.KindRedact) {
+			kind = iam.KindRedact
+		} else {
+			kind = iam.KindExcludeItems
+		}
 		var patterns []string
 		for _, line := range strings.Split(r.FormValue("patterns"), "\n") {
 			if p := strings.TrimSpace(line); p != "" {
 				patterns = append(patterns, p)
 			}
 		}
+		if len(patterns) == 0 {
+			http.Error(w, "at least one pattern is required", http.StatusBadRequest)
+			return
+		}
 		config["patterns"] = patterns
-	case string(iam.KindExcludeItems):
-		kind = iam.KindExcludeItems
-		config["text"] = r.FormValue("text")
+		if m := r.FormValue("match"); m == "regex" {
+			config["match"] = "regex"
+		} else {
+			config["match"] = "contains"
+		}
 	case string(iam.KindScriptGuard):
 		kind = iam.KindScriptGuard
 		config["command"] = iampolicies.ScriptCommand()

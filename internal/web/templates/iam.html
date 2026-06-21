@@ -115,20 +115,21 @@
                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
           </div>
 
-          <!-- redact config -->
-          <div id="filter-cfg-redact" class="mt-5">
+          <!-- redact / exclude_items config — SHARED: both use the same matching
+               model (a list of patterns + a match mode), so they're equally
+               powerful. redact masks matches; exclude drops matching list items. -->
+          <div id="filter-cfg-patterns" class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Patterns</label>
-            <textarea name="patterns" rows="4" placeholder="One regular expression per line, e.g.&#10;\b\d{16}\b&#10;\b\d{3}-\d{2}-\d{4}\b"
+            <textarea name="patterns" rows="4" placeholder="One per line, e.g.&#10;confidential&#10;\b\d{16}\b"
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
-            <p class="text-xs text-slate-500 mt-1">Runs <strong>after</strong> the operation. One regular expression per line (RE2 syntax); every match anywhere in the response is replaced with <code>***</code>. Example: <code>\b\d{3}-\d{2}-\d{4}\b</code> masks US SSNs.</p>
-          </div>
-
-          <!-- exclude_items config -->
-          <div id="filter-cfg-exclude_items" class="mt-5 hidden">
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Exclude text</label>
-            <input type="text" name="text" placeholder="e.g. confidential"
-                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <p class="text-xs text-slate-500 mt-1">Runs <strong>after</strong> the operation. When the response is a list, any item whose text contains this string is dropped before the agent sees it.</p>
+            <div class="mt-2 flex items-center gap-3">
+              <label class="text-sm text-slate-400">Match</label>
+              <select name="match" id="filter-match" class="rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="contains">Contains — literal text, case-insensitive</option>
+                <option value="regex">Regex — RE2 pattern</option>
+              </select>
+            </div>
+            <p class="text-xs text-slate-500 mt-2">Runs <strong>after</strong> the operation. One pattern per line; a response/item matches if it matches <strong>any</strong> line. <strong id="filter-patterns-redact-hint">Redact</strong> replaces every match with <code>[REDACTED]</code>; <strong id="filter-patterns-exclude-hint" class="hidden">Exclude items</strong> drops matching items from a list response. Pick <em>Contains</em> for a plain substring or <em>Regex</em> for an RE2 pattern (e.g. <code>\b\d{16}\b</code> for card numbers).</p>
           </div>
 
           <!-- script_guard config -->
@@ -716,12 +717,22 @@ else:
         (function () {
           const kindSel = el('filter-kind');
           if (!kindSel) return;
-          const kinds = ['redact', 'exclude_items', 'script_guard'];
           function syncFilterCfg() {
-            for (const k of kinds) {
-              const box = el('filter-cfg-' + k);
-              if (box) box.classList.toggle('hidden', k !== kindSel.value);
-            }
+            const v = kindSel.value;
+            // redact + exclude_items share one config block (patterns + match).
+            const usesPatterns = (v === 'redact' || v === 'exclude_items');
+            const patterns = el('filter-cfg-patterns');
+            const guard = el('filter-cfg-script_guard');
+            if (patterns) patterns.classList.toggle('hidden', !usesPatterns);
+            if (guard) guard.classList.toggle('hidden', v !== 'script_guard');
+            const rh = el('filter-patterns-redact-hint');
+            const eh = el('filter-patterns-exclude-hint');
+            if (rh) rh.classList.toggle('hidden', v !== 'redact');
+            if (eh) eh.classList.toggle('hidden', v !== 'exclude_items');
+            // Sensible per-kind default: redaction is usually a regex pattern,
+            // exclusion usually a literal string. Both remain switchable.
+            const matchSel = el('filter-match');
+            if (matchSel && usesPatterns) matchSel.value = (v === 'redact') ? 'regex' : 'contains';
           }
           kindSel.addEventListener('change', syncFilterCfg);
           syncFilterCfg();

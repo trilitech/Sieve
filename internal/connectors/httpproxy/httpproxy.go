@@ -364,6 +364,7 @@ func (p *ProxyConnector) AuthValueScrubFilter() *policy.ResponseFilter {
 	return &policy.ResponseFilter{
 		Label:          "auth_value_scrubbed",
 		RedactPatterns: []string{regexp.QuoteMeta(p.authValue)},
+		Match:          "regex",
 	}
 }
 
@@ -471,6 +472,7 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 	if p.authValueScrub && p.authValue != "" {
 		scrubFilter := policy.ResponseFilter{
 			RedactPatterns: []string{regexp.QuoteMeta(p.authValue)},
+			Match:          "regex",
 		}
 		// Regex-only scrub — no script command, so ApplyResponseFilters
 		// cannot return ResponseFilterError here. A construction error from

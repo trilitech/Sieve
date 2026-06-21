@@ -39,11 +39,30 @@ type ResponseFilter struct {
 	// behaviour. When non-empty, ApplyResponseFilters records the label
 	// instead of the generic "redacted" action string so callers can
 	// distinguish auto-attached scrub filters from operator-defined redacts.
-	Label             string   `json:"-"`
-	ExcludeContaining string   `json:"exclude_containing,omitempty"` // remove items containing this text
-	RedactPatterns    []string `json:"redact_patterns,omitempty"`    // regex patterns to redact
-	ScriptPath        string   `json:"script_path,omitempty"`        // post-filter script
-	ScriptCommand     string   `json:"script_command,omitempty"`     // e.g. "python3"
+	Label string `json:"-"`
+	// ExcludePatterns drops list items matching ANY pattern; RedactPatterns masks
+	// matches of ANY pattern with [REDACTED]. Both interpret their patterns by the
+	// same Match mode — a consistent matching model across the two transforms.
+	ExcludePatterns []string `json:"exclude_patterns,omitempty"`
+	RedactPatterns  []string `json:"redact_patterns,omitempty"`
+	// Match is "contains" (default — case-insensitive literal substring) or
+	// "regex". It applies to both ExcludePatterns and RedactPatterns, so exclude
+	// and redact are equally powerful (no more "exclude is literal, redact is
+	// regex" asymmetry).
+	Match         string `json:"match,omitempty"`
+	ScriptPath    string `json:"script_path,omitempty"`    // post-filter script
+	ScriptCommand string `json:"script_command,omitempty"` // e.g. "python3"
+}
+
+// compileFilterPattern compiles one pattern under a Match mode into a regexp:
+// "regex" uses the pattern verbatim; "contains" (default) escapes it and makes it
+// case-insensitive, so a literal substring match. This single helper backs both
+// redact and exclude, which is what makes their matching consistent.
+func compileFilterPattern(pattern, match string) (*regexp.Regexp, error) {
+	if match == "regex" {
+		return regexp.Compile(pattern)
+	}
+	return regexp.Compile("(?i)" + regexp.QuoteMeta(pattern))
 }
 
 // Redaction describes a region of a field that should be masked.
@@ -117,16 +136,30 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte
 	var actions []string
 
 	for _, f := range filters {
-		// Exclude: remove items from lists that contain the text.
-		if f.ExcludeContaining != "" {
-			excludeLower := strings.ToLower(f.ExcludeContaining)
+		// Exclude: drop list items (or the whole response) matching ANY pattern,
+		// interpreted per f.Match (contains|regex) — same matching model as redact.
+		if len(f.ExcludePatterns) > 0 {
+			res := make([]*regexp.Regexp, 0, len(f.ExcludePatterns))
+			for _, p := range f.ExcludePatterns {
+				if re, err := compileFilterPattern(p, f.Match); err == nil {
+					res = append(res, re)
+				}
+			}
+			matchAny := func(s string) bool {
+				for _, re := range res {
+					if re.MatchString(s) {
+						return true
+					}
+				}
+				return false
+			}
 
 			var data map[string]any
 			if err := json.Unmarshal([]byte(result), &data); err != nil {
-				// Not JSON, check the whole response.
-				if strings.Contains(strings.ToLower(result), excludeLower) {
+				// Not a JSON object — match against the whole response.
+				if matchAny(result) {
 					result = ""
-					actions = append(actions, fmt.Sprintf("response filtered: contains %q", f.ExcludeContaining))
+					actions = append(actions, "response filtered: matched exclude pattern")
 				}
 				continue
 			}
@@ -142,7 +175,7 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte
 				removed := 0
 				for _, item := range items {
 					itemJSON, _ := json.Marshal(item)
-					if strings.Contains(strings.ToLower(string(itemJSON)), excludeLower) {
+					if matchAny(string(itemJSON)) {
 						removed++
 					} else {
 						filtered = append(filtered, item)
@@ -160,14 +193,14 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte
 					}
 					rewritten, _ := json.Marshal(data)
 					result = string(rewritten)
-					actions = append(actions, fmt.Sprintf("filtered %d item(s) containing %q", removed, f.ExcludeContaining))
+					actions = append(actions, fmt.Sprintf("excluded %d item(s)", removed))
 				}
 			}
 		}
 
-		// Redact: replace regex matches with [REDACTED].
+		// Redact: mask matches of ANY pattern with [REDACTED], per f.Match.
 		for _, pattern := range f.RedactPatterns {
-			re, err := regexp.Compile(pattern)
+			re, err := compileFilterPattern(pattern, f.Match)
 			if err != nil {
 				continue
 			}

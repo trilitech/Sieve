@@ -173,9 +173,9 @@ func obligationsToFilters(post []iam.Filter) []policy.ResponseFilter {
 	for _, f := range post {
 		switch f.Kind {
 		case iam.KindRedact:
-			out = append(out, policy.ResponseFilter{Label: f.Name, RedactPatterns: strSlice(f.Config["patterns"])})
+			out = append(out, policy.ResponseFilter{Label: f.Name, RedactPatterns: strSlice(f.Config["patterns"]), Match: str(f.Config["match"])})
 		case iam.KindExcludeItems:
-			out = append(out, policy.ResponseFilter{Label: f.Name, ExcludeContaining: str(f.Config["text"])})
+			out = append(out, policy.ResponseFilter{Label: f.Name, ExcludePatterns: strSlice(f.Config["patterns"]), Match: str(f.Config["match"])})
 		case iam.KindScriptFilter:
 			out = append(out, policy.ResponseFilter{
 				Label:         f.Name,
