@@ -337,7 +337,6 @@ func NewServer(
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
 				"templates/nav.html",
-				"templates/policy_ops_picker.html",
 				"templates/connection_edit_field.html",
 				fmt.Sprintf("templates/%s.html", page),
 			),
