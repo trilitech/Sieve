@@ -420,6 +420,14 @@ else:
             {{end}}
           </div>
 
+          <!-- Exemptions (connector-tailored, JS-populated). Fail-safe: the
+               obligation applies UNLESS a request satisfies these. -->
+          <div id="gb-conds-wrap" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-1">Exempt when <span class="text-slate-600">(optional)</span></label>
+            <p class="text-xs text-slate-500 mb-2">The obligation applies to every matching request <strong>except</strong> those that satisfy these — e.g. "require approval for sends <em>unless</em> all recipients are internal". Leave empty to always apply. A missing/uncertain value keeps the obligation in force (fail-safe).</p>
+            <div id="gb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+          </div>
+
           <div class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Guardrail name <span class="text-slate-600">(optional)</span></label>
             <input type="text" name="name" placeholder="auto-generated from the guardrail if blank"
@@ -585,18 +593,19 @@ else:
           box.appendChild(p);
         }
         // condRow builds one condition control (checkbox + operator + value).
-        function condRow(c) {
+        function condRow(c, prefix) {
+          prefix = prefix || 'cond';
           const row = document.createElement('div');
           row.className = 'flex items-center gap-2 flex-wrap';
           const cb = document.createElement('input');
-          cb.type = 'checkbox'; cb.name = 'cond_' + c.key; cb.value = 'on';
+          cb.type = 'checkbox'; cb.name = prefix + '_' + c.key; cb.value = 'on';
           cb.className = 'rounded border-slate-600 bg-slate-800 text-indigo-500';
           const lbl = document.createElement('span');
           lbl.className = 'text-sm text-slate-200 min-w-[12rem]'; lbl.textContent = c.label;
           row.appendChild(cb); row.appendChild(lbl);
           if (c.kind === 'number') {
             const op = document.createElement('select');
-            op.name = 'cond_' + c.key + '_op';
+            op.name = prefix + '_' + c.key + '_op';
             op.className = 'rounded bg-slate-900 border border-slate-600 px-2 py-1 text-sm text-white';
             for (const pair of [['lte', '≤'], ['lt', '<'], ['gte', '≥'], ['gt', '>'], ['eq', '=']]) {
               const o = document.createElement('option'); o.value = pair[0]; o.textContent = pair[1]; op.appendChild(o);
@@ -604,9 +613,9 @@ else:
             row.appendChild(op);
           }
           const val = document.createElement('input');
-          val.name = 'cond_' + c.key + '_val';
+          val.name = prefix + '_' + c.key + '_val';
           if (c.kind === 'number') {
-            val.type = 'number'; val.step = '1'; val.placeholder = 'enter a number, e.g. 1000';
+            val.type = 'number'; val.step = 'any'; val.placeholder = 'e.g. 1000 or 0.5';
           } else if (c.kind === 'domain_allowlist') {
             val.type = 'text'; val.placeholder = 'example.com, trilitech.com';
           } else {
@@ -682,7 +691,7 @@ else:
             if (opts.withConds) {
               const conds = get('conds');
               conds.textContent = '';
-              for (const c of (cat.conditions || [])) conds.appendChild(condRow(c));
+              for (const c of (cat.conditions || [])) conds.appendChild(condRow(c, opts.condPrefix));
               condVis();
             }
           }
@@ -699,7 +708,7 @@ else:
           refresh(); toggleOps(); toggleConns();
         }
         setupBuilder('rb', { withConds: true, effectSel: '#rule-form select[name="effect"]' });
-        setupBuilder('gb', { withConds: false });
+        setupBuilder('gb', { withConds: true, condPrefix: 'exempt' });
 
         // --- Filter library: show only the selected kind's config block. ---
         // Pure show/hide keyed off a fixed <select> value (no dynamic data,

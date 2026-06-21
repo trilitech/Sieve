@@ -443,7 +443,9 @@ type builderFormState struct {
 	ScopeKey      string            `json:"scope_key"`
 	ScopeFields   map[string]string `json:"scope_fields"`
 	Conditions    []builderCond     `json:"conditions"`
-	Filters       []string          `json:"filters"`
+	// ExemptConditions are guardrail-only exemptions (the `unless` clause).
+	ExemptConditions []builderCond `json:"exempt_conditions,omitempty"`
+	Filters          []string      `json:"filters"`
 }
 
 // builderCond is one captured condition selection (checkbox on + op + value).
@@ -520,44 +522,29 @@ func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string
 		}
 	}
 
-	// Conditions (connector-tailored). Only on permit effects: a condition
-	// REFINES what a rule covers, and Cedar skips a policy whose condition
-	// errors (e.g. a missing/non-representable attribute). On a permit that
-	// fails closed (skipped permit → default deny); on a forbid it would fail
-	// OPEN (skipped forbid → allowed), so we never attach conditions to deny
-	// rules. Express a cap as "allow when amount <= N", not "deny when > N".
+	// Grant conditions (cond_*) REFINE what a rule covers — only on permit
+	// effects, because Cedar skips a condition-erroring policy: on a permit that
+	// fails closed (skipped → default deny); on a forbid it would fail OPEN, so
+	// we never attach conditions to deny rules. Express a cap as "allow when
+	// amount <= N", not "deny when > N".
 	if spec.Effect != "deny" {
-		for _, c := range meta.RuleConditions {
-			if r.FormValue("cond_"+c.Key) != "on" {
-				continue
-			}
-			op := r.FormValue("cond_" + c.Key + "_op")
-			val := strings.TrimSpace(r.FormValue("cond_" + c.Key + "_val"))
-			// Friendly, specific validation — an enabled condition with no (or a
-			// bad) value must never reach the Cedar compiler as a raw error.
-			if val == "" {
-				return spec, "", "", &parseError{
-					msg:  "Enter a value for the \"" + c.Label + "\" condition, or uncheck it.",
-					code: http.StatusBadRequest,
-				}
-			}
-			if c.Kind == "number" {
-				if _, err := strconv.ParseInt(val, 10, 64); err != nil {
-					return spec, "", "", &parseError{
-						msg:  "The \"" + c.Label + "\" condition needs a whole number (you entered \"" + val + "\").",
-						code: http.StatusBadRequest,
-					}
-				}
-			}
-			spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
-				Kind:    c.Kind,
-				CtxPath: c.CtxPath,
-				Op:      op,
-				Value:   val,
-			})
-			state.Conditions = append(state.Conditions, builderCond{Key: c.Key, Op: op, Value: val})
+		conds, st, perr := s.parseConditionSet(r, meta.RuleConditions, "cond")
+		if perr != nil {
+			return spec, "", "", perr
 		}
+		spec.Conditions = conds
+		state.Conditions = st
 	}
+
+	// Exemption conditions (exempt_*) are guardrail-only: they compile to a
+	// fail-safe `unless` clause (spec §7.6). Harmless on the rule form (it posts
+	// none); BuildRuleCedar ignores them.
+	exConds, exSt, perr := s.parseConditionSet(r, meta.RuleConditions, "exempt")
+	if perr != nil {
+		return spec, "", "", perr
+	}
+	spec.ExemptConditions = exConds
+	state.ExemptConditions = exSt
 
 	// Response-filter obligations (filter-library names).
 	spec.Filters = r.Form["filters"]
@@ -576,6 +563,48 @@ func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string
 type parseError struct {
 	msg  string
 	code int
+}
+
+// parseConditionSet reads the checked conditions for one form prefix ("cond" for
+// grant conditions, "exempt" for guardrail exemptions) against the connector's
+// declared RuleConditions, with friendly validation. Returns the compiler inputs
+// and the round-trip form-state.
+func (s *Server) parseConditionSet(r *http.Request, conds []connector.RuleCondition, prefix string) ([]iampolicies.ConditionInput, []builderCond, *parseError) {
+	var out []iampolicies.ConditionInput
+	var state []builderCond
+	for _, c := range conds {
+		if r.FormValue(prefix+"_"+c.Key) != "on" {
+			continue
+		}
+		op := r.FormValue(prefix + "_" + c.Key + "_op")
+		val := strings.TrimSpace(r.FormValue(prefix + "_" + c.Key + "_val"))
+		if val == "" {
+			return nil, nil, &parseError{
+				msg:  "Enter a value for the \"" + c.Label + "\" condition, or uncheck it.",
+				code: http.StatusBadRequest,
+			}
+		}
+		if c.Kind == "number" && !isNumberValue(val) {
+			return nil, nil, &parseError{
+				msg:  "The \"" + c.Label + "\" condition needs a number, e.g. 1000 or 0.5 (you entered \"" + val + "\").",
+				code: http.StatusBadRequest,
+			}
+		}
+		out = append(out, iampolicies.ConditionInput{Kind: c.Kind, CtxPath: c.CtxPath, Op: op, Value: val})
+		state = append(state, builderCond{Key: c.Key, Op: op, Value: val})
+	}
+	return out, state, nil
+}
+
+// isNumberValue accepts an integer or a decimal value (the builder compiles the
+// fractional case to a Cedar decimal). Precise precision limits are enforced by
+// the builder, which returns its own friendly error.
+func isNumberValue(v string) bool {
+	if _, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return true
+	}
+	_, err := strconv.ParseFloat(v, 64)
+	return err == nil
 }
 
 // createBuilderPolicy compiles the visual rule form to Cedar and stores it with

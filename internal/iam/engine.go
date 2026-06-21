@@ -237,15 +237,23 @@ func toValue(v any) (types.Value, error) {
 	case int64:
 		return cedar.Long(x), nil
 	case float64:
-		if x != float64(int64(x)) {
-			return nil, fmt.Errorf("non-integral number %v has no Cedar representation (no float)", x)
+		// Cedar's Long is int64; a fractional number becomes a Cedar decimal
+		// (spec §4.5/§5.4) so cost/temperature conditions work. A whole number
+		// stays a Long so integer conditions compare against Long thresholds.
+		if x == float64(int64(x)) {
+			return cedar.Long(int64(x)), nil
 		}
-		return cedar.Long(int64(x)), nil
+		d, err := cedar.NewDecimalFromFloat(x)
+		if err != nil {
+			return nil, fmt.Errorf("decimal %v: %w", x, err)
+		}
+		return d, nil
+	case types.Decimal:
+		return x, nil // an enricher may emit a decimal directly
 	case time.Time:
 		return cedar.NewDatetime(x), nil
-	// ipaddr (context.source_ip) and decimal land with their enrichers in PR-D;
-	// until then an unsupported type errors at conversion (fail-loud), which the
-	// PEP maps to fail-closed.
+	// ipaddr (context.source_ip) lands with its enricher; until then an
+	// unsupported type errors at conversion (fail-loud → the PEP fails closed).
 	case []string:
 		vals := make([]types.Value, len(x))
 		for i, s := range x {

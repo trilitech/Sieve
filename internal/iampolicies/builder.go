@@ -48,9 +48,19 @@ type RuleSpec struct {
 	Scopes        []ScopeRef
 	Conditions    []ConditionInput
 	Filters       []string // filter-library names → @filters annotation
+	// ExemptConditions are GUARDRAIL-only: the obligation applies to every
+	// matching request EXCEPT those that satisfy these, compiled into a
+	// has-guarded `unless { … }` so a missing attribute keeps the obligation in
+	// force (fail-safe polarity, spec §7.6). Ignored by BuildRuleCedar.
+	ExemptConditions []ConditionInput
 }
 
-var intRE = regexp.MustCompile(`^-?\d+$`)
+var (
+	intRE = regexp.MustCompile(`^-?\d+$`)
+	// decRE matches a fractional number with up to 4 decimal places (Cedar
+	// decimal's precision); such a value compiles to a `decimal("…")` literal.
+	decRE = regexp.MustCompile(`^-?\d+\.\d{1,4}$`)
+)
 
 // cedarString renders a Go string as a quoted Cedar string literal.
 func cedarString(s string) string {
@@ -128,8 +138,64 @@ func BuildGuardrailCedar(spec RuleSpec, ops []connector.OperationDef) (string, e
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s\npermit(\n  %s,\n  %s,\n  resource\n) when { %s };",
-		strings.Join(anns, "\n"), principalClause(spec.RoleID), action, resourceScopeTerm(spec)), nil
+	unless, err := exemptionClause(spec.ExemptConditions)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s\npermit(\n  %s,\n  %s,\n  resource\n) when { %s }%s;",
+		strings.Join(anns, "\n"), principalClause(spec.RoleID), action, resourceScopeTerm(spec), unless), nil
+}
+
+// exemptionClause builds the guardrail's `unless { … }` from exemption
+// conditions, each has-guarded so a MISSING attribute makes the exemption false
+// and the obligation STILL applies (fail-safe polarity, spec §7.6). Returns ""
+// when there are no exemptions (the obligation then always applies). Multiple
+// exemptions are ANDed — a request is exempt only when it satisfies all of them
+// (the conservative, more-constraining direction).
+func exemptionClause(exemptions []ConditionInput) (string, error) {
+	if len(exemptions) == 0 {
+		return "", nil
+	}
+	terms := make([]string, 0, len(exemptions))
+	for _, c := range exemptions {
+		expr, err := guardedConditionExpr(c)
+		if err != nil {
+			return "", err
+		}
+		terms = append(terms, expr)
+	}
+	return " unless { " + strings.Join(terms, " && ") + " }", nil
+}
+
+// guardedConditionExpr renders an exemption condition with its has-guard chain
+// prepended, so accessing an absent attribute yields false (not an error) and the
+// exemption does not fire (fail-safe).
+func guardedConditionExpr(c ConditionInput) (string, error) {
+	expr, err := conditionExpr(c)
+	if err != nil {
+		return "", err
+	}
+	if guard := hasGuardChain(c.CtxPath); guard != "" {
+		return guard + " && " + expr, nil
+	}
+	return expr, nil
+}
+
+// hasGuardChain turns a context path into the `has` chain that proves each step
+// is present: "context.param.amount" → "context has param && context.param has
+// amount"; "context.recipient_domains" → "context has recipient_domains".
+func hasGuardChain(ctxPath string) string {
+	parts := strings.Split(ctxPath, ".")
+	if len(parts) < 2 || parts[0] != "context" {
+		return ""
+	}
+	var guards []string
+	prefix := "context"
+	for _, p := range parts[1:] {
+		guards = append(guards, prefix+" has "+p)
+		prefix = prefix + "." + p
+	}
+	return strings.Join(guards, " && ")
 }
 
 // principalClause renders the principal scope for a role id ("" ⇒ any principal).
@@ -212,14 +278,34 @@ func conditionExpr(c ConditionInput) (string, error) {
 	}
 	switch c.Kind {
 	case "number":
-		op, ok := map[string]string{"lte": "<=", "lt": "<", "gte": ">=", "gt": ">", "eq": "=="}[c.Op]
-		if !ok {
-			return "", fmt.Errorf("unknown numeric operator %q", c.Op)
+		val := strings.TrimSpace(c.Value)
+		switch {
+		case intRE.MatchString(val):
+			// Cedar Long: the </<=/… operators apply to integers.
+			op, ok := map[string]string{"lte": "<=", "lt": "<", "gte": ">=", "gt": ">", "eq": "=="}[c.Op]
+			if !ok {
+				return "", fmt.Errorf("unknown numeric operator %q", c.Op)
+			}
+			return fmt.Sprintf("%s %s %s", c.CtxPath, op, val), nil
+		case decRE.MatchString(val):
+			// Cedar decimal (cost, temperature, …): ordering uses the decimal
+			// EXTENSION METHODS, not </<= (those are Long-only). The runtime
+			// attribute must also be a decimal (buildContext projects a fractional
+			// JSON number to one), else Cedar errors → fail-closed/fail-safe.
+			if c.Op == "eq" {
+				return fmt.Sprintf(`%s == decimal("%s")`, c.CtxPath, val), nil
+			}
+			method, ok := map[string]string{
+				"lte": "lessThanOrEqual", "lt": "lessThan",
+				"gte": "greaterThanOrEqual", "gt": "greaterThan",
+			}[c.Op]
+			if !ok {
+				return "", fmt.Errorf("unknown numeric operator %q", c.Op)
+			}
+			return fmt.Sprintf(`%s.%s(decimal("%s"))`, c.CtxPath, method, val), nil
+		default:
+			return "", fmt.Errorf("numeric condition needs a number (e.g. 1000 or 0.5, up to 4 decimal places), got %q", c.Value)
 		}
-		if !intRE.MatchString(strings.TrimSpace(c.Value)) {
-			return "", fmt.Errorf("numeric condition needs an integer value, got %q", c.Value)
-		}
-		return fmt.Sprintf("%s %s %s", c.CtxPath, op, strings.TrimSpace(c.Value)), nil
 	case "string":
 		return fmt.Sprintf("%s == %s", c.CtxPath, cedarString(c.Value)), nil
 	case "domain_allowlist":

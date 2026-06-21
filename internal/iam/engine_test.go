@@ -353,16 +353,26 @@ when {
 }
 
 // TestEngine_BadContextValue: a context value with no Cedar representation
-// (non-integral float) surfaces an error from Decide (fail-loud → PEP
-// fail-closed), rather than silently coercing.
+// (e.g. a struct) surfaces an error from Decide (fail-loud → PEP fail-closed),
+// rather than silently coercing. A non-integral float is NOT such a value — it
+// now projects to a Cedar decimal (spec §4.5/§5.4), verified separately.
 func TestEngine_BadContextValue(t *testing.T) {
 	b, u := fixture()
 	e := mustEngine(t, nil, Policy{ID: "p", Cedar: `permit(principal in Sieve::Role::"assistant", action in Sieve::Action::"read", resource in Sieve::Connector::"google");`})
-	_, err := e.Decide(Request{
+
+	// A non-integral float is representable (decimal) — Decide must NOT error.
+	if _, err := e.Decide(Request{
 		Principal: u.tok, Action: u.listEmails, Resource: u.workMsg, Entities: b.slice(),
 		Context: map[string]any{"ratio": 3.14},
-	})
-	if err == nil {
-		t.Fatal("expected Decide to error on a non-integral float context value")
+	}); err != nil {
+		t.Fatalf("a fractional float should project to a decimal, not error: %v", err)
+	}
+
+	// An unsupported Go type still fails loud.
+	if _, err := e.Decide(Request{
+		Principal: u.tok, Action: u.listEmails, Resource: u.workMsg, Entities: b.slice(),
+		Context: map[string]any{"weird": struct{ X int }{1}},
+	}); err == nil {
+		t.Fatal("expected Decide to error on an unsupported context value type")
 	}
 }

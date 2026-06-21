@@ -273,3 +273,118 @@ func TestHumanSummary(t *testing.T) {
 		t.Errorf("summary = %q want %q", got, want)
 	}
 }
+
+// TestBuildGuardrailCedar_ConditionalFailsSafe proves the guardrail POLARITY
+// (spec §7.6): a conditional guardrail imposes its obligation UNLESS provably
+// exempt, and a MISSING attribute keeps the obligation in force (fail-safe).
+func TestBuildGuardrailCedar_ConditionalFailsSafe(t *testing.T) {
+	// "require approval for sends UNLESS all recipients are internal"
+	spec := RuleSpec{
+		RoleID: "R", Effect: "require_approval", ConnectorType: "google", OpScope: "write",
+		ExemptConditions: []ConditionInput{
+			{Kind: "domain_allowlist", CtxPath: "context.recipient_domains", Value: "trilitech.com"},
+		},
+	}
+	guard, err := BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(guard, "unless {") || !strings.Contains(guard, "context has recipient_domains") {
+		t.Fatalf("guardrail must has-guard the exemption inside an unless clause:\n%s", guard)
+	}
+
+	grant, _ := BuildRuleCedar(RuleSpec{RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "write"}, nil)
+	eng, err := iam.NewEngine(
+		[]iam.Policy{{ID: "g", Cedar: grant}},
+		[]iam.Policy{{ID: "h", Cedar: guard}},
+		iam.MapFilterLibrary{},
+	)
+	if err != nil {
+		t.Fatalf("compile: %v\ngrant:\n%s\nguard:\n%s", err, grant, guard)
+	}
+
+	send := func(domains []string) iam.Decision {
+		req := iam.BuildRequest("tok", []string{"R"}, "google", "work", "active",
+			connector.OperationDef{Name: "send_email"}, nil)
+		if req.Context == nil {
+			req.Context = map[string]any{}
+		}
+		if domains != nil {
+			req.Context["recipient_domains"] = domains
+		}
+		d, err := eng.Decide(req)
+		if err != nil {
+			t.Fatalf("decide: %v", err)
+		}
+		if !d.Allow {
+			t.Fatalf("send should be allowed by the grant; got deny %q", d.Reason)
+		}
+		return d
+	}
+
+	// Attribute ABSENT → not provably exempt → approval STILL imposed (fail-safe).
+	if d := send(nil); !d.Obligations.Approval {
+		t.Error("absent recipient_domains must still require approval (fail-safe)")
+	}
+	// All-internal → exempt → no approval.
+	if d := send([]string{"trilitech.com"}); d.Obligations.Approval {
+		t.Error("all-internal send should be exempt from approval")
+	}
+	// External present → not exempt → approval imposed.
+	if d := send([]string{"evil.com"}); !d.Obligations.Approval {
+		t.Error("external send must require approval")
+	}
+}
+
+// TestBuildGuardrailCedar_DecimalCondition proves fractional thresholds compile
+// to a Cedar decimal and compare correctly at runtime (spec §4.5/§5.4).
+func TestBuildGuardrailCedar_DecimalCondition(t *testing.T) {
+	// "require approval for llm calls UNLESS estimated cost <= 0.5"
+	spec := RuleSpec{
+		RoleID: "R", Effect: "require_approval", ConnectorType: "anthropic", OpScope: "all",
+		ExemptConditions: []ConditionInput{
+			{Kind: "number", CtxPath: "context.estimated_cost", Op: "lte", Value: "0.5"},
+		},
+	}
+	guard, err := BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(guard, `decimal("0.5")`) {
+		t.Fatalf("a fractional threshold must compile to a decimal literal:\n%s", guard)
+	}
+
+	grant, _ := BuildRuleCedar(RuleSpec{RoleID: "R", Effect: "allow", ConnectorType: "anthropic", OpScope: "all"}, nil)
+	eng, err := iam.NewEngine(
+		[]iam.Policy{{ID: "g", Cedar: grant}},
+		[]iam.Policy{{ID: "h", Cedar: guard}},
+		iam.MapFilterLibrary{},
+	)
+	if err != nil {
+		t.Fatalf("compile: %v\n%s", err, guard)
+	}
+
+	call := func(cost float64) iam.Decision {
+		req := iam.BuildRequest("tok", []string{"R"}, "anthropic", "ap", "active",
+			connector.OperationDef{Name: "complete"}, nil)
+		if req.Context == nil {
+			req.Context = map[string]any{}
+		}
+		req.Context["estimated_cost"] = cost
+		d, err := eng.Decide(req)
+		if err != nil {
+			t.Fatalf("decide: %v", err)
+		}
+		if !d.Allow {
+			t.Fatalf("call should be allowed by the grant; got deny %q", d.Reason)
+		}
+		return d
+	}
+
+	if d := call(0.3); d.Obligations.Approval {
+		t.Error("cheap call (cost 0.3 <= 0.5) should be exempt from approval")
+	}
+	if d := call(0.7); !d.Obligations.Approval {
+		t.Error("expensive call (cost 0.7 > 0.5) must require approval")
+	}
+}
