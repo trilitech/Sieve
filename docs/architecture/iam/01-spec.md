@@ -1,7 +1,14 @@
 # Sieve IAM — Specification
 
-**Status:** Draft for design-lock · **Author:** (rework) · **Date:** 2026-06-19
+**Status:** Draft for design-lock (rev 2 — RBAC composition) · **Date:** 2026-06-21
 **Depends on nothing shipped; supersedes `internal/policy` composition semantics.**
+
+> **Rev 2 (RBAC).** The model is now explicit RBAC on the subject side: a **token
+> is assigned a set of roles**, a **role is a reusable bundle of rules**,
+> composition is the **union** of a token's roles (deny overrides, §3.1). This
+> replaces rev 1's "token → one role + role-groups," which could not express
+> "compose an email bundle and an LLM bundle onto one token." See §3.1, §5.1, §9.5,
+> §13.1.
 
 ---
 
@@ -9,10 +16,17 @@
 
 ### Goals
 
-- **Coherent composition.** Adding a policy must never silently reduce access.
-  The only thing that reduces access is an explicit deny.
+- **Composable, reusable roles (RBAC) — the headline goal.** A **role** is a
+  named bundle of rules, authored once, **assigned to many tokens** (reuse); a
+  **token** is **assigned many roles** (composition). "Email access" and "LLM
+  access" are separate roles; a token that needs both is simply issued both, and
+  gets the union of their capabilities. No cramming unrelated permissions into one
+  role, no copying rules between roles, no per-token throwaway roles.
+- **Coherent composition.** Adding a role (or a rule) must never silently reduce
+  access. The only thing that reduces access is an explicit `deny`, which then
+  applies everywhere (§3.1 composition law).
 - **One mental model, end to end.** What the operator sees in the editor, how
-  policies combine, and what the audit log reports are the *same* model.
+  rules and guardrails combine, and what the audit log reports are the *same* model.
 - **Granular, attribute-based decisions.** Decisions are a function of subject
   attributes, object attributes, the operation, and the request environment —
   expressible down to a single op on a single object under a specific condition.
@@ -22,15 +36,17 @@
   guards and post-execution response transforms). Obligations can only ever
   *narrow or transform* — never grant.
 - **Explainability.** For any decision, an operator can ask "why?" and get the
-  exact policies that determined it, plus a dry-run explorer for hypotheticals.
-- **Reuse a policy across accounts without drift, with minimal machinery.** Build
-  a complex policy for one Gmail account; reuse it on another by **adding that
-  connection to the policy's resource set** — Cedar scopes are set-valued, so one
-  policy applies to many connections, single-source. No template/link subsystem;
-  the admin UI's "apply to connection(s)" gesture manages the set (§9.1).
+  exact rules that determined it, plus a dry-run explorer for hypotheticals.
+- **Reuse without drift, with minimal machinery.** Reuse a **role** across tokens
+  by assigning it (§13.1); reuse a **rule's** resource set across connections by
+  **adding a connection to its `resource in [..]` set** — Cedar scopes are
+  set-valued, so one rule applies to many connections, single-source. No
+  template/link subsystem; the admin UI's "apply to connection(s)" gesture manages
+  the set (§9.1).
 - **Faithful, debt-free port.** Adopt a real, formally-specified authorization
   language (Cedar) rather than grow another bespoke evaluator — and keep the
-  artifact count minimal (policy + filter library; nothing else).
+  concept count minimal: **rule, role, token, guardrail, filter** (§3.1) — nothing
+  else.
 
 ### Non-goals (v1)
 
@@ -39,11 +55,11 @@
   (connection / connector / owner level). Cedar's transitive `in` makes
   refinement non-breaking.
 - **A template/link subsystem.** Considered and dropped: Cedar's set-valued
-  `principal`/`resource` scopes already deliver "one policy, many accounts/roles"
-  with single-source editing — a templates table + links table + a slot-linker
+  `resource` scopes already deliver "one rule, many connections" (and RBAC delivers
+  "one role, many tokens") with single-source editing — a templates table + links table + a slot-linker
   would be strictly more machinery for the same outcome (the owner explicitly does
-  not care whether reuse is "the same policy" or "a template instance," so the
-  simpler mechanism wins). Presets are just **shipped example policies**, not a
+  not care whether reuse is "the same role" or "a template instance," so the
+  simpler mechanism wins). Presets are just **shipped example roles**, not a
   seeded second artifact. Reuse never reintroduces the binding footgun (§9.4).
 - Replacing the LLM-as-policy *evaluator*. There are no production policy scripts
   to migrate; going forward, script logic lives in the **filter library** (guards
@@ -87,6 +103,15 @@ with a namespace-looking `scope` field). The two are incompatible. The clean fix
 is to commit to the capability algebra — which is exactly what NIST ABAC / Cedar
 provide — and delete the constraint machinery.
 
+The legacy model's *intent* was, however, partly right and must be **preserved**:
+a principal draws on **multiple reusable permission bundles** (a role bound to
+several policies; a policy reusable across bindings). That composition + reuse is
+exactly what operators need — *only its intersection semantics are broken*. The
+target keeps composition and reuse (RBAC: a token assigned a set of roles; a role
+a reusable bundle of rules) and makes composition **monotonic** (union, with deny
+overriding — §3.1). Losing composability while fixing the algebra (e.g. "one role
+per token") would trade one defect for another.
+
 Two more field-report items are the same shortfall at adjacent layers:
 
 - **P2** (no curated commit/comment read ops; escape hatch is denied by
@@ -113,7 +138,7 @@ editor, and this spec describe one thing.
 | **Operation** | The action on the object | A connector **operation** (`list_emails`, `github_create_pr`). Cedar action `Sieve::Action::"<connector>/<op>"` (§5.3). |
 | **Environment** | Contextual conditions | Request **context**: HTTP method, derived attributes (recipient domains, estimated cost), time, source IP (§5.4). Cedar `context`. |
 | **Attributes** | Properties of subject/object/environment used by rules | Entity attributes + context fields, referenced in `when`/`unless`. |
-| **Policy / Rule** | The decision logic | A **Cedar policy** (`permit`/`forbid`). |
+| **Rule** | The decision logic | One Cedar statement (`permit`/`forbid`) — see §3.1. |
 
 And the 800-162 **functional points**, mapped to existing Sieve components so the
 refactor is a *re-layering*, not a rewrite of the request path:
@@ -122,12 +147,62 @@ refactor is a *re-layering*, not a rewrite of the request path:
 |---|---|---|
 | **PEP** (Enforcement) | Intercepts the request, calls the PDP, enforces the decision + obligations | `internal/api/router.go`, `internal/mcp/server.go` (the existing surfaces) |
 | **PDP** (Decision) | Evaluates policies against the request, returns allow/deny + obligations | **new** `internal/iam` (wraps cedar-go) |
-| **PIP** (Information) | Supplies subject/object/environment attributes | **new** entity-store + context builders; existing `tokens`, `roles`, `connections` stores |
-| **PAP** (Administration) | Authoring, storage, validation, explain | **new** policy store + admin UI editor + decision explorer |
+| **PIP** (Information) | Supplies subject/object/environment attributes | **new** entity-store + context builders; the **new** role/rule + guardrail store; existing `tokens`, `connections` stores |
+| **PAP** (Administration) | Authoring, storage, validation, explain | **new** role/rule + guardrail store + admin UI editor + decision explorer |
+
+### 3.1 The concepts, in two layers (and their composition laws)
+
+The system has **two layers** — *grants* (what is allowed) and *guardrails*
+(constraints that always apply) — plus a small transform library. We use these
+nouns consistently in the editor, storage, audit log, and this spec.
+
+**Grants layer (RBAC):**
+
+| Concept | What it is | RBAC analogue |
+|---|---|---|
+| **Rule** | One **grant**: `allow` or `deny`, over **operations**, scoped to **connections/objects**, with optional **conditions**. Compiles to exactly one Cedar `permit`/`forbid`. *(A rule never carries an obligation — see guardrails.)* | A permission (richer: deny, scope, conditions) |
+| **Role** | A **reusable, named bundle of rules** — the rules that target it. Author once, reuse. | A role |
+| **Token** | The agent credential, **assigned a *set* of roles**. | A user + its role assignments |
+
+**Guardrails layer (constraints that survive composition):**
+
+| Concept | What it is |
+|---|---|
+| **Guardrail** | A **global constraint**: for any request that the grants layer *allows* and that matches the guardrail's scope (operations/resources) + condition, it **requires approval and/or applies named filters**. A guardrail never grants; it only adds an obligation. It applies **regardless of which rule granted the request** — that is what makes it survive composition (§7). |
+| **Filter** | A named, reusable **transform/guard definition** (redact / exclude / script) that guardrails reference by name. The reuse unit for obligations. |
+
+**Why two layers.** RBAC governs *who gets which bundles* (token↔role, role↔rule —
+both many-to-many); Cedar governs *what each rule says* (deny, scope, attribute
+conditions). But **obligations cannot live on a grant**: a request is allowed if
+*any* rule permits it, so an approval/redaction attached to one narrow rule is
+silently bypassed by a broader obligation-free rule in another assigned role
+(verified — see §7.0). Obligations that must *hold* therefore live in their own
+layer and bind the **outcome**, not a particular grant.
+
+**Two composition laws.**
+
+1. **Grants compose by union, deny overrides:** a token's allowed set is
+
+   > (union of every `permit` from every rule of every assigned role) − (any
+   > `forbid` from any of them), default-deny.
+
+   Additive grants, global denies. Adding a role can only *widen* capability
+   (except a deny it brings); a deny anywhere wins everywhere.
+
+2. **Guardrails compose by "any match applies":** for an allowed request, the
+   obligations are the union of **every** guardrail whose scope+condition matches
+   — approval required if *any* matching guardrail requires it; filters = the
+   union of all matching guardrails' filters. Adding a grant can never remove a
+   guardrail. Obligations are monotonic *upward* (more roles can add guardrail
+   matches, never subtract them).
+
+Capability is monotonic in roles; **constraint is monotonic too** — but in the
+other direction (you cannot compose *away* a guardrail). This is the property the
+permit-annotation model failed (§7.0).
 
 ---
 
-## 4. Why Cedar (and the cedar-go facts that shape the design)
+## 4. Cedar — the verified facts we build on
 
 Cedar is AWS's open-source authorization language: formally specified (machine-
 checked semantics), production-proven (AWS Verified Permissions, MongoDB Atlas
@@ -159,11 +234,11 @@ type Diagnostic struct { Reasons []DiagnosticReason; Errors []DiagnosticError }
 type DiagnosticReason struct { PolicyID PolicyID; Position Position }
 ```
 
-`Diagnostic.Reasons` lists the **determining policies**. On `Allow`, those are
-exactly the satisfied `permit`s (no `forbid` can be satisfied on an allow), which
-is what makes annotation-based obligations safe (§7). On `Deny`, they are the
-satisfied `forbid`s (used for the deny message). `Diagnostic.Errors` carries
-per-policy evaluation errors.
+`Diagnostic.Reasons` lists the **determining statements**. On `Allow`, those are
+exactly the satisfied `permit`s (no `forbid` can be satisfied on an allow); on the
+separate guardrail pass (§7.3) these are the matched guardrails whose obligations
+Sieve collects. On `Deny`, they are the satisfied `forbid`s (used for the deny
+message). `Diagnostic.Errors` carries per-policy evaluation errors.
 
 ### 4.3 No native obligations → annotations
 
@@ -172,7 +247,9 @@ The idiomatic mechanism is **policy annotations** — `@id("…")` and arbitrary
 `@key("value")` pairs that Cedar ignores during evaluation but tools can read.
 cedar-go exposes `Policy.Annotations() → map[Ident]String`. Sieve's obligations
 (approval, redaction, filters) are encoded as a **registered annotation
-vocabulary** and collected off the determining `permit`s (§7).
+vocabulary** carried by **guardrail** statements and collected off the matched
+guardrails in a second pass (§7) — never off the grant `permit`s, which would let
+composition strip them (§7.0).
 
 ### 4.4 We do not use Cedar templates (don't need them)
 
@@ -195,9 +272,12 @@ cedar-go implements all Cedar types: `String`, `Long` (int64 — **no float**),
 
 Policy *evaluation* is in cedar-go's stable, SemVer'd core. The schema
 *validator* lives under `x/exp/` (explicitly **not** under SemVer). Design
-consequence (§8, impl §8): the Sieve Cedar schema is generated and authoritative;
-runtime validation uses `x/exp` behind a Sieve-owned interface, and the
-**authoritative** validation gate runs in CI via the stable Rust `cedar` CLI.
+consequence (§8, impl §8): the Sieve Cedar schema is generated and checked in;
+save-time validation uses `x/exp` behind a Sieve-owned interface, and the
+**authoritative *schema* validation gate** (action/resource/attribute names, types,
+`appliesTo` shapes) runs in CI via the stable Rust `cedar` CLI. Note this gate does
+**not** cover connector-safety for connection-scoped rules — that is a separate
+PAP-time check in Sieve code (§8, §9.1).
 
 **Pin:** `cedar-go v1.8.0`. Avoid v1.2.0 (retracted) and anything < v1.6.0
 (correctness fixes). v1.8.0 changed IPv6 handling — note for `context.source_ip`
@@ -207,29 +287,39 @@ tests. Isolate all `x/exp` imports behind one adapter package.
 
 ## 5. The Sieve Cedar model
 
-### 5.1 Principals
+### 5.1 Principals — RBAC: a token is assigned a *set* of roles
 
 ```
 Sieve::Token::"<token_id>"        // the subject of every request
-Sieve::Role::"<role_id>"          // principal group; tokens are `in` a role
-Sieve::RoleGroup::"<group_id>"    // optional super-group; roles are `in` a group
+Sieve::Role::"<role_id>"          // a reusable BUNDLE of rules; tokens are `in` their roles
 ```
 
-- A request's principal is **always** a `Sieve::Token`.
-- A token's `parents` = `[Sieve::Role::"<its role>"]`. (Tokens keep referencing
-  exactly one role, as today.)
-- A role's `parents` = role-groups it belongs to (zero or more). Role-groups give
-  cross-role reuse: write `permit(principal in Sieve::RoleGroup::"readers", …)`
-  once; add roles to the group to grant it. This replaces "attach the same policy
-  to N roles."
+This is textbook **RBAC on the subject side**, with Cedar-expressive rules on the
+object side (§3.1):
 
-Token attributes available to conditions: `principal.name`. (We deliberately
-keep subject attributes minimal in v1; richer subject ABAC — e.g. team, owner —
-is a forward extension.)
+- A request's principal is **always** a `Sieve::Token`.
+- **A token's `parents` = the *set* of roles assigned to it** — `Token.parents =
+  [Sieve::Role::"A", Sieve::Role::"B", …]`. This is the composition primitive: a
+  token issued with `[email-access, llm-access]` is `in` both roles, so every rule
+  targeting *either* role applies. The agent's capability is the **union** of its
+  roles' permits, with any role's `forbid` overriding (§6). (Contrast the old
+  binding model, whose AND-of-default-deny made the union *shrink* — §2, §9.4.)
+- **A role is a reusable, named bundle of rules** — the rules that target it via
+  `principal in Sieve::Role::"<role>"`. Author it once ("email-access"); **assign
+  it to any number of tokens** (reuse) and **compose several roles on one token**
+  (composition). A role holds zero or more rules; tokens are assigned zero or more
+  roles. Both edges are many-to-many — the RBAC user→role and role→permission
+  assignments.
+- **No role-groups in v1.** Multi-role tokens subsume the cross-cutting reuse that
+  role-groups were introduced for; *role hierarchy* (a base role inherited by
+  others) is a forward extension (§15), not a launch concept. One fewer noun.
+
+Token attributes available to conditions: `principal.name`. (Subject ABAC — team,
+owner — is a forward extension, §15.)
 
 ### 5.2 Resources
 
-Every object lives in a **container hierarchy** so a single policy can target one
+Every object lives in a **container hierarchy** so a single rule can target one
 object, a whole connection, or an entire connector via transitive `in`:
 
 ```
@@ -252,43 +342,47 @@ from `(connection_id, params)`. (Derived from the verified op inventory.)
 | `linear` | `Sieve::Linear::{Issue,Team,RawRequest}` | `"<conn>/<id>"` | `id`,`issue_id`,`team_id` |
 | `http_proxy` | `Sieve::Httpproxy::{Path}` | `"<conn>/<path>"` (path-level control) | request `path` |
 | `anthropic` | *(none)* — resource = the connection | `"<conn>"` | — |
-| `mcp_proxy` | `Sieve::Mcp::Tool` | `"<conn>/<toolName>"` | upstream tool name |
+| `mcp_proxy` | *(v1: none)* — resource = the connection; per-tool `Sieve::Mcp::Tool` is **deferred** (§5.3, §15) | `"<conn>"` | — |
 
 Notes:
 - **github Owner/Repo** is the P1 fix: one PAT = one connection holding many
-  owners; policy scopes by `Sieve::Github::Owner`, not by registering the
+  owners; a rule scopes by `Sieve::Github::Owner`, not by registering the
   credential per owner.
-- **mcp_proxy** has *dynamic* operations, so the **tool is the resource** and the
-  action is the single `mcp_proxy/call` (§5.3). Policies target tools:
-  `resource in Sieve::Mcp::Tool::"<conn>/run_query"` — no dynamic actions in the
-  schema.
+- **mcp_proxy** has *dynamic* operations, so there are no per-tool actions; the
+  action is the single `mcp_proxy/call` (§5.3). **v1 scopes at connection grain**
+  (`resource in Sieve::Connection::"<conn>"`). Per-**tool** resource scoping
+  (`Sieve::Mcp::Tool::"<conn>/run_query"`) is a forward extension (§15): the schema
+  reserves the type, but v1 extractors emit the connection, so a token granted
+  `mcp_proxy/call` on a connection reaches every tool on it.
 - **Each op declares exactly ONE resource entity type** (review M1) — never
   "finest available, sometimes coarser." The type is fixed per op; only the **id**
   varies (the object id when a natural id param is present, the parent/collection
   id when it is absent). That single type is what the op's action lists in
-  `appliesTo` and what a policy author relies on. Examples:
+  `appliesTo` and what a rule author relies on. Examples:
   - `github_get_file` → always `Sieve::Github::Repo` (id `<conn>/<owner>/<repo>`).
   - `github_list_repos` → always `Sieve::Github::Owner` (id `<conn>/<owner>`; when
     the owner param is omitted, the connection-default owner). It does **not**
     sometimes emit `Owner` and sometimes `Connection`.
   - A genuinely connection-wide op (e.g. `github_search_code`, which has no
-    owner/repo) declares a connection-level type (`Sieve::Github::Account`,
-    id `<conn>`) — consistently, every call.
+    owner/repo) declares the connection-level type `Sieve::Connection`
+    (id `<conn>`) — consistently, every call. There is **no** per-connector
+    "Account" type; the connection entity *is* the connection-grain resource (used
+    uniformly by `anthropic`, `mcp_proxy`, and connection-wide ops everywhere).
 
-  Consequence: a policy targeting `resource in Sieve::Github::Owner` matches every
+  Consequence: a rule targeting `resource in Sieve::Github::Owner` matches every
   op whose declared type is `Owner` (or a descendant), and never silently misses
   because an op down-graded to a connection resource. Refining an id later
   (collection → object) is non-breaking (transitive `in`); changing an op's
   resource *type* is a schema change, caught by the taxonomy test (impl §9).
 
 Resource attributes available to conditions: `resource.connection_status` (so a
-policy can `forbid … when { resource.connection_status == "reauth_required" }`,
-folding today's pre-flight reauth check into policy — optional).
+rule can `forbid … when { resource.connection_status == "reauth_required" }`,
+folding today's pre-flight reauth check into a rule — optional).
 
 ### 5.3 Actions
 
 **One Cedar action per connector operation**, id = `"<connectorType>/<opName>"`
-(mechanical, collision-free). Actions are organized into **groups** so policies
+(mechanical, collision-free). Actions are organized into **groups** so rules
 can target any altitude:
 
 ```
@@ -305,25 +399,30 @@ Sieve::Action::"google/list_emails"         // the leaf op
   (→ `read`/`write` and `<type>/read`|`<type>/write`) and, for `google`, from the
   op-name prefix (`drive.`,`calendar.`,`sheets.`,`docs.`,`people.`, bare = gmail)
   → the per-subservice group. This is what makes tezos_ops **P0** dissolve: a
-  "drive read" policy targets `google/drive.read` and is *silent* on gmail ops.
+  "drive read" rule targets `google/drive.read` and is *silent* on gmail ops.
 - **Escape hatches** (`github_request`, `gitlab_request`, `linear_request`,
   `proxy_request`) are **write** actions and additionally carry
-  `context.http_method`, so a policy can grant *read-only raw access*:
+  `context.http_method`, so a rule can grant *read-only raw access*:
   `permit(…, action == Sieve::Action::"github/github_request", …) when {
   context.http_method == "GET" };` — the clean answer to **P2** without losing
   per-op control. Adding curated read ops (e.g. `github_list_commits`) is then
   orthogonal: they simply join `read`.
 - `mcp_proxy` contributes a single action `Sieve::Action::"mcp_proxy/call"`
-  (per §5.2 the tool is the resource). It is placed in the **`write` group only**
-  (not `read`): an upstream MCP tool's effects are unknown, so a `read`-only token
-  must **not** reach MCP tools by default. Granting MCP access is explicit —
-  `action == Sieve::Action::"mcp_proxy/call"` scoped to specific
-  `Sieve::Mcp::Tool` resources.
-- `search_messages` (slack) keeps its action so policies bind stably even though
+  (per §5.2, v1 scopes it at connection grain). It is placed in the **`write` group
+  only** (not `read`): an upstream MCP tool's effects are unknown, so a `read`-only
+  token must **not** reach MCP tools by default. Granting MCP access is explicit —
+  `action == Sieve::Action::"mcp_proxy/call"` scoped to a `Sieve::Connection`
+  (per-**tool** scoping is deferred, §15).
+- `search_messages` (slack) keeps its action so rules bind stably even though
   the connector returns `ErrOperationNotEnabled` (unchanged behavior).
 
 The action map (`op → action id + groups`) is **generated** from the connector
-registry (impl §3, §8) so it cannot drift from the catalog.
+registry (impl §3, §8) so it cannot drift from the catalog. **Generation invariant:
+every shipped action group is non-empty** (a group with zero member ops is a
+generation-time error). This matters for validation: a group-targeted rule
+(`action in Sieve::Action::"read"`) over a constrained resource is never flagged as
+an *impossible policy* by `cedar validate`, because the group always has at least
+one member action whose `appliesTo` the resource can satisfy.
 
 ### 5.4 Context (environment)
 
@@ -334,7 +433,7 @@ Common fields shared by all actions (optional; populated by PEP + connector
 |---|---|---|---|
 | `http_method` | `String` | escape-hatch `method` param / proxy method | read-only raw access (P2) |
 | `recipient_domains` | `Set<String>` | gmail send/reply enricher (parse `to`/`cc`) | "internal-only send" |
-| `estimated_cost` | `Long` | anthropic enricher (`max_cost`/token estimate) | spend caps |
+| `estimated_cost` | `decimal` | anthropic enricher (`max_cost`/token estimate) | spend caps (fractional dollars) |
 | `now` | `datetime` | PEP clock | time-window comparisons (before/after a timestamp) |
 | `source_ip` | `ipaddr` | PEP (request remote addr) | network conditions |
 | `param` | per-action record (§ below) | scalar operation params | targeted conditions (e.g. `context.param.state == "open"`) |
@@ -342,16 +441,51 @@ Common fields shared by all actions (optional; populated by PEP + connector
 **`param` is a per-action typed record, not an open one (review N2).** Cedar
 schema records are **closed** — `context.param.<arbitrary>` would fail validation
 against a single open type. Because the schema is **generated** from the connector
-registry, and `ParamDef` already carries a `Type` (`string`/`int`/`bool`), the
-generator emits a **per-action `context` shape**: each action's `appliesTo.context`
-declares exactly that op's scalar params, typed (`string→String`, `int→Long`,
-`bool→Boolean`; non-scalar params omitted). So `context.param.state` is
+registry, and `ParamDef` already carries a `Type` (`string`/`int`/`float`/`bool`),
+the generator emits a **per-action `context` shape**: each action's
+`appliesTo.context` declares exactly that op's scalar params, typed
+(`string→String`, `int→Long`, `float→decimal`, `bool→Boolean`; non-scalar params
+omitted — Cedar has no float, so a fractional param like `temperature` is a
+`decimal`, compared with `.lessThanOrEqual(decimal("0.7"))`). So
+`context.param.state` is
 schema-valid for `gitlab_list_issues` (which has a `state` param) and a
 *validation error* for an op that has no such param — typo protection for free.
 
 Cedar can't express calendar logic (hour-of-day, weekday) on `now` — only
 ordering. **Business-hours and similar belong in a `script_guard`** (§7.1), as the
-§13.5 example does; `context.now` is for "before/after this instant" only.
+§13.6 example does; `context.now` is for "before/after this instant" only.
+
+**Condition attributes are advertised, not hardcoded (review Compl-S6).** The
+structured condition editor (§9.5) is not a fixed menu; each connector declares
+which attribute paths a given op exposes and their types, via a named interface:
+
+```go
+// what the editor reads to build the (attribute · operator · value) picker
+func ConditionAttributes(connType string, op string) []AttrDef
+type AttrDef struct {
+    Path      string   // "context.param.max_tokens", "context.recipient_domains",
+                       //   "resource.connection_status", "context.estimated_cost"
+    Type      string   // "String" | "Long" | "decimal" | "Boolean" | "Set<String>" | "datetime" | "ipaddr"
+    Operators []string // the type's Cedar operators: ==, <, <=, in, contains, containsAll, like, …
+}
+```
+
+This is the same source the schema generator uses for the per-action `param`
+record, so the editor and the validator never disagree: any attribute the editor
+offers is schema-valid for that op, and its operator list is exactly the Cedar
+operators its type supports.
+
+**Decision-time context is request-time only — response/body content is NOT
+available.** Cedar `context` is built *before* `Execute` (§5.5), so a `when`/`unless`
+condition can see the request (params, recipients, cost estimate, method, ip,
+time) but **never the response body**. The legacy `RuleMatch` response-content
+predicates (`From`/`To`/`Subject`/`ContentContains`/`Labels` matched against the
+*returned* message) therefore cannot be decision conditions. They move to the
+**post** phase: an `exclude_items`/`script_filter` that inspects the response, or a
+`script_guard` when the decision genuinely needs request-derived content. A
+condition that references response data is a save-time error (the attribute is not
+in `ConditionAttributes`). The full legacy-`RuleMatch`→new-home mapping is the
+capability-parity map (§13.8).
 
 ### 5.5 Request mapping
 
@@ -366,55 +500,74 @@ Request{
 }
 ```
 
-plus an **entity store** for this request containing: the token (→ role), the
-role (→ role-groups), the resource (→ connection → connector), and the action
-group memberships. (Action-group entities and connector/connection container
-entities can be precomputed and cached; only the per-request token/resource
-leaves are assembled per call.)
+plus an **entity store** for this request containing: the token (→ its **set of
+roles**), the resource (→ connection → connector), and the action group
+memberships. (Action-group entities and connector/connection container entities
+can be precomputed and cached; only the per-request token/resource leaves — and
+the token's role-set edges — are assembled per call.)
 
 ---
 
 ## 6. Evaluation
 
 ```
-decision, diag := cedar.Authorize(activePolicySet, entities, request)
+decision, gdiag := grantsPDP.Authorize(grantsSet, entities, request)   // pass 1: the decision
 ```
 
 - `Deny` (default or forbid) → Sieve denies. Deny reason = annotations of the
   determining `forbid`s (`@deny_message`) if any, else "no matching permit".
-- `Allow` → Sieve proceeds, then collects obligations from `diag.Reasons` (§7).
-- `diag.Errors` non-empty → each errored policy is logged with its id +
+- `Allow` → Sieve runs **pass 2** over the *guardrail* set to collect obligations
+  (§7.3), then proceeds.
+- `gdiag.Errors` non-empty → each errored statement is logged with its id +
   message (audit + metrics). Errors do **not** flip a deny to allow (Cedar skips
-  them); a policy that *should* have permitted but errored therefore fails
-  closed, which is the correct posture.
+  them); a rule that *should* have permitted but errored therefore fails closed,
+  which is the correct posture.
 
-There is exactly **one** evaluation per request (matching today's single-pass
-design). Post-execution filtering is an *obligation applied to the response*, not
-a second decision.
+There are **two `Authorize` passes** per request: pass 1 over the **grants** set is
+the allow/deny decision; pass 2 over the **guardrails** set (only on allow) is
+obligation *collection*, not a second decision — it can never turn allow into deny,
+only add approval/filters (§7.3). Why obligations live in their own pass rather
+than on the grant permits is the load-bearing correction in §7.0.
 
 ---
 
-## 7. Obligations and the filter library
+## 7. Guardrails and the filter library
 
-Cedar decides **allow/deny**. Everything that happens *because* of an allow —
-human approval, a pre-execution script guard, response redaction/exclusion, an
-arbitrary script transform — is an **obligation**. Obligations are the second
-half of the system and the place where Sieve's power and reusability live: the
-decision is bespoke per policy, but obligations are **first-class, named,
-reusable objects** that policies merely *reference*.
+The grants layer (§5–§6) decides **allow/deny**. Everything that happens
+*because* of an allow — human approval, a pre-execution script guard, response
+redaction/exclusion, a script transform, a rate limit — is an **obligation**, and
+obligations live in the **guardrails layer** (§3.1), not on the grants.
 
-**The one invariant that makes this safe:** an obligation can only ever *narrow*
-(deny) or *transform* (filter) — it can **never grant**. Cedar is the sole source
-of "allow." Adding an obligation to a policy is therefore always safe: the worst
-it can do is block or scrub. This preserves the monotonicity property from §12
-even with arbitrary scripts in the loop.
+**The invariant that makes this safe:** an obligation can only ever *narrow*
+(deny / require approval) or *transform* (filter) — it can **never grant**. The
+grants layer is the sole source of "allow"; a guardrail's worst case is to block,
+gate, or scrub an *already-allowed* request.
 
-### 7.1 The filter library (first-class, named, reusable, script-capable)
+### 7.0 Why obligations are global guardrails, not annotations on a grant
 
-A **filter** is a stored object (the PAP-managed library), not inline policy
-text. A policy *references* filters by name; the same filter is reused across
-unrelated policies because a transform like "redact card numbers" is genuinely
-identical everywhere (this is the reuse that §1 says policies should *not* have).
+This is the design's load-bearing correction (it failed in rev-1). If an
+obligation were attached to a specific `permit`, **composition would silently
+strip it**:
+
+> Role `email` has `@approval permit(send_email) when { recipient internal }`.
+> Role `ops` (also assigned to the same token) has a plain `permit(send_email)`.
+> An **external** send: the `email` permit's condition is false → it does not
+> match → its approval is never collected; the `ops` permit matches → **allow,
+> no approval.** The careful approval is routed around by a broader grant in a
+> sibling role.
+
+A request is allowed if *any* grant permits it, so an obligation read off "the
+determining permit" is defeated by the existence of an obligation-free determining
+permit. Therefore obligations bind the **outcome**, not a grant: a **guardrail**
+matches an *allowed request* by its own scope+condition and applies regardless of
+which rule granted it (§3.1 law 2). The only Cedar construct that is global under
+composition is a non-granting overlay — which is exactly what a guardrail is.
+
+### 7.1 The filter library (named, reusable, script-capable transform/guard defs)
+
+A **filter** is a stored definition in the PAP-managed library; **guardrails**
+reference filters by name (a transform like "redact card numbers" is identical
+everywhere — the genuine reuse unit for obligations).
 
 ```
 Filter {
@@ -424,7 +577,7 @@ Filter {
   order:   int      // post-filter application order (lower first); ties broken by id (M3)
   config:  { patterns: [...] }                                         // redact/exclude
         |  { command, path, timeout_ms }                              // script_*
-        |  { limit: int, window_seconds: int, key: "token"|"token+resource"|"token+action" } // rate_limit
+        |  { limit, window_seconds, key: "token"|"token+resource"|"token+action"|"token+action_group" } // rate_limit
 }
 ```
 
@@ -433,94 +586,149 @@ Filter {
 | `redact` | post | regex-mask matches in the response | no | yes |
 | `exclude_items` | post | drop list items containing text/regex | no | yes |
 | `script_filter` | post | run a script over the response JSON; stdout replaces it | no¹ | yes |
-| `script_guard` | pre | run a script over the request before Execute; non-zero/`{"deny":true}` ⇒ deny | **yes** | no |
+| `script_guard` | pre | run a script over the request before Execute; `{"action":"deny",…}` ⇒ deny | **yes** | no |
 | `rate_limit` | pre | count calls keyed per `key`; over `limit`/`window_seconds` ⇒ deny | **yes** | no |
 
 ¹ A `script_filter` that errors fails closed (the un-transformed result is
 withheld) — it can effectively block, but it cannot *grant* or alter the
 allow decision.
 
-**`rate_limit`** (review M4) restores the per-op rate limiting the legacy
-`builtin` evaluator had. It is a pre-phase obligation backed by the existing
-`internal/ratelimit` package; the counter key is `(token[, resource|action])` per
-`config.key`. Like every obligation it is monotonic — over-limit denies, it never
-grants. Because it is stateful, the **decision explorer (§11) does not consume
-quota** (dry-run skips `rate_limit` evaluation and reports "would rate-limit:
-<key>" instead).
+**Script command allowlist (security boundary — parity with legacy
+`commandallowlist.go`).** A `script_*` filter's `config.command` MUST pass
+`ValidateCommand(CurrentCommandAllowlist())` — absolute path, symlink-resolved,
+default `/opt/sieve-py/bin/python3` — **at save time and at execution time**. A
+non-allowlisted command is a save-time rejection. This is a real boundary: without
+it, a PAP user who can author a filter can exec any host binary. (It must not be
+lost in the port — review item.)
 
-**Post-filter ordering (review M3):** when several `post` filters apply,
-redact-then-reformat ≠ reformat-then-redact, so order is significant. Filters
-apply in ascending `order`, ties broken by filter `id` — **deterministic and
-operator-controllable**, never "library insertion order." The built-in
-`AuthValueScrubFilter` (HTTP proxy) has `order = -∞` (always first). Pre-phase
-obligations (`script_guard`, `rate_limit`) are unordered: any deny denies, so
-order among them can't change the outcome.
+**`rate_limit`** restores the legacy `builtin` per-op-class limiting. To match
+legacy buckets ("100 reads/hr AND 10 sends/day"), `key` includes
+**`token+action_group`** (aggregates across all ops in a group, e.g. all reads),
+not only single actions. **v1 status:** `rate_limit` execution is **deferred**; a
+guardrail that references a `rate_limit` filter is rejected at save until the
+counter is wired (no silent no-op — see §15). `script_guard`, `redact`,
+`exclude_items`, `script_filter` execute in v1.
+
+**Post-filter ordering (M3):** post filters apply in ascending `order`, ties by
+`id` — deterministic, operator-controllable. The built-in `AuthValueScrubFilter`
+(HTTP proxy) has `order = -∞` (always first). Pre-phase guards are unordered (any
+deny denies).
 
 Scripts reuse the existing Python policy-script runtime (`/opt/sieve-py`,
-stdin→stdout JSON, the same contract as today's `internal/policy` script
-evaluator — see `docs/policy-scripts.md`). The library is the home for *all*
-script logic; there is no whole-policy "script evaluator" type any more.
+stdin→stdout JSON; `docs/policy-scripts.md`). The library is the home for *all*
+script logic; there is no whole-policy "script evaluator" type.
 
-### 7.2 How a policy references obligations (annotations)
+### 7.2 Guardrails (the global obligation layer)
 
-Obligations are attached to a `permit` via annotations. Two are intrinsic
-(approval, audit label); the rest are **references into the filter library** by
-name:
+A **guardrail** is a stored overlay: a **scope** (operations + resources, and
+optionally a principal/role) + an optional **condition** → an **obligation**
+(require approval and/or apply named filters). It is authored like a rule but it
+**does not grant**; it binds any *allowed* request that matches.
 
-| Annotation | Value | Effect |
-|---|---|---|
-| `@approval("required")` | literal | Allow-after-approval: PEP submits + blocks (REST) / returns a ticket (MCP) before Execute. |
-| `@filters("name1 name2 …")` | space-separated filter names | Apply those library filters (pre-phase guards run before Execute; post-phase transforms run on the response). |
-| `@audit_label("<label>")` | label | Sets the audit decision label. |
-| `@deny_message("<text>")` | text | (on `forbid`) human-readable deny reason. |
-
-`@filters` takes a *list* (annotation values are strings, so a space-separated
-list keeps the map-keyed annotation model while allowing many filters per
-policy). Filter names are validated at policy save against the library; a
-dangling reference is a save-time error.
-
-### 7.3 Collection semantics
-
-On `Allow`, walk `diag.Reasons` (all satisfied `permit`s — §4.2) and combine:
-
-```go
-for _, r := range diag.Reasons {
-    anns := activePolicySet.Get(r.PolicyID).Annotations()
-    // approval:   any "required"            ⇒ approval required        (logical OR)
-    // @filters:   union the named filters    ⇒ resolve against library  (set union)
-    // audit_label: collect                   ⇒ joined for the audit row
+```
+Guardrail {
+  id, name, enabled
+  scope:      { principal? (role), action(s)/group, resource(s) }   // who/what it covers
+  condition:  <Cedar when-expr, optional>                            // e.g. recipients external
+  obligation: { approval: bool, filters: [name…] }                  // references the library
 }
-guards  := resolved.filter(phase == pre)    // script_guard, rate_limit
-xforms  := resolved.filter(phase == post)   // redact/exclude/script_filter, sorted by (order,id)
 ```
 
-- **Approval** OR; **filters** union, then **deduped by filter id** (two
-  determining permits naming the same filter ⇒ it applies once). Post-transforms
-  are sorted by `(order, id)` (§7.1) so application is deterministic and idempotent
-  in the filter set.
-- Obligations are read **only on Allow**; never on Deny.
+Stored as a Cedar `permit` (the scope+condition) carrying `@approval` /
+`@filters` annotations, kept in a **separate policy set** from the grants
+(§7.3).
+
+**Invariant — the guardrail set is permit-only.** The two-pass soundness (§7.3)
+depends on it: on `Allow`, Cedar returns the satisfied *permits* as the determining
+policies, so "which guardrails matched" = `Reasons` *only if* the set has no
+`forbid`. Save-time validation therefore **rejects any `forbid` in the guardrail
+set, and any annotation other than `@approval`/`@filters`/`@deny_message`** — even
+via the raw-Cedar escape hatch (§9.5). A guardrail never denies and never grants;
+it only adds an obligation to an already-allowed request.
+
+**Authoring polarity — a guardrail imposes by default and *exempts* by condition**
+(the mirror of §7.6, which restricts a grant by condition). Write the *exemption*
+as an `unless` clause, `has`-guarded, so a missing/uncertain attribute leaves the
+obligation **in force** (fail-safe). Examples:
+
+- *Every send needs approval unless provably all-internal* (a missing
+  `recipient_domains` ⇒ not provably internal ⇒ approval still required):
+  `@approval("required") permit(principal, action == "google/send_email", resource)
+   unless { context has recipient_domains && ["trilitech.com"].containsAll(context.recipient_domains) };`
+- *Every Gmail read is PII-scrubbed* (unconditional — the safest guardrail shape):
+  `@filters("scrub-pii") permit(principal, action in "google/gmail.read", resource);`
+- *Sends by anything in the `finance` role need approval* (role-scoped, still
+  composition-safe — it matches on the token's role membership, not on the granting
+  rule): `@approval("required") permit(principal in Sieve::Role::"finance",
+  action == "google/send_email", resource);`
+
+Because a guardrail matches on the request (principal's role-set, action,
+resource, context) and not on which grant fired, no sibling grant can route around
+it (§7.0); and because it imposes-unless-exempt, no *absent attribute* can route
+around it either (§7.6).
+
+### 7.3 Evaluation — two passes (grants, then guardrails)
+
+```go
+// pass 1 — grants: the allow/deny decision
+dec, gdiag := grantsPDP.Authorize(req)        // grant rules only
+if dec != Allow { return Deny(reason from gdiag) }
+
+// pass 2 — guardrails: collect obligations from ALL matching guardrails
+_, hdiag := guardrailsPDP.Authorize(req)       // guardrail set (permit-only, §7.2)
+matched := hdiag.Reasons ∪ hdiag.Errors        // ERRORED guardrail fails SAFE → treat as matched
+for _, r := range matched {                    // every guardrail that matched OR errored
+    anns := guardrailSet.Get(r.PolicyID).Annotations()
+    approval = approval || (anns["approval"] == "required")   // OR
+    filters  = filters ∪ split(anns["filters"])               // union
+}
+filters = dedupeByID(resolve(filters, library))
+```
+
+- The guardrail pass is a **second `Authorize` over the (permit-only) guardrail
+  set**; we ignore its allow/deny and read which guardrails fired. Because the set
+  has no `forbid` (§7.2 invariant), `hdiag.Reasons` on `Allow` is exactly the
+  matched guardrails, and a 0-match request default-denies that pass with empty
+  `Reasons` (no obligations) — both correct. It is **independent of the grant
+  pass**, so composition cannot strip an obligation (§7.0).
+- **Fail-safe selection (the §7.6 polarity, engine half).** An errored guardrail
+  condition appears in `hdiag.Errors`, not `hdiag.Reasons`. For a *grant* an errored
+  permit is skipped (fail-closed — deny). For a *guardrail* skipping would **drop**
+  the obligation (fail-open), so the engine takes `Reasons ∪ Errors`: an errored
+  guardrail is treated as **matched** and its obligation **applies**. Combined with
+  the `unless`-exemption authoring form (§7.2), neither an absent attribute nor an
+  evaluation error can bypass a guardrail.
+- **Approval** = OR over matched guardrails; **filters** = union, deduped by id;
+  post-filters sorted by `(order, id)`. Obligations are computed **only when pass 1
+  allowed**.
+- `@approval` + post-`@filters` on the same matched guardrail **both** apply: the
+  post-filters run on the response *after* approval resolves (fixes the rev-1
+  "approval drops filters" gap — review item; the approval branch must run
+  post-filters).
 
 ### 7.4 Application points
 
+The obligations collected in pass 2 (§7.3) are applied around `Execute`:
+
 ```
-Cedar Allow
-  → run pre obligations: rate_limit then script_guard; any deny ⇒ DENY   [pre, fail-closed]
-  → if @approval: submit + block(REST)/ticket(MCP)                       [pre]
+Grants Allow → collect guardrail obligations (§7.3)
+  → run pre guards: script_guard (rate_limit deferred, §7.1); any deny ⇒ DENY   [pre, fail-closed]
+  → if approval required: submit + block(REST)/ticket(MCP)                       [pre]
   → conn.Execute(...)
-  → apply post transforms sorted by (order,id): redact/exclude/script_filter  [post]
+  → apply post filters sorted by (order,id): redact/exclude/script_filter         [post]
        (AuthValueScrubFilter at order -∞, always first, for the HTTP proxy)
   → return
 ```
 
-`rate_limit` runs **before** `script_guard` and **before** approval — cheap quota
-checks first, so an over-limit request neither spawns a guard process nor pages a
-human.
+When `rate_limit` ships (§15) it runs **before** `script_guard` and **before**
+approval — cheap quota checks first, so an over-limit request neither spawns a
+guard process nor pages a human.
 
-Post-transforms run through the existing `policy.ApplyResponseFilters`
+Post-filters run through the existing `policy.ApplyResponseFilters`
 (`RedactPatterns`, `ExcludeContaining`, and `ScriptCommand`/`ScriptPath` — all
 already supported by that applier), so the enforcement code is reused; only the
-*source* of the filters changes (the library, resolved from annotations, instead
-of `decision.Filters`).
+*source* of the filters changes (the guardrail obligations of §7.3, instead of
+`decision.Filters`).
 
 ### 7.5 Fail-closed
 
@@ -529,24 +737,42 @@ PEP returns an error and the un-transformed result is **never** sent to the agen
 (today's behavior in `router.go`/`server.go`). Approval timeout/rejection denies.
 A script can therefore fail safe in exactly one direction: toward less access.
 
-### 7.6 Fail-closed authoring rule (Cedar gotchas)
+### 7.6 Fail-safe authoring rules (grants and guardrails have OPPOSITE polarity)
 
-Two Cedar properties make naïve restrictions fail **open**; both are mandatory
-authoring rules enforced by the editor's linter (impl §9):
+Cedar skips any statement whose condition errors, and `containsAll([])` is
+vacuously true. Naïvely, both make a restriction fail **open**. The safe direction
+is **opposite for the two layers**, and the editor's linter (impl §9) enforces each:
+
+**For grants — restrict by `when`; absence ⇒ no grant (deny):**
 
 1. **Express restrictions as conditions on a `permit`, never as `forbid … unless`.**
-   If a condition errors or is vacuously satisfied, a `permit`-condition yields
-   "no grant" (deny), whereas a `forbid`-`unless` yields "not denied" (allow). The
-   internal-send example (§13.2) is the canonical case.
-2. **Guard every optional `context`/attribute access with `has`.** Accessing an
-   absent attribute is an *evaluation error*; an errored `permit` is skipped
-   (deny — safe) but an errored `forbid` is also skipped (allow — unsafe). Always
-   write `context has x && context.x …`.
+   If the condition errors or is vacuously satisfied, a `permit`-condition yields
+   "no grant" (deny — safe); a `forbid`-`unless` yields "not denied" (allow —
+   unsafe). The internal-send grant (§13.3) is the canonical case.
+2. **Guard every optional `context`/attribute access with `has`.** An errored
+   `permit` is skipped (deny — safe). Always write `context has x && context.x …`.
 
-Cedar limitation to design around: there is **no set-cardinality / `isEmpty`
-operator**. "Non-empty" cannot be tested directly — so enrichers signal "empty"
-by **omitting** the attribute (caught by `has`), never by emitting `[]` (which
-passes `containsAll` vacuously). Count-based logic belongs in a `script_guard`.
+**For guardrails — exempt by `unless`; absence ⇒ obligation still applies** (§7.2,
+§7.3). The polarity inverts because for a guardrail *matching* is what imposes the
+constraint, so "skip on error" would fail **open**:
+
+3. **Express the exemption as `unless`, `has`-guarded, never the imposition as
+   `when`.** Write `@approval permit(…) unless { has x && <provably-exempt> }`, not
+   `when { <provably-sensitive> }`. An absent attribute then leaves the obligation
+   in force. Prefer an **unconditional** guardrail whenever the whole scope should
+   be covered (e.g. "scrub every Gmail read").
+4. **The engine backs this:** an errored guardrail is treated as **matched**
+   (`Reasons ∪ Errors`, §7.3), so even a generator bug or raw-Cedar typo fails
+   toward *more* constraint, not less.
+
+Cedar set handling to design around: **`.isEmpty()` exists in the Cedar language
+(v4.3.0), but cedar-go v1.8.0 support is unverified — do not rely on it.** This
+doesn't matter, because the safe pattern needs no cardinality operator: an enricher
+signals "empty" by **omitting** the attribute (caught by `has` → fail-closed),
+never by emitting `[]`. The real footgun is `containsAll([])`, which is **vacuously
+true** — an emitted empty set would satisfy an all-internal check and fail *open*.
+So the enricher contract ("emit only when non-empty"; §13.3) is the guard, not an
+operator. Count-based logic still belongs in a `script_guard`.
 
 ### 7.7 Guard contract and audit attribution
 
@@ -555,10 +781,11 @@ passes `containsAll` vacuously). Count-based logic belongs in a `script_guard`.
   execute. A guard that mutates external state would do so for requests that are
   then blocked. Guards read the request, return allow/deny; nothing else.
 - **Audit distinguishes guard/rate denials** (review L3). A guard runs because a
-  `permit` named it via `@filters`, so `determining_policies` would point at that
-  *permit* (which allowed) — confusing on a denial. The audit therefore records a
-  distinct decision value: `guard_deny` / `rate_limited` (alongside `deny`,
-  `approval_*`), with the denying filter's id, so "Cedar denied" vs "an obligation
+  **guardrail** named it via `@filters`, so `determining_rules` would point at the
+  *grant rule* that allowed (the guardrail itself only adds the obligation) —
+  confusing on a denial. The audit therefore records a distinct decision value:
+  `guard_deny` / `rate_limited` (alongside `deny`, `approval_*`), with the denying
+  filter's id and the matched guardrail's id, so "grants denied" vs "an obligation
   denied" is never ambiguous.
 
 ---
@@ -569,20 +796,30 @@ The schema is **generated** from the connector registry (impl §3) and checked i
 (human-readable format shown; JSON equivalent emitted too). Illustrative excerpt:
 
 ```cedar
-namespace Sieve {
-  entity RoleGroup;
-  entity Role in [RoleGroup];
-  entity Token in [Role] = { "name": String };
+// Per-connector object types each live in their OWN namespace: an entity short
+// name cannot contain "::", so `Sieve::Github::Repo` MUST be declared inside a
+// `namespace Sieve::Github` block. (A flat `entity Github::Repo` is invalid Cedar.)
+namespace Sieve::Google {
+  entity Message   in [Sieve::Connection];
+  entity DriveFile in [Sieve::Connection];
+  // … Thread, Draft, Label, CalendarEvent, Contact, Spreadsheet, Document
+}
+namespace Sieve::Github {
+  entity Owner      in [Sieve::Connection];
+  entity Repo       in [Sieve::Github::Owner];   // Repo's parent is Owner, Owner's is Connection
+  entity RawRequest in [Sieve::Connection];      // escape-hatch resource (github_request)
+}
+namespace Sieve::Mcp {
+  entity Tool in [Sieve::Connection];            // reserved; v1 scopes mcp at the Connection (§5.2)
+}
 
+// Sieve core: principals, the connection container, and all actions.
+namespace Sieve {
+  entity Role;                                    // a reusable bundle of rules
+  entity Token in [Role] = { "name": String };    // `in [Role]` permits MANY role parents
+                                                  //   → a token composes a SET of roles (§5.1)
   entity Connector;
   entity Connection in [Connector] = { "connection_status": String };
-
-  // resource objects (excerpt)
-  entity Google::Message     in [Connection];
-  entity Google::DriveFile   in [Connection];
-  entity Github::Owner       in [Connection];
-  entity Github::Repo        in [Github::Owner];
-  entity Mcp::Tool           in [Connection];
 
   // action groups
   action "read";
@@ -594,15 +831,22 @@ namespace Sieve {
   // record typed from THIS op's ParamDefs (closed + validatable). The generator
   // inlines the full record per action (no reliance on a record-merge operator).
   action "google/list_emails" in ["read", "google/gmail.read"]
-    appliesTo { principal: [Token], resource: [Google::Message],
+    appliesTo { principal: [Token], resource: [Sieve::Google::Message],
       context: { "http_method"?: String, "recipient_domains"?: Set<String>,
-                 "estimated_cost"?: Long, "now"?: datetime, "source_ip"?: ipaddr,
+                 "estimated_cost"?: decimal, "now"?: datetime, "source_ip"?: ipaddr,
                  "param"?: { "query"?: String, "max_results"?: Long } } };
 
   action "github/github_request" in ["write", "github/write"]
-    appliesTo { principal: [Token], resource: [Github::RawRequest],
+    appliesTo { principal: [Token], resource: [Sieve::Github::RawRequest],
       context: { "http_method"?: String, /* …common… */
                  "param"?: { "method"?: String, "path"?: String } } };
+
+  // anthropic has no object types — the resource IS the Connection (§5.2);
+  // floats (max spend, temperature) are Cedar `decimal`, never Long (§5.4).
+  action "anthropic/messages" in ["write", "anthropic/write"]
+    appliesTo { principal: [Token], resource: [Sieve::Connection],
+      context: { "estimated_cost"?: decimal, /* …common… */
+                 "param"?: { "max_tokens"?: Long, "temperature"?: decimal } } };
 }
 ```
 
@@ -611,7 +855,7 @@ Each action's `param` is a **closed, typed** record generated from its ParamDefs
 generator inlines the common fields into every action (a plain code-gen loop — no
 dependence on a Cedar record-merge operator that may not exist). The schema is the
 contract between connectors (which emit
-actions + resources) and policies (which reference them). The generator guarantees
+actions + resources) and rules + guardrails (which reference them). The generator guarantees
 every op has an action, each action's `appliesTo` lists the **single** resource
 type its extractor produces (§5.2, review M1) plus its typed `param` context, and
 group membership matches the `ReadOnly` flag — drift becomes a build failure (impl
@@ -619,31 +863,48 @@ group membership matches the `ReadOnly` flag — drift becomes a build failure (
 
 > **Schema is authoring/CI-only.** `cedar.Authorize` takes no schema (§4.2); at
 > runtime, action-group membership and resource ancestry come **entirely from the
-> entity store** (impl §5, review C3). The schema validates policies at save/CI;
-> it does nothing at decision time.
+> entity store** (impl §5, review C3) — the entity store is the decision-time trust
+> boundary. The schema validates rules at save/CI; it does **nothing** at decision
+> time.
 >
-> **Empirically validated (PR-B), authoritative Rust `cedar` 4.11.1.** The
-> generated schema validates these properties via `cedar validate`: N2 (per-action
-> typed `param`; undeclared `context.param.X` rejected), N4 (broad `action in read`
-> + connection resource accepted), and connector-gating (a `google/*` action on a
-> `Sieve::Github::*` resource is *rejected* — the Gmail-policy-on-GitHub invariant
-> holds at the validator). Go-side `x/exp` policy validation is impractical (its
+> **Empirically validated (PR-B), Rust `cedar` 4.11.1.** The generated schema
+> validates these properties via `cedar validate`: N2 (per-action typed `param`;
+> undeclared `context.param.X` rejected), N4 (broad `action in read` + connection
+> resource accepted). Go-side `x/exp` policy validation is impractical (its
 > `Policy()` wants `x/exp/ast`, which has no parser); policy validation uses the
 > Rust CLI (impl §8).
+>
+> **Connector-safety is NOT a validator property (correction).** The validator
+> *does* reject a `google/*` action aimed at a github **object** type
+> (`resource is Sieve::Github::Repo`) — no Google object lives under a GitHub
+> owner. But it **accepts** `permit(action == "google/list_emails", resource in
+> Sieve::Connection::"<a-github-connection>")` clean, because a `Connection` can
+> have descendants of *every* connector type, so a Google object *could*
+> hypothetically live under any connection (verified). Connection-scoped rules are
+> the common case, so the validator is **not** the authoritative connector-safety
+> gate. Authoritative gates are: (1) a **PAP-time check in Sieve code** —
+> `connector(connection)` must be compatible with every action in a rule whose
+> resource set names that connection (§9.1); and (2) **runtime entity-store
+> correctness** — the store only ever places a connection under its real connector
+> and an object under its real connection, so a `google/*` action can never match a
+> GitHub connection's resource at decision time regardless of what validated.
 
 ---
 
-## 9. Policy storage and runtime assembly
+## 9. Rule/role storage and runtime assembly
 
-There are **two** authoring artifacts: the **policy** and the **filter library**
-(§7). No templates, no links, no binding table — reuse falls out of Cedar's
-set-valued scopes.
+The authoring artifacts are the **role** (a named bundle of **rules**), the
+**guardrail** set, and the **filter library** (§7); a **token** references roles by
+assignment. No templates, no links, no binding table — reuse falls out of RBAC
+(roles across tokens) and Cedar's set-valued scopes (connections within a rule).
 
-### 9.1 The policy (one artifact, set-valued scopes)
+### 9.1 Rules and roles (set-valued scopes)
 
-A named, enableable Cedar document (one or more `permit`/`forbid` statements with
-annotations). The connection set a policy applies to lives in a **`when` clause**
-(`resource in [A, B, …]`). That is the reuse mechanism:
+A **role** is a named, enableable bundle of **rules**; each rule is one
+`permit`/`forbid` statement scoped to that role
+(`principal in Sieve::Role::"<role>"`) with optional annotations. The connection
+set a rule applies to lives in a **`when` clause** (`resource in [A, B, …]`). That
+is the within-rule reuse mechanism:
 
 ```cedar
 @id("assistant.gmail_read")
@@ -663,80 +924,102 @@ when { resource in [ Sieve::Connection::"gmail-A",      // ← reuse: add accoun
 > matches Google requests). `resource in [..]` never errors (resource is always
 > present), and it's a permit-condition, so it's fail-closed (§7.6).
 
-- **Reuse across accounts (your ask):** a policy applies to every connection in
-  its `when`-clause set. "Reuse my complex Gmail policy on another account" =
-  **add that connection to the set.** One policy, single source — edit the logic
-  once, it applies to every listed account. No clone-and-drift, no second artifact.
+- **Reuse across accounts (your ask):** a rule applies to every connection in its
+  `when`-clause set. "Reuse my complex Gmail rule on another account" = **add that
+  connection to the set.** One rule, single source — edit the logic once, it
+  applies to every listed account. No clone-and-drift, no second artifact. (Reuse
+  across *tokens* is the other axis: assign the role, §13.1.)
 - **The "apply to connection(s)" affordance (PAP).** The admin UI manages the
-  connection set as a **structured list**: "apply this policy to connection X"
-  appends `Sieve::Connection::"X"` to the `when`-clause set of every statement (a
-  structured edit, not Cedar-text munging). One gesture; whether the operator
-  thinks "reuse the policy" or "add an account" is immaterial — same artifact.
-- **Connector-safety — a Gmail policy can NOT be applied to a GitHub connection.**
-  This is the gate the dropped template `connector_type` used to give; it is now
-  enforced two ways:
-  1. **Schema validation (authoritative).** A statement's actions and resources
-     must be `appliesTo`-compatible: `google/gmail.read` declares its resource type
-     as a Google type, so `permit(action in google/gmail.read, resource in
-     Sieve::Connection::"<github-conn>")` is a **validation error** (no Google
-     resource lives under a GitHub connection). The nonsensical policy is rejected
-     at save (cheap connector-coherence check + x/exp + CI Rust validator), not
-     left silently inert.
+  connection set as a **structured list**: "apply this rule to connection X"
+  appends `Sieve::Connection::"X"` to the rule's `when`-clause set (a structured
+  edit, not Cedar-text munging). One gesture; whether the operator thinks "reuse
+  the rule" or "add an account" is immaterial — same rule.
+- **Connector-safety — a Gmail rule can NOT be applied to a GitHub connection.**
+  This is the gate the dropped template `connector_type` used to give. The
+  **authoritative gate is a PAP-time check in Sieve code**, *not* schema validation
+  (§8): when a rule's resource set names connection `X`, `connector(X)` must be
+  compatible with every action in the rule. `cedar validate` does **not** catch
+  `permit(action in google/gmail.read, resource in Sieve::Connection::"<github-conn>")`
+  — a `Connection` can host objects of any connector, so the validator accepts it
+  (§8). So the rule is rejected at save by:
+  1. **PAP connector-coherence check (authoritative).** For each connection in the
+     rule's resource set, Sieve verifies its connector type is compatible with the
+     rule's actions; a Gmail action on a GitHub connection is a save-time error.
+     (Schema validation still catches the narrower case of a Gmail action aimed at a
+     GitHub **object** type, but the connection-scoped case — the common one — is
+     covered only by this PAP check.)
   2. **Connector-aware affordance.** "Apply to connection" only offers connections
-     whose connector type is compatible with the policy's actions — a Gmail-action
-     policy simply doesn't list GitHub connections as targets.
+     whose connector type is compatible with the rule's actions — a Gmail-action
+     rule simply doesn't list GitHub connections as targets.
 
   The deliberately cross-connector case still works because it uses the **global**
   `read`/`write` groups, whose members legitimately apply across connectors (e.g.
-  tezos_ops §13.1: `action in read, resource in [gmail, gitlab, github]` — each
+  tezos_ops §13.2: `action in read, resource in [gmail, gitlab, github]` — each
   member action matches its own connector's resources). Only **connector-specific**
   actions are gated to their connector. So: cross-service-read = fine; Gmail-ops on
   GitHub = impossible.
-- **Presets** are simply **shipped example policies** per connector type ("Gmail
-  read-only"). Applying a preset = clone it (or "apply to connection X", which
-  scopes the shipped policy to your connection — and the same connector-safety
-  gate applies, so a Gmail preset can't be aimed at GitHub). No preset *system*,
-  no seeding of a separate table — they're ordinary policies you instantiate.
-- **One-offs / finer scope** (e.g. "…except the Sensitive label") are the same
-  artifact — just statements with a narrower `resource` (a specific object) or a
-  `forbid`. There is no separate "bespoke vs template" distinction; every policy
-  is the same kind of thing.
+- **Presets** are simply **shipped example roles** per connector type ("Gmail
+  read-only"). You don't clone a preset — you **assign** it to a token and **scope
+  it to your connection** via "apply to connection X" (the same connector-safety
+  gate applies, so a Gmail preset can't be aimed at GitHub). This matches §9.5's
+  "no clone-and-save": reuse is assignment, not copying. No preset *system*, no
+  seeding of a separate table — presets are ordinary roles.
+- **One-offs / finer scope** (e.g. "…except the Sensitive label") are the same kind
+  of rule — just a narrower `resource` (a specific object) or a `forbid`. There is
+  no separate "bespoke vs template" distinction; every rule is the same kind of
+  thing.
 
-Storage (`iam_policies`): `id, name, description, cedar_text, enabled,
-created_at`. The resource/principal **scope sets** are structured data the editor
+**Storage.** Three small tables plus the filter library (§9.2):
+- `iam_roles`: `id, name, description, created_at`.
+- `iam_rules`: `id, role_id, cedar_text, enabled, created_at` — one row per rule
+  (one Cedar `permit`/`forbid`), targeting its role.
+- `iam_token_roles`: `token_id, role_id` — the **token→role-set** assignment
+  (many-to-many; this is the composition primitive, §5.1).
+- `iam_guardrails`: `id, name, cedar_text, enabled, created_at` — the guardrail
+  overlay set (§7.2), assembled into a **separate** policy set from the rules.
+
+The resource/principal **scope sets** in each rule are structured data the editor
 round-trips into the Cedar `in [...]` scope (built via the typed cedar-go API /
 generated scope text — never arbitrary user text in the scope, so "apply to
-connection" can't corrupt the policy).
+connection" can't corrupt a rule).
 
 ### 9.2 Filter library (reusable obligations)
 
-Unchanged (§7): named redact/exclude/script obligations referenced by
-`@filters("…")`. The reusable *transform* layer. (Filters are the one thing that
-*is* identical across unrelated policies, so they stay a named library; policy
-*logic* reuses via the scope sets above.)
+Unchanged (§7): named redact/exclude/script obligations referenced by **guardrails**
+via `@filters("…")`. The reusable *transform* layer. (Filters are the one thing
+that *is* identical across unrelated guardrails, so they stay a named library; rule
+*logic* reuses via the scope sets above, roles reuse via assignment.) Stored in
+`iam_filters (id, name, description, kind, phase, order, config_json)` — the fifth
+concept's table, alongside `iam_roles`/`iam_rules`/`iam_token_roles`/`iam_guardrails`
+(§9.1).
 
-### 9.3 The active PolicySet (assembly)
+### 9.3 The active policy sets (assembly)
 
-At load (and on any policy or filter change), Sieve assembles **one**
-`cedar.PolicySet`:
+At load (and on any rule, guardrail, or filter change), Sieve assembles **two**
+`cedar.PolicySet`s — the **grants** set (every enabled rule) and the **guardrails**
+set (every enabled guardrail). Pass 1 evaluates grants; pass 2 evaluates guardrails
+(§6, §7.3).
 
-- Each policy contributes its statements directly (they are already concrete
-  Cedar — no linker, no materialization step).
-- Every statement gets a **stable, unique PolicyID** `"pol:<id>#<idx>"`. This is
-  what `diag.Reasons` returns, so the explorer/audit maps a determining policy
-  back to its source policy + statement and reads its annotations.
-- The set is cached in memory, rebuilt on change. Evaluation never hits storage.
+- Each rule / guardrail contributes its statement directly (already concrete Cedar
+  — no linker, no materialization step).
+- Every statement gets a **stable, unique PolicyID** — `"grant:<rule_id>"` in the
+  grants set, `"guard:<guardrail_id>"` in the guardrails set. This is what
+  `gdiag.Reasons` / `hdiag.Reasons` return, so the explorer/audit maps a determining
+  statement back to its source rule (or guardrail) and reads its annotations.
+- Both sets are cached in memory, rebuilt on change. Evaluation never hits storage.
 - **Scale via principal partitioning (review H3) — done correctly (review N1).**
-  A request for role `R` evaluates only the policies whose principal scope **can be
-  satisfied by R**: those scoped to `R`, to a `Sieve::RoleGroup` R belongs to
-  (transitive), or with an **unconstrained `principal`**. A naive role-id key would
-  drop the latter two → false denies; the partition is computed from each role's
-  group-ancestor set and invalidated on membership change.
+  A request from a token assigned roles `{R1,…,Rn}` evaluates only the rules whose
+  principal scope **can be satisfied by that token**: those scoped to any of its
+  roles, or with an **unconstrained `principal`**. A naive single-role key would
+  drop the unconstrained ones (and, pre-RBAC, additional roles) → false denies; the
+  partition is the union over the token's role set, invalidated on assignment
+  change. (The guardrails set partitions the same way — a role-scoped guardrail
+  only applies to tokens in that role.)
 
   **Partitioning is a transparent optimization and may be deferred.** It changes
   no decision (Cedar is order-independent); v1 MAY evaluate the whole set and add
-  partitioning only if policy count makes latency matter. Golden/differential
-  tests pin partitioned == whole-set. The N1 correctness risk exists *only if* we
+  partitioning only if rule count makes latency matter. Golden/differential tests
+  pin partitioned == whole-set. The N1 correctness risk exists *only if* we
   partition; the safe default carries none.
 
 ### 9.4 This is not the old binding model
@@ -744,10 +1027,66 @@ At load (and on any policy or filter change), Sieve assembles **one**
 Set-valued resource scopes can look like the old `{connection, policy_ids[]}`
 binding, but they are the opposite. The binding model AND-composed the *set of
 policies* on a connection (the intersection footgun). Here, listing connections in
-one policy's resource scope just makes that **single** policy apply to each — every
-policy still joins the global **union** (forbid-overrides-permit, default-deny).
-There is no per-connection policy set and no composition semantics; the §1 hard
+one rule's resource scope just makes that **single** rule apply to each — every
+rule still joins the global **union** (forbid-overrides-permit, default-deny).
+There is no per-connection rule set and no composition semantics; the §1 hard
 break (no AND-of-default-deny) stands.
+
+**Assigning many roles to a token is also not the binding model.** The old
+binding *intersected* the policies sharing a connection. RBAC assignment is the
+opposite: a token's roles **union** their rules (§3.1 law) — each role's permits
+add capability; a deny in any role subtracts globally. Composition can only widen
+(modulo deny), never shrink. So both reuse axes — roles across tokens, and
+connections within a rule's resource set — are unions with single sources, never
+the AND-footgun.
+
+### 9.5 Authoring model (PAP) — what the operator actually does
+
+The editor surfaces the five concepts (§3.1) directly; **no Cedar is required for
+the common case**, and the structured editor reaches Cedar's real `when`
+expressiveness rather than a hardcoded menu.
+
+- **Role = the authoring unit.** You open a role and see/edit **its list of
+  rules** (the bundle). Reuse is *not* "edit a rule to copy it elsewhere" — it is
+  assigning the role to another token. (There is no clone-and-save; that was a v0
+  mistake and is removed — reuse is assignment, §9.1.)
+- **Token = assign a set of roles.** The token create/edit form is a **multi-select
+  of roles**. This is the composition gesture (§13.1). Capability = the union
+  (§3.1).
+- **Rule editor (grants only — no obligations).** A rule is: **effect** (allow /
+  deny) · **operations** (an action group — read/write/per-subservice — or specific
+  ops) · **resource scope** · **conditions**. Obligations (approval, filters) are
+  **not** authored here — they live on guardrails (next bullet), because an
+  obligation on a grant is bypassable by composition (§7.0).
+- **Guardrail editor (the obligation layer).** A guardrail is: **scope**
+  (optional principal/role · operations · resources) · an optional **exemption**
+  condition (authored as `unless`, §7.6) → **obligation** (require approval and/or
+  apply named filters). Authored as a global overlay, not inside a role (§7.2); the
+  editor enforces permit-only + obligation-only annotations and defaults the
+  condition to the fail-safe `unless` form.
+- **Filter library editor.** Named, reusable **redact / exclude / script_filter /
+  script_guard / rate_limit** definitions (§7.1) that guardrails reference by name;
+  `script_*` commands are checked against the allowlist at save (§7.1).
+- **Resource scope = set-valued, structured.** "Apply to connection(s)" edits a
+  structured list that becomes the rule's `resource in [..]` set (§9.1); for
+  connectors with object types, scope to an owner/repo/channel/etc. The editor only
+  offers connector-compatible targets (the connector-safety gate, §9.1).
+- **Conditions = a general editor, not a fixed menu.** A condition is
+  **(attribute · operator · value)** over the request's **resource attributes** and
+  **context** (the connector advertises which paths exist and their types via the
+  `ConditionAttributes` interface, §5.4 — `context.param.max_tokens : Long`,
+  `context.recipient_domains : Set<String>`, `resource.connection_status : String`,
+  …). Operators are the type's Cedar
+  operators (`==`, `<`, `<=`, `in`, `.contains*`, `like`). The builder compiles
+  these to fail-closed `when` terms (§7.6: conditions live on permits). This is what
+  makes the structured path *expressive*, not a canned list of three checks.
+- **Raw Cedar is the escape hatch, not the only door.** Anything the structured
+  editor can't express (novel attribute logic, intricate `unless`) is authorable as
+  raw Cedar in the same role. Round-tripped into the structured view where it maps
+  cleanly; shown read-only as Cedar where it doesn't.
+- **Everything is validated at save** — schema (action/resource/attribute names,
+  connector-coherence) + parse — so a malformed or nonsensical rule is rejected
+  with a specific message, never stored inert or surfaced as a raw engine error.
 
 ---
 
@@ -758,29 +1097,34 @@ agent → PEP (api/mcp)
   1. authenticate bearer → token            (unchanged: tokens.Validate)
   2. resolve connection from request        (unchanged: path/alias/tool-name)
   3. build Cedar Request + entity store      (PIP: §5.5)
-       principal = Token, action = connector/op,
+       principal = Token, with Token.parents = the token's role SET (RBAC, §5.1)
+       action    = connector/op,
        resource  = connector.extract(conn, params),
        context   = enrichers(params, http)
-  4. decision, diag := PDP.Decide(request)   (iam.Decide → cedar.Authorize)
+       // No separate connection allow-list pre-check: a token may reach a
+       // connection iff some rule of one of its roles permits it. The gate is
+       // the rules, not a binding (this replaces legacy connectionAllowed).
+  4. decision, gdiag := PDP.DecideGrants(request)   (grants set → cedar.Authorize)
   5. switch decision:
        Deny  → 403 with reason (forbid @deny_message / "no permit"); audit
-       Allow → obligations := collect(diag.Reasons)      (§7.2; @filters resolved vs library)
-                 run rate_limit then script_guard; any deny ⇒ 403 (fail-closed)  [pre]
+       Allow → obligations := collectGuardrails(request)  (§7.3: 2nd Authorize over the
+                 guardrail set; union obligations from every matched guardrail)
+                 run rate_limit (deferred, §15) then script_guard; any deny ⇒ 403  [pre, fail-closed]
                  if obligations.approval:
                     REST: submit + WaitForResolution(5m) + re-validate token
                     MCP:  submit + return ticket (non-blocking)   (unchanged shapes)
                  result := conn.Execute(ctx, op, params)
                  result  = ApplyResponseFilters(result, obligations.filters, sorted by (order,id))  [post; fail-closed]
-                 audit(decision, determining_policies=diag.Reasons, label)
+                 audit(decision, determining_rules=gdiag.Reasons, guardrails=hdiag.Reasons, label)
                  return result
 ```
 
 Reused from today's PEP: steps 1–2, approval, the response-filter applier, and the
-429/ticket shapes. **New:** steps 3–4 (build request + Cedar decision), the
-obligation *source* (annotations → filter library), and the pre-phase
-guard/rate-limit step. The guard/rate-limit step reuses the existing script
-runtime + `internal/ratelimit`, so the net new surface is the engine and the
-obligation wiring — small and reviewable.
+429/ticket shapes. **New:** steps 3–4 (build request + two-pass Cedar decision),
+the obligation *source* (the guardrail pass → filter library, §7.3), and the
+pre-phase script-guard step. That step reuses the existing script runtime (and
+`internal/ratelimit` once `rate_limit` ships, §15), so the net new surface is the
+engine and the obligation wiring — small and reviewable.
 
 ---
 
@@ -789,13 +1133,22 @@ obligation wiring — small and reviewable.
 A first-class PAP capability, impossible in the current model (today an operator
 sees only `"Policy denied: default policy"`):
 
-- **Audit** gains `decision` (allow/deny) and `determining_policies` (the
-  `diag.Reasons` ids). Every logged decision answers "which policies?".
+- **Audit** gains `decision` (allow / deny / guard_deny / …) and
+  `determining_rules` (the `gdiag.Reasons` rule ids) plus the matched `guardrails`.
+  Every logged **allow** answers "which rules, which guardrails?".
+- **Deny explainability is asymmetric — be honest about it.** On an *allow*,
+  `gdiag.Reasons` names the satisfied rules. On a **default deny there are NO
+  determining rules** — `gdiag.Reasons` is *empty* (nothing matched), so "which rule
+  denied you?" has no answer; only an explicit `forbid` deny names a rule (its
+  `@deny_message`). For the empty-deny case the explorer offers **near-miss
+  diagnostics** instead: rules that matched the action but not the resource (or vice
+  versa), and rules whose `when` errored (`gdiag.Errors`) — "you were one condition
+  away," rather than inventing a determining rule that does not exist.
 - **Explorer endpoint** (admin-only, web port 19816): submit a hypothetical
-  `(token|role, connection, operation, params)`; Sieve builds the Request and runs
-  `Authorize`, returning the `Decision`, the determining policy ids + text, any
-  `diag.Errors`, and the obligations that would fire. This is the "why is this
-  denied / why is this allowed" tool.
+  `(token|role, connection, operation, params)`; Sieve builds the Request, runs both
+  passes (§7.3), and returns the `Decision`, the determining rule ids + text (or the
+  near-miss set on a default deny), any `Errors`, and the obligations that would
+  fire. This is the "why is this denied / why is this allowed" tool.
 
 ---
 
@@ -805,13 +1158,32 @@ sees only `"Policy denied: default policy"`):
 - **Deny is absolute** — a `forbid` cannot be overridden by any number of
   permits. The old "first deny short-circuits but ordering matters" hazard is
   gone.
-- **No privilege via composition** — adding policies is monotonic in capability
-  except `forbid`. The tezos_ops P0 class is impossible by construction.
-- **Fail closed on error** — a policy that errors is skipped (so it can't grant);
-  obligation failure blocks the response; approval timeout denies.
+- **Composition is monotonic in both directions** — adding a role only *widens*
+  capability (except a `forbid` it brings, which denies globally), **and** it can
+  only *add* guardrail matches, never remove them: you **cannot compose away a
+  guardrail** (§3.1 law 2, §7.0). So the tezos_ops P0 (silent shrink) is impossible
+  by construction, and so is the rev-1 obligation-bypass (composing a sibling grant
+  to strip an approval — §7.0).
+- **Fail safe on error, at every stage** — (a) *grant selection:* an errored grant
+  rule is skipped, so it can't grant (deny — §7.6); (b) *obligation selection:* an
+  errored guardrail is treated as **matched**, so it can't drop its obligation
+  (`Reasons ∪ Errors` — §7.3); (c) *obligation execution:* a failing guard/filter
+  blocks the response; (d) approval timeout denies. Each stage fails toward *less*
+  access / *more* constraint.
 - **Schema-validated authoring** — typos in action/resource/attribute names are
-  caught at save (x/exp) and in CI (Rust `cedar`), not at 2 a.m. in the audit
-  log.
+  caught at save (x/exp) and in CI (Rust `cedar`), not at 2 a.m. in the audit log.
+  (Connector-safety is a separate PAP-time check, not a validator property — §8,
+  §9.1.)
+- **Container scopes reach future connections (F3 — a real behavioral change).**
+  With the legacy `connectionAllowed` pre-check gone (§10), the gate is purely the
+  rules: a rule scoped to a **connector** (`resource in Sieve::Connector::"github"`)
+  or with an unconstrained resource grants **every current *and future*** connection
+  of that connector — adding a connection later silently *widens* every token whose
+  roles carry such a rule. That is intended for "all my GitHub orgs," but it is
+  least-privilege only when you mean it. Guidance: prefer **connection-scoped**
+  resource sets (`resource in [Sieve::Connection::…]`); the decision explorer
+  surfaces a rule's **per-connection reach** so the blast radius is visible before a
+  new connection joins.
 - **Two-port model preserved** — the explorer and editor are PAP (web 19816); the
   PEP stays on 19817. No new agent-callable surface.
 - **Credentials untouched** — §1 invariant 1.
@@ -823,7 +1195,61 @@ sees only `"Policy denied: default policy"`):
 Each shows the legacy intent and the target Cedar. (Legacy→Cedar mechanics are in
 the migration doc.)
 
-### 13.1 tezos_ops: one token, read-only across Gmail + GitLab + GitHub (fixes P0, P2)
+### 13.1 Composition (the headline): one token = two reusable roles
+
+Build **role `email-access`** once — read, draft, and send (the send-approval is a
+*guardrail*, below, not part of the grant):
+
+```cedar
+@id("email-access.read_draft")
+permit(principal in Sieve::Role::"email-access",
+       action in [Sieve::Action::"google/gmail.read", Sieve::Action::"google/gmail.draft"],
+       resource in Sieve::Connection::"work-gmail");
+
+@id("email-access.send")                        // the GRANT — just allows the send
+permit(principal in Sieve::Role::"email-access",
+       action == Sieve::Action::"google/send_email",
+       resource in Sieve::Connection::"work-gmail");
+```
+
+The "sends need approval" requirement is a **guardrail** in the separate guardrail
+set (§7.2), *not* an annotation on the grant — so it binds **every** allowed send
+regardless of which role granted it (a sibling role with a plain send grant can't
+route around it, §7.0):
+
+```cedar
+// guardrail set (global overlay)
+@id("guard.gmail_send_approval") @approval("required")
+permit(principal, action == Sieve::Action::"google/send_email", resource);
+```
+
+Build **role `llm-access`** once — call the model, cap the spend:
+
+```cedar
+@id("llm-access.complete")
+permit(principal in Sieve::Role::"llm-access",
+       action in Sieve::Action::"anthropic/write",
+       resource in Sieve::Connection::"claude")
+  when { context has param && context.param has max_tokens
+         && context.param.max_tokens <= 4096 };
+```
+
+Now issue a token **assigned both roles** — nothing is rewritten or copied:
+
+```
+token "agent-x":  roles = [ email-access, llm-access ]
+// entity store: Sieve::Token::"agent-x".parents
+//                 = [ Sieve::Role::"email-access", Sieve::Role::"llm-access" ]
+```
+
+The agent can now do email **and** LLM work — the union of both roles (§3.1 law).
+**Reuse:** assign `email-access` to another token too — one source of truth, edit
+it once. **Recompose:** a read-only agent is the token `[ email-access ]`; an
+LLM-only batch job is `[ llm-access ]`. No throwaway per-token role, no rule
+duplicated across roles. This is the composition the old binding model and the
+"one role per token" v0 could not express.
+
+### 13.2 tezos_ops: one token, read-only across Gmail + GitLab + GitHub (fixes P0, P2)
 
 ```cedar
 @id("tezos_ops.read")
@@ -849,9 +1275,12 @@ permit(
 One statement replaces the entire broken multi-attach. Adding a fourth service is
 adding a connection to the `when`-clause set — it can only *widen*. (The
 single-connection scope on the second statement is valid as-is; only multi-element
-sets must move to the `when` clause.)
+sets must move to the `when` clause.) The broad `action in read` validates even
+though `read` spans connectors: the resource is bounded to three named connections
+in the `when` clause and the group is non-empty (§5.3), so `cedar validate` accepts
+it — not an "impossible policy" (N4, §8).
 
-### 13.2 Gmail assistant: read + draft freely, send only internal, send needs approval
+### 13.3 Gmail assistant: read + draft freely, send only internal, send needs approval
 
 ```cedar
 @id("asst.read_draft")
@@ -861,8 +1290,9 @@ permit(
   resource in Sieve::Connection::"work-gmail"
 );
 
+// GRANT: send allowed ONLY to internal recipients — the internal-only test
+// RESTRICTS what is granted, so it is a condition on the grant (not a guardrail)
 @id("asst.send_internal")
-@approval("required")
 permit(
   principal in Sieve::Role::"assistant",
   action == Sieve::Action::"google/send_email",
@@ -873,19 +1303,31 @@ permit(
 };
 ```
 
-The internal-only restriction is a **condition on the `permit`**, not a `forbid …
-unless`. This is the **fail-closed authoring rule** (§7.6): if `recipient_domains`
-is absent (enricher didn't run) or the recipients aren't all internal, the
-condition is false → no permit → default deny. A `forbid … unless
-{ containsAll(recipient_domains) }` would fail **open** instead — an absent
-attribute errors the forbid (skipped → not denied), and `containsAll([])` is
-vacuously true (empty recipient set → not denied). **Enricher contract:** emit
-`recipient_domains` only when there is ≥1 recipient (never `[]`), since Cedar has
-no set-cardinality operator to test emptiness (§7.6). An all-internal send is then
-permitted *and* carries the approval obligation. (`google/gmail.draft` is the
-per-subservice action group for `create_draft`/`update_draft`/`send_draft`.)
+```cedar
+// GUARDRAIL set: any allowed send needs approval, regardless of the granting role (§7.0)
+@id("guard.send_approval") @approval("required")
+permit(principal, action == Sieve::Action::"google/send_email", resource);
+```
 
-### 13.3 GitHub: one PAT, many orgs (fixes P1)
+**Grant condition vs. obligation — the load-bearing distinction.** The internal-only
+test *narrows the grant* (it changes allow→deny), so it is a **condition on the
+`permit`**; the approval *adds an obligation to an already-allowed send*, so it is a
+**guardrail** (§7.0). Putting approval on the permit would let a sibling role's
+plain send grant route around it.
+
+The internal-only condition follows the **fail-closed authoring rule** (§7.6): a
+condition on a `permit`, never a `forbid … unless`. If `recipient_domains` is absent
+(enricher didn't run) or the recipients aren't all internal, the condition is false
+→ no permit → default deny. A `forbid … unless { containsAll(recipient_domains) }`
+would fail **open** instead — an absent attribute errors the forbid (skipped → not
+denied), and `containsAll([])` is vacuously true (empty recipient set → not denied).
+**Enricher contract:** emit `recipient_domains` only when there is ≥1 recipient
+(never `[]`), so the all-internal test can't pass vacuously through `containsAll([])`
+(§7.6 — don't lean on `.isEmpty()`). An all-internal send is then permitted *and*,
+via the guardrail, requires approval. (`google/gmail.draft` is the per-subservice
+action group for `create_draft`/`update_draft`/`send_draft`.)
+
+### 13.4 GitHub: one PAT, many orgs (fixes P1)
 
 ```cedar
 @id("ci.github_read")
@@ -904,7 +1346,7 @@ The credential is one connection (`ops-github`) with one PAT; authorization is b
 allow every org the PAT can reach, scope the whole connection instead (single
 entity, so it can live in the scope): `resource in Sieve::Connection::"ops-github"`.
 
-### 13.4 Read-everything-except (deny-override the old model couldn't express)
+### 13.5 Read-everything-except (deny-override the old model couldn't express)
 
 ```cedar
 @id("analyst.read_all_github")
@@ -922,24 +1364,37 @@ forbid(principal in Sieve::Role::"analyst",
 Read all GitHub across all connections, except one repo. Expressing this in the
 old intersection model was effectively impossible.
 
-### 13.5 Reusable filters: a script-based PII scrub + a pre-execution guard
+### 13.6 Reusable filters: a script-based PII scrub + a pre-execution guard
 
 First, two library filters (PAP objects, defined once, referenced anywhere):
 
 ```jsonc
 // filter "scrub-pii"   — post-execution script transform
+// command MUST be allowlist-resolved absolute path (§7.1): /opt/sieve-py/bin/python3
 { "name": "scrub-pii", "kind": "script_filter",
-  "config": { "command": "python3", "path": "/opt/sieve-py/filters/scrub_pii.py", "timeout_ms": 5000 } }
+  "config": { "command": "/opt/sieve-py/bin/python3", "path": "/opt/sieve-py/filters/scrub_pii.py", "timeout_ms": 5000 } }
 
 // filter "biz-hours"   — pre-execution script guard (denies outside business hours)
 { "name": "biz-hours", "kind": "script_guard",
-  "config": { "command": "python3", "path": "/opt/sieve-py/guards/biz_hours.py", "timeout_ms": 2000 } }
+  "config": { "command": "/opt/sieve-py/bin/python3", "path": "/opt/sieve-py/guards/biz_hours.py", "timeout_ms": 2000 } }
 ```
 
-Then a policy references them by name:
+Then a **rule** grants the access and a **guardrail** attaches the filters (filters
+are obligations → guardrail set, §7.2; never annotations on the grant):
 
 ```cedar
+// GRANT (rule): allow the read
 @id("support.read_tickets")
+permit(
+  principal in Sieve::Role::"support_bot",
+  action in Sieve::Action::"linear/read",
+  resource in Sieve::Connection::"support-linear"
+);
+```
+
+```cedar
+// GUARDRAIL set: scrub + business-hours on support_bot's Linear reads
+@id("guard.support_linear_reads")
 @filters("scrub-pii biz-hours")
 permit(
   principal in Sieve::Role::"support_bot",
@@ -949,19 +1404,22 @@ permit(
 ```
 
 `biz-hours` runs before Execute and can deny; `scrub-pii` runs over the response.
-Both are reused verbatim by any other policy that names them — editing
-`scrub_pii.py` once updates every policy. Neither can grant access; the `permit`
-is the only thing that allows, and the script invariant (§7) guarantees the
-guard/filter can only subtract. This is the granular + script-based control from
-the design review, with reuse living where it's actually well-defined.
+Both are reused verbatim by any other guardrail that names them — editing
+`scrub_pii.py` once updates every guardrail. Neither can grant access; the rule is
+the only thing that allows, and the script invariant (§7) guarantees the
+guard/filter can only subtract. The guardrail binds whenever support_bot's Linear
+read is allowed, no matter which role granted it (§7.0). This is the granular +
+script-based control from the design review, with reuse living where it's actually
+well-defined.
 
-### 13.6 Reuse a complex Gmail policy across accounts (§9.1)
+### 13.7 Reuse a complex Gmail role across accounts (§9.1)
 
-A "complex" policy is several statements — read + draft, internal-only send,
-scrub PII. Written once, it applies to **both** accounts because each statement's
-connection set lives in a `when` clause (`resource in [..]`):
+A "complex" role is several rules — read + draft, internal-only send — plus
+guardrails (approval, scrub PII). Written once, each rule applies to **both**
+accounts because its connection set lives in a `when` clause (`resource in [..]`):
 
 ```cedar
+// RULES (role: assistant) — the grants
 @id("assistant.gmail.read_draft")
 permit(principal in Sieve::Role::"assistant",
        action in [Sieve::Action::"google/gmail.read", Sieve::Action::"google/gmail.draft"],
@@ -969,28 +1427,61 @@ permit(principal in Sieve::Role::"assistant",
   when { resource in [ Sieve::Connection::"work-gmail",          // ← both accounts
                        Sieve::Connection::"ops-gmail" ] };
 
-@id("assistant.gmail.send_internal") @approval("required")
+// send allowed only to internal recipients (grant condition, §7.6) — NO @approval here
+@id("assistant.gmail.send_internal")
 permit(principal in Sieve::Role::"assistant",
        action == Sieve::Action::"google/send_email",
        resource)
   when { resource in [ Sieve::Connection::"work-gmail", Sieve::Connection::"ops-gmail" ]
          && context has recipient_domains                        // fail-closed (§7.6)
          && ["trilitech.com"].containsAll(context.recipient_domains) };
-
-@id("assistant.gmail.scrub") @filters("scrub-pii")
-permit(principal in Sieve::Role::"assistant",
-       action in Sieve::Action::"google/gmail.read",
-       resource)
-  when { resource in [ Sieve::Connection::"work-gmail", Sieve::Connection::"ops-gmail" ] };
 ```
 
-**Reuse on a third account** = add `Sieve::Connection::"third-gmail"` to the
-`when`-clause sets — the admin UI's "apply to connection" does this in one gesture
-across all statements. One policy, single source: edit the logic once and every
-listed account follows. No template, no link, no linker. A **preset** ("Gmail
-read-only") is just a shipped one-statement policy you apply to your connection
-the same way. (`action in [..]` *is* valid in the scope — only `principal`/
-`resource` sets must move to the `when` clause.)
+```cedar
+// GUARDRAIL set — obligations that bind regardless of which role granted (§7.0)
+@id("guard.assistant.send_approval") @approval("required")
+permit(principal in Sieve::Role::"assistant",
+       action == Sieve::Action::"google/send_email", resource);
+
+@id("guard.assistant.scrub") @filters("scrub-pii")
+permit(principal in Sieve::Role::"assistant",
+       action in Sieve::Action::"google/gmail.read", resource);
+```
+
+The scrub and the send-approval are **guardrails**, not extra grant rules: the
+read is already granted by `read_draft`, so the obligation only *adds* a transform /
+an approval to an allowed request (§7.0). **Reuse on a third account** = add
+`Sieve::Connection::"third-gmail"` to the `when`-clause sets of the rules — the
+admin UI's "apply to connection" does this in one gesture across all of a role's
+rules. One rule per grant, single source: edit the logic once and every listed
+account follows. No template, no link, no linker. A **preset** ("Gmail read-only")
+is just a shipped one-rule role you assign and scope to your connection the same
+way. (`action in [..]` *is* valid in the scope — only `principal`/`resource` sets
+must move to the `when` clause.)
+
+### 13.8 Capability-parity map (legacy `RuleMatch` → new home)
+
+Nothing in the legacy `RuleMatch` is silently dropped; each capability class has an
+explicit home in the new model:
+
+| Legacy `RuleMatch` capability | New home |
+|---|---|
+| `Operations` (op-name match) | **Rules** — `action` scope (a leaf op, or an action group, §5.3) |
+| Response content: `From`/`To`/`Subject`/`ContentContains`/`Labels` (matched on the *returned* message) | **Post-phase** `exclude_items` / `script_filter` (or, when the decision needs request-derived content, a **pre-phase** `script_guard`) — never a decision condition (the response is not in `context`, §5.4) |
+| Glob/list matches: `From []string`, `Model []string` with `*` | Cedar `like` for simple globs; an **enricher**-derived `context` field + condition, or a `script_guard`, for list/regex semantics |
+| Float caps: `MaxCost`, `MaxTemperature` | **`decimal`** context conditions (`context.estimated_cost`, `context.param.temperature`; §4.5, §5.4) |
+| Network: CIDR-negation, `Ports` | `context.source_ip` (`ipaddr`/CIDR) condition; port logic in a `script_guard` |
+| `RequireApproval` | **Guardrail** `@approval("required")` (§7.2) |
+| `Filters` (redact / exclude) | **Guardrail** `@filters("…")` → filter library (§7.1) |
+| Rate limits (`builtin` evaluator) | **`rate_limit` filter** (§7.1) — execution **deferred** (§15) |
+| Whole-policy `script` / `llm` evaluators | **Filter library** scripts (`script_guard` pre / `script_filter` post) under the command allowlist (§7.1); LLM-as-decision dropped (§1) |
+
+**Migration safety — a dropped `deny` is a hard `--apply` blocker.** Omitting a
+legacy `deny`/forbid during migration *widens* access (it removes a restriction) —
+the P0 class. The migration tool MUST refuse `--apply` if any legacy deny has no
+corresponding `forbid` (or guardrail) in the generated output: a fail-closed error,
+never a silent "narrowing." (Dropping a *permit* only narrows access — that is
+reported, not blocked.)
 
 ---
 
@@ -1001,23 +1492,36 @@ the same way. (`action in [..]` *is* valid in the scope — only `principal`/
 | `policy_type` ∈ {rules,builtin,llm,chain,script} + `policy_config` | Cedar text (`permit`/`forbid` + annotations) |
 | `CompositeEvaluator` AND-intersection, first-deny-shortcircuit | Cedar union, forbid-overrides-permit, default-deny |
 | `RulesConfig.Scope` (decorative) | Real action groups + resource hierarchy |
-| Role `bindings [{connection_id, policy_ids[]}]` (AND-composed set) | Policy carries its own set-valued `principal`/`resource` scopes; **no binding table, no AND-composition** (§9.4) |
+| Role `bindings [{connection_id, policy_ids[]}]` (AND-composed set) | **RBAC**: a role is a reusable bundle of rules; a token is assigned a **set** of roles; rules carry set-valued `resource` scopes. **No binding table, no AND-composition** (§9.4) |
+| Token → **one** role | Token → **a set of roles** (composition; union of capabilities, §3.1) |
 | "empty policy_ids = DENY ALL" special case | Default deny (no special case) |
 | `default_action: allow|deny` per policy | `permit`/`forbid` statements; default is always deny |
-| Reuse by multi-attach (the footgun) | **Set-valued scopes** — one policy lists many connections/roles, single-source (§9.1); **filter library** for obligations; role-groups for principals. No templates/links. |
+| Reuse by multi-attach (the footgun) | **RBAC composition**: reuse a role across tokens, compose roles per token (§3.1, §13.1); **set-valued `resource` scopes** for connection reuse within a rule (§9.1); **filter library** for obligations. No role-groups, no templates/links. |
 | `script` policy type / `action:script` rules | `script_guard` (pre) + `script_filter` (post) in the filter library |
-| `decision.Filters` from the evaluator | Obligations: `@approval` + `@filters("…")` resolved from the library, read off determining `permit`s |
-| `"Policy denied: default policy"` | Determining-policy ids in audit + decision explorer |
+| `decision.Filters` from the evaluator | Obligations: `@approval` + `@filters("…")` on **guardrails** (separate set), collected in the guardrail pass and resolved from the library (§7.3) |
+| `"Policy denied: default policy"` | Determining-**rule** ids (+ matched guardrails) in audit + decision explorer |
 | Two guards (`connectionAllowed` + empty-policies) | One decision (no permit ⇒ deny) |
 
-Unchanged: tokens (`sieve_tok_…`, role reference), the role *concept* (now a
-principal group), connections + credentials, the approval queue, the response-
-filter applier, the two-port topology, the connector `Execute` contract.
+Changed at the principal layer: a token now references a **set** of roles (was
+one); a role is a **reusable rule bundle** (was a bare principal group). Otherwise
+unchanged: the token artifact (`sieve_tok_…`), connections + credentials, the
+approval queue, the response-filter applier, the two-port topology, the connector
+`Execute` contract.
 
 ---
 
 ## 15. Open questions / future work
 
+- **`rate_limit` execution (deferred).** The `rate_limit` filter kind is specified
+  (§7.1) but **not executed in v1**: a guardrail that references a `rate_limit`
+  filter is **rejected at save** until the counter (`internal/ratelimit`) is wired —
+  no silent no-op. `script_guard`/`redact`/`exclude_items`/`script_filter` execute
+  in v1.
+- **MCP per-tool resource scoping (deferred).** v1 scopes `mcp_proxy/call` at
+  **connection grain** (§5.2/§5.3); the `Sieve::Mcp::Tool` resource type is reserved
+  in the schema but extractors emit the connection, so a token granted MCP on a
+  connection reaches every tool on it. Per-tool scoping is non-breaking to add
+  (transitive `in`).
 - **Per-object extractors for every connector** (v1 may ship coarse). Non-
   breaking to refine.
 - **Richer filter kinds** — e.g. a `transform`/rewrite kind, or WASM filters as a
@@ -1027,6 +1531,15 @@ filter applier, the two-port topology, the connector `Execute` contract.
   reuse with less machinery. Could revisit only if a future need wants a reusable
   shape that varies by something *other* than connection/role (the only axes
   set-scopes handle).
+- **Role hierarchy** — a role that inherits another role's rules (a `base-read`
+  role included by `support` and `analyst`). The Cedar primitive (`Role in
+  [Role]`) is trivial; v1 leaves it out because multi-role tokens already cover the
+  common "share a bundle" case (compose the shared role directly on each token). Add
+  only if hierarchy earns its complexity.
+- **Managed sub-policies** — an AWS-IAM-style layer where a named policy (a set of
+  rules) attaches to many roles, giving reuse *below* the role. v1 keeps one bundle
+  level (the role) for simplicity; revisit if rule-level reuse across roles becomes
+  common (today: make the shared rules their own small role and compose it).
 - **Subject ABAC** (token attributes like team/owner) for attribute-driven, not
   role-driven, grants.
 - **Partial evaluation** (`x/exp/batch`) for a fast explorer over many
