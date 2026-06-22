@@ -1311,11 +1311,30 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
 		roleNames[r.ID] = r.Name
 	}
 
+	// Capability rollup: for each token, the union of its roles' rule summaries —
+	// so the operator can see what a token can actually DO, not just role names.
+	byRole := s.ruleSummariesByRole()
+	caps := make(map[string][]string, len(toks))
+	for _, t := range toks {
+		seen := map[string]bool{}
+		var lines []string
+		for _, rid := range t.RoleIDs {
+			for _, sum := range byRole[rid] {
+				if !seen[sum] {
+					seen[sum] = true
+					lines = append(lines, sum)
+				}
+			}
+		}
+		caps[t.ID] = lines
+	}
+
 	data := map[string]any{
 		"Active":    "tokens",
 		"Tokens":    toks,
 		"Roles":     rolesList,
 		"RoleNames": roleNames,
+		"Caps":      caps,
 		"Filter":    filter,
 	}
 	s.render(w, r, "tokens", data)

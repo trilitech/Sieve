@@ -61,9 +61,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "search_messages",
-		Description: "Search messages (requires user-token install — not enabled in v1).",
-		ReadOnly:    true,
+		Name:           "search_messages",
+		Description:    "Search messages (requires user-token install — not enabled in v1).",
+		ReadOnly:       true,
+		Disabled:       true,
+		DisabledReason: "needs a user-token install (not enabled in v1)",
 		Params: map[string]connector.ParamDef{
 			"query": {Type: "string", Required: true},
 		},

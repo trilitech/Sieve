@@ -106,7 +106,7 @@
                powerful. redact masks matches; exclude drops matching list items. -->
           <div id="filter-cfg-patterns" class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Patterns</label>
-            <textarea name="patterns" rows="4" placeholder="One per line, e.g.&#10;confidential&#10;\b\d{16}\b"
+            <textarea name="patterns" id="filter-patterns" rows="4" placeholder="One per line, e.g.&#10;confidential&#10;\b\d{16}\b"
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
             <div class="mt-2 flex items-center gap-3">
               <label class="text-sm text-slate-400">Match</label>
@@ -116,6 +116,16 @@
               </select>
             </div>
             <p class="text-xs text-slate-500 mt-2">Runs <strong>after</strong> the operation, only within the <strong>content fields</strong> of whichever connector you attach it to (subject, body, …) — never ids, metadata, or base64 attachments. One pattern per line; a field matches if it matches <strong>any</strong> line. <strong id="filter-patterns-redact-hint">Redact</strong> replaces every match with <code>[REDACTED]</code>; <strong id="filter-patterns-exclude-hint" class="hidden">Exclude items</strong> drops matching items from a list response. Pick <em>Contains</em> for a plain substring or <em>Regex</em> for an RE2 pattern (e.g. <code>\b\d{16}\b</code> for card numbers).</p>
+            <!-- Live pattern tester: compiles each pattern (flagging invalid ones)
+                 and highlights matches in a sample. Client-side only, nothing is
+                 submitted; uses the browser regex engine — close to Go's RE2 but
+                 not identical for exotic syntax. -->
+            <div class="mt-3 rounded-lg bg-slate-900/60 border border-slate-700 p-3">
+              <label class="block text-xs font-medium text-slate-400 mb-1">Test against sample text <span class="text-slate-600">(optional — not saved)</span></label>
+              <textarea id="filter-sample" rows="2" placeholder="Paste a sample value to see what your patterns match…"
+                        class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+              <div id="filter-preview" class="mt-2 text-xs space-y-1"></div>
+            </div>
           </div>
 
           <!-- script_guard config -->
@@ -501,6 +511,7 @@ else:
                   {{end}}
                   <span class="text-sm font-medium text-white">{{if .Description}}{{.Description}}{{else}}{{.Name}}{{end}}</span>
                 </div>
+                {{if .Summary}}<p class="text-xs text-slate-400 mt-1">{{.Summary}}</p>{{end}}
                 <details class="mt-2">
                   <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">show Cedar · {{.Name}}</summary>
                   <pre class="whitespace-pre-wrap break-words text-xs text-slate-400 bg-slate-900 border border-slate-700 rounded-lg p-3 mt-2 max-w-2xl">{{.Cedar}}</pre>
@@ -642,18 +653,19 @@ else:
         // All dynamic values (connection ids/names, op names) are set via element
         // properties + textContent — never innerHTML — so an operator-entered
         // connection name can't inject markup.
-        function checkboxRow(name, value, labelText, badge) {
+        function checkboxRow(name, value, labelText, badge, disabled) {
           const lbl = document.createElement('label');
-          lbl.className = 'flex items-center gap-2 text-sm text-slate-200';
+          lbl.className = 'flex items-center gap-2 text-sm ' + (disabled ? 'text-slate-500 cursor-not-allowed' : 'text-slate-200');
           const cb = document.createElement('input');
           cb.type = 'checkbox'; cb.name = name; cb.value = value;
           cb.className = 'rounded border-slate-600 bg-slate-800 text-indigo-500';
+          if (disabled) cb.disabled = true; // can't scope a rule to an op that only 501s
           const span = document.createElement('span');
           span.textContent = labelText; // textContent — payload renders as text
           lbl.appendChild(cb); lbl.appendChild(span);
           if (badge) {
             const b = document.createElement('span');
-            b.className = 'text-emerald-500/70 text-xs'; b.textContent = badge;
+            b.className = (disabled ? 'text-amber-500/80' : 'text-emerald-500/70') + ' text-xs'; b.textContent = badge;
             lbl.appendChild(b);
           }
           return lbl;
@@ -765,7 +777,10 @@ else:
             const opsBox = get('ops-list');
             opsBox.textContent = '';
             if (!ops.length) emptyNote(opsBox, 'This connector has no enumerated operations — use All / read / write.');
-            for (const o of ops) opsBox.appendChild(checkboxRow('operations', o.name, o.name, o.readOnly ? '(read)' : ''));
+            for (const o of ops) {
+              const badge = o.disabled ? ('— ' + (o.disabledReason || 'not available')) : (o.readOnly ? '(read)' : '');
+              opsBox.appendChild(checkboxRow('operations', o.name, o.name, badge, o.disabled));
+            }
             const connBox = get('conns-list');
             connBox.textContent = '';
             if (!conns.length) emptyNote(connBox, 'No connections of this connector type yet.');
@@ -832,6 +847,78 @@ else:
           }
           kindSel.addEventListener('change', syncFilterCfg);
           syncFilterCfg();
+        })();
+
+        // --- Live regex/contains preview for redact & exclude patterns ---
+        // Compiles each pattern (flagging invalid ones so a typo doesn't silently
+        // match nothing) and highlights matches in a sample. Client-side only,
+        // never submitted. Uses the browser regex engine — close to Go's RE2 but
+        // not identical for exotic syntax. XSS-safe: every dynamic value enters via
+        // textContent / createTextNode, never innerHTML.
+        (function () {
+          const patternsEl = el('filter-patterns');
+          const sampleEl = el('filter-sample');
+          const matchEl = el('filter-match');
+          const out = el('filter-preview');
+          if (!patternsEl || !sampleEl || !out) return;
+          function compile(line, mode) {
+            const src = (mode === 'regex') ? line : line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return new RegExp(src, 'gi');
+          }
+          function update() {
+            out.textContent = '';
+            const mode = matchEl ? matchEl.value : 'contains';
+            const lines = patternsEl.value.split('\n').map(s => s.trim()).filter(Boolean);
+            const regexes = [];
+            for (const line of lines) {
+              try { regexes.push(compile(line, mode)); }
+              catch (e) {
+                const p = document.createElement('p');
+                p.className = 'text-red-400';
+                p.textContent = '✗ invalid pattern: ' + line + ' — ' + e.message;
+                out.appendChild(p);
+              }
+            }
+            const sample = sampleEl.value;
+            if (!sample || !regexes.length) return;
+            const ranges = [];
+            for (const re of regexes) {
+              re.lastIndex = 0;
+              let m, guard = 0;
+              while ((m = re.exec(sample)) !== null && guard++ < 10000) {
+                if (m[0] === '') { re.lastIndex++; continue; }
+                ranges.push([m.index, m.index + m[0].length]);
+              }
+            }
+            const box = document.createElement('div');
+            box.className = 'bg-slate-900 border border-slate-700 rounded-lg p-2 whitespace-pre-wrap break-words text-slate-300';
+            if (!ranges.length) {
+              const s = document.createElement('span');
+              s.className = 'text-slate-500'; s.textContent = 'No matches in the sample.';
+              box.appendChild(s); out.appendChild(box); return;
+            }
+            ranges.sort((a, b) => a[0] - b[0]);
+            const merged = [];
+            for (const r of ranges) {
+              const last = merged[merged.length - 1];
+              if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+              else merged.push(r.slice());
+            }
+            let pos = 0;
+            for (const pair of merged) {
+              if (pair[0] > pos) box.appendChild(document.createTextNode(sample.slice(pos, pair[0])));
+              const mark = document.createElement('mark');
+              mark.className = 'bg-amber-400/40 text-amber-100 rounded px-0.5';
+              mark.textContent = sample.slice(pair[0], pair[1]);
+              box.appendChild(mark);
+              pos = pair[1];
+            }
+            if (pos < sample.length) box.appendChild(document.createTextNode(sample.slice(pos)));
+            out.appendChild(box);
+          }
+          patternsEl.addEventListener('input', update);
+          sampleEl.addEventListener('input', update);
+          if (matchEl) matchEl.addEventListener('change', update);
         })();
 
         // --- Explorer connection dropdown + operation hints ---

@@ -42,6 +42,14 @@ type OperationDef struct {
 	Params      map[string]ParamDef `json:"params"`
 	ReadOnly    bool                `json:"read_only"`
 
+	// Disabled marks an operation that exists in the contract but is NOT usable
+	// in this build (e.g. Slack search_messages needs a user-token install). The
+	// rule/guardrail builders render it greyed-out and unselectable so an operator
+	// can't scope a rule to an op that will only ever 501 at runtime.
+	// DisabledReason is the short operator-facing explanation.
+	Disabled       bool   `json:"disabled,omitempty"`
+	DisabledReason string `json:"disabled_reason,omitempty"`
+
 	// --- IAM taxonomy (internal/iam) ---
 
 	// Action overrides the Cedar action leaf id. Empty ⇒ the taxonomy derives

@@ -22,13 +22,17 @@
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6">
         <p class="text-xs text-slate-500 mb-5">Change which roles this token composes. The token secret is <strong>not</strong> regenerated — the agent keeps using the same token, with the new union of permissions.</p>
         <form method="POST" action="/tokens/{{.Token.ID}}/roles">
-          <label class="block text-sm font-medium text-slate-400 mb-1.5">Roles <span class="text-slate-500 font-normal">(select one or more — ⌘/Ctrl-click)</span></label>
-          <select name="role_id" multiple required size="8"
-                  class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <label class="block text-sm font-medium text-slate-400 mb-1.5">Roles <span class="text-slate-500 font-normal">(select one or more)</span></label>
+          <div class="max-h-60 overflow-y-auto rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 space-y-1">
             {{range .Roles}}
-            <option value="{{.ID}}" {{if index $.Current .ID}}selected{{end}}>{{.Name}}</option>
+            <label class="flex items-center gap-2 text-sm text-slate-200">
+              <input type="checkbox" name="role_id" value="{{.ID}}" {{if index $.Current .ID}}checked{{end}} class="rounded border-slate-600 bg-slate-800 text-indigo-500">
+              <span>{{.Name}}</span>
+            </label>
+            {{else}}
+            <p class="text-xs text-slate-500">No roles defined.</p>
             {{end}}
-          </select>
+          </div>
           <p class="text-xs text-slate-500 mt-1">The agent gets the union of every selected role.</p>
           <div class="mt-5 flex items-center gap-3">
             <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Save roles</button>

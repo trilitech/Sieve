@@ -56,8 +56,10 @@ func (s *Server) iamEnabled() bool {
 // --- view models ---
 
 type iamOpView struct {
-	Name     string `json:"name"`
-	ReadOnly bool   `json:"readOnly"`
+	Name           string `json:"name"`
+	ReadOnly       bool   `json:"readOnly"`
+	Disabled       bool   `json:"disabled,omitempty"`
+	DisabledReason string `json:"disabledReason,omitempty"`
 }
 
 type iamConnView struct {
@@ -196,6 +198,9 @@ type ruleGroupView struct {
 type iamGuardrailView struct {
 	iampolicies.StoredGuardrail
 	HasSpec bool
+	// Summary is the plain-English rendering recomputed from spec_json, so the
+	// list is legible without reading Cedar (raw guardrails have no spec → "").
+	Summary string
 }
 
 // iamEditPageData is the view-model for iam_edit.html (edit-in-place of one
@@ -276,7 +281,11 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 	}
 	data.Guardrails = make([]iamGuardrailView, 0, len(guards))
 	for _, g := range guards {
-		data.Guardrails = append(data.Guardrails, iamGuardrailView{StoredGuardrail: g, HasSpec: g.SpecJSON != ""})
+		data.Guardrails = append(data.Guardrails, iamGuardrailView{
+			StoredGuardrail: g,
+			HasSpec:         g.SpecJSON != "",
+			Summary:         s.guardrailSummaryFromSpecJSON(g.SpecJSON),
+		})
 	}
 
 	data.RoleViews = s.roleViews(rolesList, pols, guards)
@@ -300,6 +309,48 @@ func (s *Server) summaryFromSpecJSON(specJSON string) string {
 	}
 	spec := s.specFromState(st)
 	return iampolicies.HumanSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
+}
+
+// guardrailSummaryFromSpecJSON recomputes a guardrail's plain-English summary
+// from its stored spec_json (same shape as a rule's), so the guardrails list is
+// legible without reading Cedar. Returns "" for raw guardrails (no spec_json).
+func (s *Server) guardrailSummaryFromSpecJSON(specJSON string) string {
+	if specJSON == "" {
+		return ""
+	}
+	var st builderFormState
+	if err := json.Unmarshal([]byte(specJSON), &st); err != nil {
+		return ""
+	}
+	spec := s.specFromState(st)
+	return guardrailSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
+}
+
+// ruleSummariesByRole returns, per role id, the plain-English summaries of the
+// rules that grant it. The Tokens page uses it to roll up "what can this token
+// actually do" — a token's capability is the union over its roles.
+func (s *Server) ruleSummariesByRole() map[string][]string {
+	out := map[string][]string{}
+	if s.iam == nil {
+		return out
+	}
+	pols, err := s.iam.ListPolicies()
+	if err != nil {
+		return out
+	}
+	for _, p := range pols {
+		if p.SpecJSON == "" {
+			continue
+		}
+		var st builderFormState
+		if err := json.Unmarshal([]byte(p.SpecJSON), &st); err != nil {
+			continue
+		}
+		if sum := s.summaryFromSpecJSON(p.SpecJSON); sum != "" {
+			out[st.RoleID] = append(out[st.RoleID], sum)
+		}
+	}
+	return out
 }
 
 // specFromState reconstructs a RuleSpec from a stored builder form-state, the
@@ -462,7 +513,7 @@ func (s *Server) populateBuilderData(data *iamBuilderData) {
 		for _, m := range reg.AllMetas() {
 			ops := make([]iamOpView, 0, len(m.Operations))
 			for _, o := range m.Operations {
-				ops = append(ops, iamOpView{Name: o.Name, ReadOnly: o.ReadOnly})
+				ops = append(ops, iamOpView{Name: o.Name, ReadOnly: o.ReadOnly, Disabled: o.Disabled, DisabledReason: o.DisabledReason})
 			}
 			sort.Slice(ops, func(i, j int) bool { return ops[i].Name < ops[j].Name })
 			conns := connsByType[m.Type]

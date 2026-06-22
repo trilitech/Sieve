@@ -50,13 +50,17 @@
                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
             </div>
             <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Roles <span class="text-slate-500 font-normal">(select one or more — ⌘/Ctrl-click)</span></label>
-              <select name="role_id" multiple required size="5"
-                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Roles <span class="text-slate-500 font-normal">(select one or more)</span></label>
+              <div class="max-h-40 overflow-y-auto rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 space-y-1">
                 {{range .Roles}}
-                <option value="{{.ID}}">{{.Name}}</option>
+                <label class="flex items-center gap-2 text-sm text-slate-200">
+                  <input type="checkbox" name="role_id" value="{{.ID}}" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
+                  <span>{{.Name}}</span>
+                </label>
+                {{else}}
+                <p class="text-xs text-slate-500">No roles yet — create one under IAM → Roles.</p>
                 {{end}}
-              </select>
+              </div>
               <p class="text-xs text-slate-500 mt-1">The agent gets the union of every selected role.</p>
             </div>
             <div>
@@ -110,7 +114,18 @@
             {{range .Tokens}}
             <tr class="hover:bg-slate-700/30 transition-colors">
               <td class="px-6 py-4 text-sm font-medium text-white">{{.Name}}</td>
-              <td class="px-6 py-4 text-sm text-slate-300">{{joinNames $.RoleNames .RoleIDs}}</td>
+              <td class="px-6 py-4 text-sm text-slate-300">
+                {{joinNames $.RoleNames .RoleIDs}}
+                {{$caps := index $.Caps .ID}}
+                {{if $caps}}
+                <details class="mt-1">
+                  <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">what it can do ({{len $caps}})</summary>
+                  <ul class="mt-1 space-y-0.5 text-xs text-slate-400 list-disc list-inside max-w-md">
+                    {{range $caps}}<li>{{.}}</li>{{end}}
+                  </ul>
+                </details>
+                {{end}}
+              </td>
               <td class="px-6 py-4 text-sm text-slate-400">{{timeAgo .CreatedAt}}</td>
               <td class="px-6 py-4 text-sm text-slate-400">
                 {{if .ExpiresAt}}{{timeUntil (derefTime .ExpiresAt)}}{{else}}<span class="text-slate-600">Never</span>{{end}}
