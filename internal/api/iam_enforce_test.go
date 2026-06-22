@@ -191,3 +191,119 @@ func TestIAMEnforce_RedactOverGateway(t *testing.T) {
 		t.Errorf("SSN was NOT redacted from the response: %s", raw)
 	}
 }
+
+// TestIAMEnforce_RuleLevelFilterOverGateway proves a filter attached directly to a
+// RULE — with NO companion guardrail — masks the response end to end. This is the
+// restored grant-scoped obligation (the regression fix).
+func TestIAMEnforce_RuleLevelFilterOverGateway(t *testing.T) {
+	env := testenv.New(t)
+	env.Mock.SetResponse("list_emails", map[string]any{
+		"emails": []any{map[string]any{"id": "1", "body": "ssn 123-45-6789 on file"}},
+	})
+	if err := env.Connections.Add("mc", "mock", "Mock", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	role, err := env.Roles.Create("reader", []roles.Binding{{ConnectionID: "mc"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := env.Tokens.Create(&tokens.CreateRequest{Name: "t", RoleID: role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.IAM.CreateFilter("redact-ssn", "mask SSNs", iam.KindRedact, 0,
+		map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}, "match": "regex"}); err != nil {
+		t.Fatal(err)
+	}
+	// The filter rides the RULE — no guardrail created.
+	grant, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: role.ID, Effect: "allow", ConnectorType: "mock", OpScope: "read",
+		ConnectionIDs: []string{"mc"}, Filters: []string{"redact-ssn"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.IAM.CreatePolicy("read-redact", "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
+	router := api.NewRouter(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit)
+	srv := httptest.NewServer(router.Handler())
+	t.Cleanup(srv.Close)
+
+	status, body := apiPost(t, srv.URL+"/api/v1/connections/mc/ops/list_emails", tok.PlaintextToken, "{}")
+	if status != 200 {
+		t.Fatalf("read should be allowed, got %d", status)
+	}
+	if strings.Contains(body, "123-45-6789") {
+		t.Errorf("rule-level redact filter did not mask the SSN: %s", body)
+	}
+}
+
+// TestIAMEnforce_FilterUnionUnderComposition proves a rule-level filter cannot be
+// bypassed by composing a second role that grants the same read WITHOUT the
+// filter. Obligations union across matching rules, so the redact still applies —
+// the security property that makes rule-level filters safe.
+func TestIAMEnforce_FilterUnionUnderComposition(t *testing.T) {
+	env := testenv.New(t)
+	env.Mock.SetResponse("list_emails", map[string]any{
+		"emails": []any{map[string]any{"id": "1", "body": "ssn 123-45-6789"}},
+	})
+	if err := env.Connections.Add("mc", "mock", "Mock", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	roleA, err := env.Roles.Create("redacted-reader", []roles.Binding{{ConnectionID: "mc"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleB, err := env.Roles.Create("plain-reader", []roles.Binding{{ConnectionID: "mc"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The token holds BOTH roles (composition).
+	tok, err := env.Tokens.Create(&tokens.CreateRequest{Name: "t", RoleIDs: []string{roleA.ID, roleB.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.IAM.CreateFilter("redact-ssn", "", iam.KindRedact, 0,
+		map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}, "match": "regex"}); err != nil {
+		t.Fatal(err)
+	}
+	grantA, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: roleA.ID, Effect: "allow", ConnectorType: "mock", OpScope: "read",
+		ConnectionIDs: []string{"mc"}, Filters: []string{"redact-ssn"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.IAM.CreatePolicy("a-redact", "", grantA, true); err != nil {
+		t.Fatal(err)
+	}
+	// Role B grants the same read with NO filter — the bypass attempt.
+	grantB, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: roleB.ID, Effect: "allow", ConnectorType: "mock", OpScope: "read",
+		ConnectionIDs: []string{"mc"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.IAM.CreatePolicy("b-plain", "", grantB, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
+	router := api.NewRouter(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit)
+	srv := httptest.NewServer(router.Handler())
+	t.Cleanup(srv.Close)
+
+	status, body := apiPost(t, srv.URL+"/api/v1/connections/mc/ops/list_emails", tok.PlaintextToken, "{}")
+	if status != 200 {
+		t.Fatalf("read should be allowed, got %d", status)
+	}
+	if strings.Contains(body, "123-45-6789") {
+		t.Errorf("COMPOSITION BYPASS: role B (no filter) stripped role A's redact — SSN leaked: %s", body)
+	}
+}

@@ -68,7 +68,7 @@
       <!-- Filter & guard library -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "filters"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Filter &amp; guard library</h2>
-        <p class="text-xs text-slate-400 mb-2">Reusable, named transforms and guards. Author one here, then attach it to any rule in that rule's <strong>“Response filters &amp; guards”</strong> section. A rule with no filter attached runs unfiltered.</p>
+        <p class="text-xs text-slate-400 mb-2">Reusable, named transforms and guards. Author one here, then attach it on a <strong>rule</strong> (in the rule builder's “Response filters &amp; guards” — it applies whenever that grant is used) or on a <a href="/iam?section=guardrails" class="text-indigo-400 hover:underline font-medium">guardrail</a> (it applies to every matching request, no matter which rule granted it). Attaching on a rule is safe: obligations from all matching rules are unioned, so composing another role can never strip one.</p>
         <ul class="text-xs text-slate-500 mb-5 space-y-1 list-disc list-inside">
           <li><strong class="text-slate-300">Redact</strong> and <strong class="text-slate-300">Exclude items</strong> run <em>after</em> the operation — they transform the response the agent receives.</li>
           <li><strong class="text-slate-300">Script guard</strong> runs <em>before</em> the operation — it inspects the request and can allow, deny, or require approval. This is how you control “what can be sent”.</li>
@@ -111,21 +111,7 @@
                 <option value="regex">Regex — RE2 pattern</option>
               </select>
             </div>
-            {{if .ContentFields}}
-            <div class="mt-3">
-              <label class="block text-sm text-slate-400 mb-1.5">Fields <span class="text-slate-600">(optional — default: all content fields)</span></label>
-              <div class="flex flex-wrap gap-x-4 gap-y-1.5">
-                {{range .ContentFields}}
-                <label class="inline-flex items-center gap-1.5 text-sm text-slate-300">
-                  <input type="checkbox" name="fields" value="{{.Key}}" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
-                  {{.Label}}
-                </label>
-                {{end}}
-              </div>
-              <p class="text-xs text-slate-500 mt-1">Limit this filter to specific response fields (e.g. just the body). Leave all unchecked to apply to every content field. Metadata, ids, and binary/attachment fields are never touched.</p>
-            </div>
-            {{end}}
-            <p class="text-xs text-slate-500 mt-2">Runs <strong>after</strong> the operation, only within the connector's <strong>content fields</strong> (subject, body, …) — never ids, metadata, or base64 attachments. One pattern per line; a field matches if it matches <strong>any</strong> line. <strong id="filter-patterns-redact-hint">Redact</strong> replaces every match with <code>[REDACTED]</code>; <strong id="filter-patterns-exclude-hint" class="hidden">Exclude items</strong> drops matching items from a list response. Pick <em>Contains</em> for a plain substring or <em>Regex</em> for an RE2 pattern (e.g. <code>\b\d{16}\b</code> for card numbers).</p>
+            <p class="text-xs text-slate-500 mt-2">Runs <strong>after</strong> the operation, only within the <strong>content fields</strong> of whichever connector you attach it to (subject, body, …) — never ids, metadata, or base64 attachments. One pattern per line; a field matches if it matches <strong>any</strong> line. <strong id="filter-patterns-redact-hint">Redact</strong> replaces every match with <code>[REDACTED]</code>; <strong id="filter-patterns-exclude-hint" class="hidden">Exclude items</strong> drops matching items from a list response. Pick <em>Contains</em> for a plain substring or <em>Regex</em> for an RE2 pattern (e.g. <code>\b\d{16}\b</code> for card numbers).</p>
           </div>
 
           <!-- script_guard config -->
@@ -175,7 +161,7 @@ else:
             {{end}}
           </div>
           {{else}}
-          <p class="text-sm text-slate-500">No filters yet — author one above to attach it to rules.</p>
+          <p class="text-sm text-slate-500">No filters yet — author one above, then attach it on a rule or a guardrail.</p>
           {{end}}
         </div>
       </div>
@@ -206,7 +192,7 @@ else:
                 <option value="allow">Allow</option>
                 <option value="deny">Deny</option>
               </select>
-              <p class="text-xs text-slate-500 mt-1">Rules grant access. For approval or redaction, add a <strong>Guardrail</strong> below.</p>
+              <p class="text-xs text-slate-500 mt-1">Allow grants access; Deny blocks it (deny always wins). Attach filters &amp; approval under “Response filters &amp; guards” below.</p>
             </div>
 
             <!-- Connector -->
@@ -272,6 +258,31 @@ else:
           <div id="rb-conds-wrap" class="mt-5 hidden">
             <label class="block text-sm font-medium text-slate-400 mb-2">Conditions <span class="text-slate-600">(optional)</span></label>
             <div id="rb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+          </div>
+
+          <!-- Obligations: filters + approval THIS grant carries. Grant-scoped —
+               they apply whenever this rule fires (its conditions included) — and
+               safe under composition because the engine unions obligations across
+               all matching rules. Hidden on a deny effect (a deny carries none). -->
+          <div id="rb-obligations" class="mt-5 rounded-lg bg-slate-900 border border-slate-700 p-4">
+            <label class="block text-sm font-medium text-slate-300 mb-2">Response filters &amp; guards <span class="text-slate-600">(optional)</span></label>
+            <label class="flex items-center gap-2 text-sm text-slate-200 mb-3">
+              <input type="checkbox" name="require_approval" value="on" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
+              <span>Require human approval before this operation runs</span>
+            </label>
+            {{if .Filters}}
+            <p class="text-xs text-slate-500 mb-2">Apply filters/guards from the library — they run on every request this rule allows:</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {{range .Filters}}
+              <label class="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" name="filters" value="{{.Name}}" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
+                <span>{{.Name}} <span class="text-slate-500">({{.Kind}})</span></span>
+              </label>
+              {{end}}
+            </div>
+            {{else}}
+            <p class="text-xs text-slate-500">No filters in the library yet — author one under <a href="/iam?section=filters" class="text-indigo-400 hover:underline">Filters</a> to attach it here.</p>
+            {{end}}
           </div>
 
           <div class="mt-5">
@@ -723,6 +734,9 @@ else:
             const effect = opts.effectSel ? document.querySelector(opts.effectSel) : null;
             const isDeny = effect && effect.value === 'deny';
             get('conds-wrap').classList.toggle('hidden', !hasConds || isDeny);
+            // Obligations (rule form only) apply to allows; a deny carries none.
+            const obl = get('obligations');
+            if (obl) obl.classList.toggle('hidden', isDeny);
           }
           function refresh() {
             const cat = IAM_CATALOG[get('connector').value] || {};

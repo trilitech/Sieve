@@ -126,6 +126,28 @@
             <div id="rb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
           </div>
 
+          <!-- Obligations: filters + approval this grant carries (allow only). -->
+          <div id="rb-obligations" class="mt-5 rounded-lg bg-slate-900 border border-slate-700 p-4">
+            <label class="block text-sm font-medium text-slate-300 mb-2">Response filters &amp; guards <span class="text-slate-600">(optional)</span></label>
+            <label class="flex items-center gap-2 text-sm text-slate-200 mb-3">
+              <input type="checkbox" name="require_approval" value="on" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
+              <span>Require human approval before this operation runs</span>
+            </label>
+            {{if .Filters}}
+            <p class="text-xs text-slate-500 mb-2">Apply filters/guards from the library — they run on every request this rule allows:</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {{range .Filters}}
+              <label class="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" name="filters" value="{{.Name}}" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
+                <span>{{.Name}} <span class="text-slate-500">({{.Kind}})</span></span>
+              </label>
+              {{end}}
+            </div>
+            {{else}}
+            <p class="text-xs text-slate-500">No filters in the library yet — author one under <a href="/iam?section=filters" class="text-indigo-400 hover:underline">Filters</a> to attach it here.</p>
+            {{end}}
+          </div>
+
           <div class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
             <input type="text" name="description" value="{{.Description}}" placeholder="why this rule exists, in your words"
@@ -224,6 +246,8 @@
           const effect = document.querySelector('#rule-form select[name="effect"]');
           const isDeny = effect && effect.value === 'deny';
           el('rb-conds-wrap').classList.toggle('hidden', !hasConds || isDeny);
+          const obl = el('rb-obligations');
+          if (obl) obl.classList.toggle('hidden', isDeny);
         }
 
         function rbScopeFields() {
@@ -318,7 +342,15 @@
           }
 
           setSelect('role_id', spec.role_id);
-          setSelect('effect', spec.effect);
+          // require_approval is an allow permit carrying @approval — restore it as
+          // the Allow option plus a ticked approval checkbox.
+          if (spec.effect === 'require_approval') {
+            setSelect('effect', 'allow');
+            const ap = document.querySelector('#rule-form input[name="require_approval"]');
+            if (ap) ap.checked = true;
+          } else {
+            setSelect('effect', spec.effect);
+          }
           setSelect('connector_type', spec.connector_type);
 
           // Render connector-dependent controls (ops list, connections list,
@@ -367,7 +399,13 @@
             if (valInp && c.value != null) valInp.value = c.value;
           }
 
-          // Re-evaluate condition visibility now that effect is set.
+          // Tick the attached library filters (the rule's obligations).
+          for (const name of (spec.filters || [])) {
+            const cb = document.querySelector('#rb-obligations input[name="filters"][value="' + cssEsc(name) + '"]');
+            if (cb) cb.checked = true;
+          }
+
+          // Re-evaluate condition + obligation visibility now that effect is set.
           rbCondVisibility();
         })();
 

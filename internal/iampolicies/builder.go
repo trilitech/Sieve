@@ -79,11 +79,15 @@ func BuildScopeID(format, connID string, fields map[string]string) string {
 }
 
 // BuildRuleCedar compiles a RuleSpec into a single Cedar GRANT statement
-// (permit/forbid) — no obligations. Obligations (approval, filters) are authored
-// as guardrails and compiled by BuildGuardrailCedar (spec §7.2): an obligation on
-// a grant would be silently stripped by a sibling grant under composition (§7.0).
-// `require_approval` is an allow at the grant layer; its approval obligation is
-// the companion guardrail.
+// (permit/forbid). An ALLOW permit carries its obligations (approval, response
+// filters) as annotations directly on the grant — they are GRANT-SCOPED, so they
+// apply exactly when this rule fires (its conditions included). This is safe
+// under composition because the engine UNIONS obligations across every matching
+// permit (spec §7): a sibling grant can only ADD an obligation, never strip one,
+// so a rule's filter/approval cannot be composed away. `require_approval` is an
+// allow permit carrying @approval. A `forbid` (deny) carries no obligations.
+// Guardrails (BuildGuardrailCedar) remain the GLOBAL, role-agnostic invariant
+// layer — use them when the obligation must hold regardless of which rule granted.
 func BuildRuleCedar(spec RuleSpec, ops []connector.OperationDef) (string, error) {
 	if spec.ConnectorType == "" {
 		return "", fmt.Errorf("connector type is required")
@@ -108,17 +112,26 @@ func BuildRuleCedar(spec RuleSpec, ops []connector.OperationDef) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s(\n  %s,\n  %s,\n  resource\n)%s;", head, principal, action, when), nil
+
+	// Obligations ride the grant permit; a forbid carries none.
+	var prefix string
+	if head == "permit" {
+		ann, err := obligationAnnotations(spec)
+		if err != nil {
+			return "", err
+		}
+		if ann != "" {
+			prefix = ann + "\n"
+		}
+	}
+	return fmt.Sprintf("%s%s(\n  %s,\n  %s,\n  resource\n)%s;", prefix, head, principal, action, when), nil
 }
 
-// BuildGuardrailCedar compiles a RuleSpec's OBLIGATIONS (approval and/or filters)
-// into a permit-only guardrail (spec §7.2), or "" when the rule carries none. The
-// guardrail matches the rule's (principal, action, resource) scope but NOT its
-// attribute conditions, so it covers EVERY allowed request in that scope —
-// composition-safe (no sibling grant can route around it, §7.0) and fail-safe
-// (broader coverage = more constraint, never less). `ops` is needed to resolve a
-// "specific" op scope.
-func BuildGuardrailCedar(spec RuleSpec, ops []connector.OperationDef) (string, error) {
+// obligationAnnotations renders the @approval / @filters lines a permit carries
+// for its obligations — shared by grant rules (BuildRuleCedar) and guardrails
+// (BuildGuardrailCedar) so the two emit identical annotation syntax. Returns ""
+// when the spec carries no obligation.
+func obligationAnnotations(spec RuleSpec) (string, error) {
 	var anns []string
 	if spec.Effect == "require_approval" {
 		anns = append(anns, `@approval("required")`)
@@ -131,7 +144,22 @@ func BuildGuardrailCedar(spec RuleSpec, ops []connector.OperationDef) (string, e
 		}
 		anns = append(anns, fmt.Sprintf("@filters(%s)", cedarString(strings.Join(spec.Filters, " "))))
 	}
-	if len(anns) == 0 {
+	return strings.Join(anns, "\n"), nil
+}
+
+// BuildGuardrailCedar compiles a RuleSpec's OBLIGATIONS (approval and/or filters)
+// into a permit-only guardrail (spec §7.2), or "" when the rule carries none. The
+// guardrail matches the rule's (principal, action, resource) scope but NOT its
+// attribute conditions, so it covers EVERY allowed request in that scope —
+// composition-safe (no sibling grant can route around it, §7.0) and fail-safe
+// (broader coverage = more constraint, never less). `ops` is needed to resolve a
+// "specific" op scope.
+func BuildGuardrailCedar(spec RuleSpec, ops []connector.OperationDef) (string, error) {
+	ann, err := obligationAnnotations(spec)
+	if err != nil {
+		return "", err
+	}
+	if ann == "" {
 		return "", nil
 	}
 	action, err := actionClause(spec, ops)
@@ -143,7 +171,7 @@ func BuildGuardrailCedar(spec RuleSpec, ops []connector.OperationDef) (string, e
 		return "", err
 	}
 	return fmt.Sprintf("%s\npermit(\n  %s,\n  %s,\n  resource\n) when { %s }%s;",
-		strings.Join(anns, "\n"), principalClause(spec.RoleID), action, resourceScopeTerm(spec), unless), nil
+		ann, principalClause(spec.RoleID), action, resourceScopeTerm(spec), unless), nil
 }
 
 // exemptionClause builds the guardrail's `unless { … }` from exemption

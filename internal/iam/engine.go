@@ -118,9 +118,19 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 		return out, nil
 	}
 
-	// Pass 2 — guardrails: obligations bind the outcome (spec §7.0/§7.3).
-	perGuardrail := e.matchedGuardrails(entities, req)
-	obl, err := collectObligations(perGuardrail, e.lib)
+	// Obligations bind the OUTCOME and are the UNION of two sources (spec §7.3):
+	//   - the matching GRANT permits (grant-scoped: "this rule carries this
+	//     filter/approval"). Reasons only — a condition-erroring permit is skipped
+	//     (no grant ⇒ no obligation), the fail-closed polarity.
+	//   - EVERY matching-or-errored GUARDRAIL (global, role-agnostic invariants).
+	//     Reasons∪Errors — an errored guardrail still imposes its obligation, the
+	//     fail-safe polarity (spec §7.6).
+	// Because they UNION, composition can only ADD an obligation, never strip one
+	// (the monotonicity invariant): a sibling grant that authorizes the same action
+	// without the filter does not remove the filtered grant's obligation.
+	perPermit := annotationMapsByID(e.grants, reasonIDs(diag.Reasons))
+	perPermit = append(perPermit, e.matchedGuardrails(entities, req)...)
+	obl, err := collectObligations(perPermit, e.lib)
 	if err != nil {
 		// Fail closed: an unresolvable obligation denies rather than allowing
 		// without the intended guard/filter.
@@ -139,22 +149,37 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 // (spec §7.3/§7.6 polarity).
 func (e *Engine) matchedGuardrails(entities types.EntityMap, req cedar.Request) []map[string]string {
 	_, hdiag := e.guardrails.IsAuthorized(entities, req)
+	ids := reasonIDs(hdiag.Reasons)
+	for _, d := range hdiag.Errors {
+		ids = append(ids, d.PolicyID) // fail-safe: an errored guardrail still imposes its obligation
+	}
+	return annotationMapsByID(e.guardrails, ids)
+}
+
+// reasonIDs extracts the policy ids from a diagnostic's Reasons (the satisfied
+// permits on an allow).
+func reasonIDs(reasons []types.DiagnosticReason) []types.PolicyID {
+	ids := make([]types.PolicyID, 0, len(reasons))
+	for _, r := range reasons {
+		ids = append(ids, r.PolicyID)
+	}
+	return ids
+}
+
+// annotationMapsByID returns the dedup'd annotation maps for the given policy ids
+// in set — the obligation-bearing annotations off the determining permits of
+// either pass (grants or guardrails). The single reusable annotation reader.
+func annotationMapsByID(set *cedar.PolicySet, ids []types.PolicyID) []map[string]string {
 	seen := make(map[types.PolicyID]bool)
 	var out []map[string]string
-	add := func(pid types.PolicyID) {
+	for _, pid := range ids {
 		if seen[pid] {
-			return
+			continue
 		}
 		seen[pid] = true
-		if p := e.guardrails.Get(pid); p != nil {
+		if p := set.Get(pid); p != nil {
 			out = append(out, annotationsToMap(p.Annotations()))
 		}
-	}
-	for _, reason := range hdiag.Reasons {
-		add(reason.PolicyID)
-	}
-	for _, d := range hdiag.Errors {
-		add(d.PolicyID) // fail-safe: an errored guardrail still imposes its obligation
 	}
 	return out
 }

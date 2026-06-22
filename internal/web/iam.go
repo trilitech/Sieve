@@ -631,12 +631,11 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 		} else {
 			config["match"] = "contains"
 		}
-		// Optional content-field subset (checkboxes). Empty ⇒ apply to ALL of the
-		// connector's content fields at request time (the safe default — base64/
-		// metadata are never touched regardless).
-		if fields := nonEmptyStrings(r.Form["fields"]); len(fields) > 0 {
-			config["fields"] = fields
-		}
+		// A library filter is a connector-AGNOSTIC transform (just a pattern) — it
+		// can't know whether it'll be attached to an email or a PR, so it declares
+		// no fields. Field-targeting comes from the connector of the rule/guardrail
+		// it's attached to: the applier scopes redact/exclude to THAT connector's
+		// content fields at request time (so base64/metadata are never touched).
 	case string(iam.KindScriptGuard):
 		kind = iam.KindScriptGuard
 		path := strings.TrimSpace(r.FormValue("script_path"))
@@ -755,6 +754,13 @@ func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string
 		ConnectorType: r.FormValue("connector_type"),
 		OpScope:       r.FormValue("op_scope"),
 		Operations:    r.Form["operations"],
+	}
+	// The rule form posts a separate "require human approval" checkbox next to an
+	// allow effect; fold it into the require_approval effect (an allow permit that
+	// carries @approval). The guardrail form posts effect=require_approval directly,
+	// so this only affects the rule form.
+	if spec.Effect == "allow" && r.FormValue("require_approval") == "on" {
+		spec.Effect = "require_approval"
 	}
 	connScope := r.FormValue("conn_scope")
 	if connScope == "specific" {

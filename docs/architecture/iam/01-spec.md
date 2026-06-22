@@ -160,7 +160,7 @@ nouns consistently in the editor, storage, audit log, and this spec.
 
 | Concept | What it is | RBAC analogue |
 |---|---|---|
-| **Rule** | One **grant**: `allow` or `deny`, over **operations**, scoped to **connections/objects**, with optional **conditions**. Compiles to exactly one Cedar `permit`/`forbid`. *(A rule never carries an obligation — see guardrails.)* | A permission (richer: deny, scope, conditions) |
+| **Rule** | One **grant**: `allow` or `deny`, over **operations**, scoped to **connections/objects**, with optional **conditions**, and — on an allow — optional **obligations** (approval / response filters) that apply when the grant is used. Compiles to exactly one Cedar `permit`/`forbid` carrying its obligations as annotations. | A permission (richer: deny, scope, conditions, obligations) |
 | **Role** | A **reusable, named bundle of rules** — the rules that target it. Author once, reuse. | A role |
 | **Token** | The agent credential, **assigned a *set* of roles**. | A user + its role assignments |
 
@@ -168,16 +168,22 @@ nouns consistently in the editor, storage, audit log, and this spec.
 
 | Concept | What it is |
 |---|---|
-| **Guardrail** | A **global constraint**: for any request that the grants layer *allows* and that matches the guardrail's scope (operations/resources) + condition, it **requires approval and/or applies named filters**. A guardrail never grants; it only adds an obligation. It applies **regardless of which rule granted the request** — that is what makes it survive composition (§7). |
+| **Guardrail** | A **global constraint** — the *role-agnostic* variant of an obligation. For any request the grants layer *allows* that matches the guardrail's scope (operations/resources) + condition, it **requires approval and/or applies named filters**, **regardless of which rule granted the request**. A guardrail never grants; it only adds an obligation. Use it for an invariant a grant-author must not be able to omit (a rule's own obligation, by contrast, applies only when *that* rule grants). |
 | **Filter** | A named, reusable **transform/guard definition** (redact / exclude / script) that guardrails reference by name. The reuse unit for obligations. |
 
 **Why two layers.** RBAC governs *who gets which bundles* (token↔role, role↔rule —
 both many-to-many); Cedar governs *what each rule says* (deny, scope, attribute
-conditions). But **obligations cannot live on a grant**: a request is allowed if
-*any* rule permits it, so an approval/redaction attached to one narrow rule is
-silently bypassed by a broader obligation-free rule in another assigned role
-(verified — see §7.0). Obligations that must *hold* therefore live in their own
-layer and bind the **outcome**, not a particular grant.
+conditions). Obligations (approval/filters) may be attached to a **grant** — they
+apply when that grant is used — or to a **guardrail** — they apply to *every*
+allowed request in scope, no matter which rule granted it. **Both are safe under
+composition** because obligations are collected as the **union** of those carried
+by every *matching* grant and every matching guardrail: a narrow rule's obligation
+still applies whenever that rule matches, so a broader obligation-free rule in
+another role cannot strip it (adding a role only ever *adds* obligations — the
+monotonicity invariant, §7.0). Reach for a **grant** obligation when it is
+intrinsic to that grant ("this read is redacted"); reach for a **guardrail** when
+it is a global invariant a grant-author must not be able to omit ("every Gmail
+read is redacted, whoever granted it").
 
 **Two composition laws.**
 
@@ -189,12 +195,12 @@ layer and bind the **outcome**, not a particular grant.
    Additive grants, global denies. Adding a role can only *widen* capability
    (except a deny it brings); a deny anywhere wins everywhere.
 
-2. **Guardrails compose by "any match applies":** for an allowed request, the
-   obligations are the union of **every** guardrail whose scope+condition matches
-   — approval required if *any* matching guardrail requires it; filters = the
-   union of all matching guardrails' filters. Adding a grant can never remove a
-   guardrail. Obligations are monotonic *upward* (more roles can add guardrail
-   matches, never subtract them).
+2. **Obligations compose by "any match applies":** for an allowed request, the
+   obligations are the union of those carried by **every matching grant** *and*
+   **every matching guardrail** — approval required if *any* of them requires it;
+   filters = the union of all. Adding a role can only add matching obligations,
+   never remove them. Obligations are monotonic *upward* (more roles can add
+   constraints, never subtract them).
 
 Capability is monotonic in roles; **constraint is monotonic too** — but in the
 other direction (you cannot compose *away* a guardrail). This is the property the
@@ -247,9 +253,9 @@ The idiomatic mechanism is **policy annotations** — `@id("…")` and arbitrary
 `@key("value")` pairs that Cedar ignores during evaluation but tools can read.
 cedar-go exposes `Policy.Annotations() → map[Ident]String`. Sieve's obligations
 (approval, redaction, filters) are encoded as a **registered annotation
-vocabulary** carried by **guardrail** statements and collected off the matched
-guardrails in a second pass (§7) — never off the grant `permit`s, which would let
-composition strip them (§7.0).
+vocabulary** carried by **permit** statements — on grants and on guardrails alike
+— and collected off **every matching permit** (`Reasons`), so composition can only
+add an obligation, never strip one (§7.0).
 
 ### 4.4 We do not use Cedar templates (don't need them)
 
@@ -516,7 +522,8 @@ decision, gdiag := grantsPDP.Authorize(grantsSet, entities, request)   // pass 1
 
 - `Deny` (default or forbid) → Sieve denies. Deny reason = annotations of the
   determining `forbid`s (`@deny_message`) if any, else "no matching permit".
-- `Allow` → Sieve runs **pass 2** over the *guardrail* set to collect obligations
+- `Allow` → Sieve collects obligations as the **union** of the matching grant
+  permits (`gdiag.Reasons`, pass 1) and **pass 2** over the *guardrail* set
   (§7.3), then proceeds.
 - `gdiag.Errors` non-empty → each errored statement is logged with its id +
   message (audit + metrics). Errors do **not** flip a deny to allow (Cedar skips
@@ -524,10 +531,12 @@ decision, gdiag := grantsPDP.Authorize(grantsSet, entities, request)   // pass 1
   which is the correct posture.
 
 There are **two `Authorize` passes** per request: pass 1 over the **grants** set is
-the allow/deny decision; pass 2 over the **guardrails** set (only on allow) is
-obligation *collection*, not a second decision — it can never turn allow into deny,
-only add approval/filters (§7.3). Why obligations live in their own pass rather
-than on the grant permits is the load-bearing correction in §7.0.
+the allow/deny decision *and* the source of grant-scoped obligations (off its
+`Reasons`); pass 2 over the **guardrails** set (only on allow) adds the
+role-agnostic obligations. Pass 2 is obligation *collection*, not a second
+decision — it can never turn allow into deny, only add approval/filters (§7.3).
+Collecting from every matching permit (not one) is the load-bearing correction in
+§7.0.
 
 ---
 
@@ -535,33 +544,48 @@ than on the grant permits is the load-bearing correction in §7.0.
 
 The grants layer (§5–§6) decides **allow/deny**. Everything that happens
 *because* of an allow — human approval, a pre-execution script guard, response
-redaction/exclusion, a script transform, a rate limit — is an **obligation**, and
-obligations live in the **guardrails layer** (§3.1), not on the grants.
+redaction/exclusion, a script transform, a rate limit — is an **obligation**.
+Obligations may be carried by a **grant** (they apply when that grant is used) or
+by a **guardrail** (they apply to every allowed request in scope, role-agnostically).
+The engine collects the **union** of both (§7.3).
 
 **The invariant that makes this safe:** an obligation can only ever *narrow*
-(deny / require approval) or *transform* (filter) — it can **never grant**. The
-grants layer is the sole source of "allow"; a guardrail's worst case is to block,
-gate, or scrub an *already-allowed* request.
+(deny / require approval) or *transform* (filter) — it can **never grant**; and
+obligations are **unioned across every matching permit**, so composition can only
+*add* an obligation, never strip one.
 
-### 7.0 Why obligations are global guardrails, not annotations on a grant
+### 7.0 Obligation soundness: union across all matching permits
 
-This is the design's load-bearing correction (it failed in rev-1). If an
-obligation were attached to a specific `permit`, **composition would silently
-strip it**:
+This is the design's load-bearing rule (rev-1 got it wrong). The rev-1 mistake was
+reading obligations off *the* determining permit — but a request is allowed if
+*any* permit matches, so an obligation-free sibling permit could be the one read,
+silently dropping the obligation:
 
-> Role `email` has `@approval permit(send_email) when { recipient internal }`.
-> Role `ops` (also assigned to the same token) has a plain `permit(send_email)`.
-> An **external** send: the `email` permit's condition is false → it does not
-> match → its approval is never collected; the `ops` permit matches → **allow,
-> no approval.** The careful approval is routed around by a broader grant in a
-> sibling role.
+> Role `email` has `@approval permit(send_email)`. Role `ops` (same token) has a
+> plain `permit(send_email)`. If the engine reads obligations off a single
+> satisfying permit and happens to pick `ops`'s, the approval is lost.
 
-A request is allowed if *any* grant permits it, so an obligation read off "the
-determining permit" is defeated by the existence of an obligation-free determining
-permit. Therefore obligations bind the **outcome**, not a grant: a **guardrail**
-matches an *allowed request* by its own scope+condition and applies regardless of
-which rule granted it (§3.1 law 2). The only Cedar construct that is global under
-composition is a non-granting overlay — which is exactly what a guardrail is.
+The fix is to collect obligations from **every** matching permit (Cedar's
+`Reasons`), not one: `email`'s permit still matches, so its `@approval` is still
+collected — `ops`'s plain grant cannot strip it. Union is monotonic — composition
+only ever *adds*.
+
+With union, an obligation is safe **on a grant**, and it is **grant-scoped**: it
+applies exactly when that grant fires, *its conditions included*. That precision is
+the point of grant obligations:
+
+> Role `email`: `@approval permit(send_email) when { recipient internal }`. An
+> *external* send doesn't match that permit, so its approval isn't collected —
+> correct: the operator scoped approval to internal sends. If a sibling `ops` role
+> grants external sends, those go unapproved **by design**.
+
+When you instead want an invariant that holds **regardless of any grant's
+conditions or which role granted** — "every external send needs approval, no
+matter what" — express it as a **guardrail**: it matches the *allowed request* by
+its own scope+condition and is collected in the same union (§7.3). Grant
+obligations and guardrails are the *same mechanism* — annotated permits, unioned —
+differing only in reach: a guardrail is the role-agnostic one no grant-author can
+omit.
 
 ### 7.1 The filter library (named, reusable, script-capable transform/guard defs)
 
@@ -670,27 +694,30 @@ around it either (§7.6).
 ### 7.3 Evaluation — two passes (grants, then guardrails)
 
 ```go
-// pass 1 — grants: the allow/deny decision
+// pass 1 — grants: the allow/deny decision AND grant-scoped obligations
 dec, gdiag := grantsPDP.Authorize(req)        // grant rules only
 if dec != Allow { return Deny(reason from gdiag) }
+grantPermits := gdiag.Reasons                  // Reasons ONLY → a condition-erroring permit is fail-closed (skipped)
 
-// pass 2 — guardrails: collect obligations from ALL matching guardrails
+// pass 2 — guardrails: the role-agnostic obligations
 _, hdiag := guardrailsPDP.Authorize(req)       // guardrail set (permit-only, §7.2)
-matched := hdiag.Reasons ∪ hdiag.Errors        // ERRORED guardrail fails SAFE → treat as matched
-for _, r := range matched {                    // every guardrail that matched OR errored
-    anns := guardrailSet.Get(r.PolicyID).Annotations()
+guardPermits := hdiag.Reasons ∪ hdiag.Errors   // ERRORED guardrail fails SAFE → treat as matched
+
+for _, r := range grantPermits ∪ guardPermits {  // union: every matching grant + guardrail permit
+    anns := r.set.Get(r.PolicyID).Annotations()
     approval = approval || (anns["approval"] == "required")   // OR
     filters  = filters ∪ split(anns["filters"])               // union
 }
 filters = dedupeByID(resolve(filters, library))
 ```
 
-- The guardrail pass is a **second `Authorize` over the (permit-only) guardrail
-  set**; we ignore its allow/deny and read which guardrails fired. Because the set
-  has no `forbid` (§7.2 invariant), `hdiag.Reasons` on `Allow` is exactly the
-  matched guardrails, and a 0-match request default-denies that pass with empty
-  `Reasons` (no obligations) — both correct. It is **independent of the grant
-  pass**, so composition cannot strip an obligation (§7.0).
+- Obligations are the **union** of two sources: the **matching grant permits**
+  (`gdiag.Reasons` from pass 1 — *grant-scoped*, so they apply exactly when the
+  grant fires) and the **matching guardrails** (a second `Authorize` over the
+  permit-only guardrail set — *role-agnostic*). Because the guardrail set has no
+  `forbid` (§7.2 invariant), `hdiag.Reasons` on `Allow` is exactly the matched
+  guardrails. Unioning across **all** matching permits (never just one) is what
+  makes an obligation impossible to strip by composition (§7.0).
 - **Fail-safe selection (the §7.6 polarity, engine half).** An errored guardrail
   condition appears in `hdiag.Errors`, not `hdiag.Reasons`. For a *grant* an errored
   permit is skipped (fail-closed — deny). For a *guardrail* skipping would **drop**
@@ -1053,17 +1080,19 @@ expressiveness rather than a hardcoded menu.
 - **Token = assign a set of roles.** The token create/edit form is a **multi-select
   of roles**. This is the composition gesture (§13.1). Capability = the union
   (§3.1).
-- **Rule editor (grants only — no obligations).** A rule is: **effect** (allow /
-  deny) · **operations** (an action group — read/write/per-subservice — or specific
-  ops) · **resource scope** · **conditions**. Obligations (approval, filters) are
-  **not** authored here — they live on guardrails (next bullet), because an
-  obligation on a grant is bypassable by composition (§7.0).
-- **Guardrail editor (the obligation layer).** A guardrail is: **scope**
-  (optional principal/role · operations · resources) · an optional **exemption**
-  condition (authored as `unless`, §7.6) → **obligation** (require approval and/or
-  apply named filters). Authored as a global overlay, not inside a role (§7.2); the
-  editor enforces permit-only + obligation-only annotations and defaults the
-  condition to the fail-safe `unless` form.
+- **Rule editor.** A rule is: **effect** (allow / deny) · **operations** (an action
+  group — read/write/per-subservice — or specific ops) · **resource scope** ·
+  **conditions** · and, on an allow, optional **obligations** ("Response filters &
+  guards": require approval and/or apply named library filters). The obligations
+  apply whenever this grant is used — *grant-scoped* — and are safe under
+  composition (obligations union across matching rules, §7.0).
+- **Guardrail editor (the global obligation layer).** Same obligation controls,
+  but role-agnostic: a guardrail is **scope** (optional principal/role · operations
+  · resources) · an optional **exemption** condition (authored as `unless`, §7.6) →
+  **obligation**. Use it for an invariant that must hold regardless of which rule
+  granted (the thing a grant-author can't omit). Authored as a global overlay, not
+  inside a role (§7.2); the editor enforces permit-only + obligation-only
+  annotations and defaults the condition to the fail-safe `unless` form.
 - **Filter library editor.** Named, reusable **redact / exclude / script_filter /
   script_guard / rate_limit** definitions (§7.1) that guardrails reference by name;
   `script_*` commands are checked against the allowlist at save (§7.1).
