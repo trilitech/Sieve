@@ -1,7 +1,7 @@
 # Sieve IAM — Specification
 
-**Status:** Draft for design-lock (rev 2 — RBAC composition) · **Date:** 2026-06-21
-**Depends on nothing shipped; supersedes `internal/policy` composition semantics.**
+**Status:** Implemented (rev 2 — RBAC composition + grant/guardrail obligations) · **Date:** 2026-06-22
+**Shipped on `feat/iam-rbac-impl`; the legacy `internal/policy` composition engine is removed (cutover, §1).**
 
 > **Rev 2 (RBAC).** The model is now explicit RBAC on the subject side: a **token
 > is assigned a set of roles**, a **role is a reusable bundle of rules**,
@@ -72,7 +72,11 @@
 1. **`connections` table is immutable across this rework.** No migration, no
    schema change, no read path change. Credentials persist exactly.
 2. **Fail closed** at every layer (§6, §7.4).
-3. **Reversible** via the `iam_enabled` flag and a legacy-table overlap window.
+3. **Legacy cutover is complete (commit `0fb9d68`).** IAM is the **sole**
+   authorization engine — no enable/disable toggle, no legacy fallback; the
+   `internal/policy` composition evaluator is removed. (During development this was
+   gated by an `iam_enabled` flag for reversibility; that flag and the legacy
+   evaluator no longer exist. Invariant 1 — `connections` untouched — still holds.)
 
 ---
 
@@ -169,7 +173,7 @@ nouns consistently in the editor, storage, audit log, and this spec.
 | Concept | What it is |
 |---|---|
 | **Guardrail** | A **global constraint** — the *role-agnostic* variant of an obligation. For any request the grants layer *allows* that matches the guardrail's scope (operations/resources) + condition, it **requires approval and/or applies named filters**, **regardless of which rule granted the request**. A guardrail never grants; it only adds an obligation. Use it for an invariant a grant-author must not be able to omit (a rule's own obligation, by contrast, applies only when *that* rule grants). |
-| **Filter** | A named, reusable **transform/guard definition** (redact / exclude / script) that guardrails reference by name. The reuse unit for obligations. |
+| **Filter** | A named, reusable **transform/guard definition** (redact / exclude / script) that rules and guardrails reference by name. The reuse unit for obligations. |
 
 **Why two layers.** RBAC governs *who gets which bundles* (token↔role, role↔rule —
 both many-to-many); Cedar governs *what each rule says* (deny, scope, attribute
@@ -420,7 +424,9 @@ Sieve::Action::"google/list_emails"         // the leaf op
   `action == Sieve::Action::"mcp_proxy/call"` scoped to a `Sieve::Connection`
   (per-**tool** scoping is deferred, §15).
 - `search_messages` (slack) keeps its action so rules bind stably even though
-  the connector returns `ErrOperationNotEnabled` (unchanged behavior).
+  the connector returns `ErrOperationNotEnabled`; the builder's operation picker
+  **marks it not-available** (a connector can flag an op as not-enabled so it isn't
+  offered as a freely-grantable leaf op).
 
 The action map (`op → action id + groups`) is **generated** from the connector
 registry (impl §3, §8) so it cannot drift from the catalog. **Generation invariant:
@@ -480,6 +486,16 @@ This is the same source the schema generator uses for the per-action `param`
 record, so the editor and the validator never disagree: any attribute the editor
 offers is schema-valid for that op, and its operator list is exactly the Cedar
 operators its type supports.
+
+**Shipped vs planned (reconciliation).** What ships today is the connector-declared
+form, not the fully general `ConditionAttributes` above: each connector advertises a
+**curated** `ConnectorMeta.RuleConditions` list (the specific attributes it chooses
+to expose — e.g. anthropic `model` and `max_tokens`), and the builder offers exactly
+those. Condition **kinds** are `number`, `string`, `domain_allowlist`, and `one_of`
+(a scalar constrained to an allowlist — the form anthropic `model` uses). The fully
+general, op-param-**derived** editor above (every typed `param` auto-exposed) is the
+planned generalization (§15); until then a connector must declare a condition for it
+to appear in the builder.
 
 **Decision-time context is request-time only — response/body content is NOT
 available.** Cedar `context` is built *before* `Execute` (§5.5), so a `when`/`unless`
@@ -589,9 +605,9 @@ omit.
 
 ### 7.1 The filter library (named, reusable, script-capable transform/guard defs)
 
-A **filter** is a stored definition in the PAP-managed library; **guardrails**
-reference filters by name (a transform like "redact card numbers" is identical
-everywhere — the genuine reuse unit for obligations).
+A **filter** is a stored definition in the PAP-managed library; **rules and
+guardrails** reference filters by name (a transform like "redact card numbers" is
+identical everywhere — the genuine reuse unit for obligations).
 
 ```
 Filter {
@@ -599,16 +615,16 @@ Filter {
   kind:    "redact" | "exclude_items" | "script_filter" | "script_guard" | "rate_limit"
   phase:   "pre" (guard / rate_limit) | "post" (response transform)   // implied by kind
   order:   int      // post-filter application order (lower first); ties broken by id (M3)
-  config:  { patterns: [...] }                                         // redact/exclude
-        |  { command, path, timeout_ms }                              // script_*
-        |  { limit, window_seconds, key: "token"|"token+resource"|"token+action"|"token+action_group" } // rate_limit
+  config:  { patterns: [...], match: "contains"|"regex", fields?: [...] }  // redact/exclude
+        |  { command, path, timeout_ms }                              // script_* (command = python3 | node)
+        |  { limit, window_seconds, key: "token"|"token+resource"|"token+action"|"token+action_group" } // rate_limit (deferred §15)
 }
 ```
 
 | kind | phase | what it does | can it deny? | can it transform? |
 |---|---|---|---|---|
-| `redact` | post | regex-mask matches in the response | no | yes |
-| `exclude_items` | post | drop list items containing text/regex | no | yes |
+| `redact` | post | mask pattern matches in the response (within content fields) | no | yes |
+| `exclude_items` | post | drop list items whose content fields match a pattern | no | yes |
 | `script_filter` | post | run a script over the response JSON; stdout replaces it | no¹ | yes |
 | `script_guard` | pre | run a script over the request before Execute; `{"action":"deny",…}` ⇒ deny | **yes** | no |
 | `rate_limit` | pre | count calls keyed per `key`; over `limit`/`window_seconds` ⇒ deny | **yes** | no |
@@ -617,13 +633,29 @@ Filter {
 withheld) — it can effectively block, but it cannot *grant* or alter the
 allow decision.
 
-**Script command allowlist (security boundary — parity with legacy
-`commandallowlist.go`).** A `script_*` filter's `config.command` MUST pass
-`ValidateCommand(CurrentCommandAllowlist())` — absolute path, symlink-resolved,
-default `/opt/sieve-py/bin/python3` — **at save time and at execution time**. A
-non-allowlisted command is a save-time rejection. This is a real boundary: without
-it, a PAP user who can author a filter can exec any host binary. (It must not be
-lost in the port — review item.)
+**Field-aware matching (redact / exclude).** A filter is a connector-**agnostic**
+transform — `patterns` + a `match` mode: `"contains"` (case-insensitive literal
+substring, the default) or `"regex"`. The two are equally powerful — no
+exclude-literal/redact-regex asymmetry. Matching applies **only within a connector's
+declared content fields** (`ConnectorMeta.ContentFields` — e.g. gmail
+`subject`/`body`/`snippet`, never ids, labels, base64 attachment data, or raw
+headers), so a 16-digit run inside an attachment or a metadata id is never touched.
+The field set comes from the **connector of the rule or guardrail the filter is
+attached to** (a filter carries no connector of its own); the default is *all* of
+that connector's content fields, optionally narrowed via `config.fields`. A
+connector that declares no content fields (e.g. anthropic) filters the whole
+response.
+
+**Script command + path allowlist (security boundary).** A `script_*` filter
+references its script by **path** (`config.path`) and runs it under an allowlisted
+interpreter (`config.command`). Both are validated **at save time and at execution
+time**: the command MUST pass `ValidateCommand(CurrentCommandAllowlist())` — default
+runtimes **`python3` and `node`** (a guard/filter may be written in Python *or*
+JavaScript; identical stdin-JSON→stdout-JSON contract) — and the path MUST pass
+`ValidateScriptPath` (absolute, no `..`, symlink-resolved, under an allowlisted
+scripts directory, default `/opt/sieve-py`). A non-allowlisted command or an
+out-of-tree path is a save-time rejection. Without this boundary a PAP user who can
+author a filter could exec an arbitrary host binary or script.
 
 **`rate_limit`** restores the legacy `builtin` per-op-class limiting. To match
 legacy buckets ("100 reads/hr AND 10 sends/day"), `key` includes
@@ -638,9 +670,9 @@ counter is wired (no silent no-op — see §15). `script_guard`, `redact`,
 (HTTP proxy) has `order = -∞` (always first). Pre-phase guards are unordered (any
 deny denies).
 
-Scripts reuse the existing Python policy-script runtime (`/opt/sieve-py`,
-stdin→stdout JSON; `docs/policy-scripts.md`). The library is the home for *all*
-script logic; there is no whole-policy "script evaluator" type.
+Scripts reuse the existing policy-script runtime (`/opt/sieve-py`, stdin→stdout
+JSON; Python *or* JavaScript; `docs/policy-scripts.md`). The library is the home for
+*all* script logic; there is no whole-policy "script evaluator" type.
 
 ### 7.2 Guardrails (the global obligation layer)
 
@@ -996,14 +1028,21 @@ when { resource in [ Sieve::Connection::"gmail-A",      // ← reuse: add accoun
   no separate "bespoke vs template" distinction; every rule is the same kind of
   thing.
 
-**Storage.** Three small tables plus the filter library (§9.2):
+**Storage** (as shipped):
 - `iam_roles`: `id, name, description, created_at`.
-- `iam_rules`: `id, role_id, cedar_text, enabled, created_at` — one row per rule
-  (one Cedar `permit`/`forbid`), targeting its role.
-- `iam_token_roles`: `token_id, role_id` — the **token→role-set** assignment
-  (many-to-many; this is the composition primitive, §5.1).
-- `iam_guardrails`: `id, name, cedar_text, enabled, created_at` — the guardrail
-  overlay set (§7.2), assembled into a **separate** policy set from the rules.
+- `iam_policies`: `id, role_id, name, cedar_text, spec_json, description, enabled,
+  created_at` — one row per **rule** (one Cedar `permit`/`forbid` targeting its
+  role). `spec_json` is the builder form-state, round-tripped for edit-in-place and
+  the plain-English summary (raw-Cedar rules carry none). (The table keeps the
+  historical name `iam_policies`; a "rule" *is* a stored policy row.)
+- `iam_guardrails`: `id, name, description, cedar_text, spec_json, enabled,
+  created_at` — the guardrail overlay set (§7.2), assembled into a **separate**
+  policy set from the rules.
+- `iam_filters`: the filter library (§9.2).
+- **token→role-set assignment** is a `role_ids` JSON column on the existing `tokens`
+  table (a legacy single `role_id` is kept consistent for rollback), **not** a
+  separate join table — the many-to-many composition primitive (§5.1) stored inline
+  on the token.
 
 The resource/principal **scope sets** in each rule are structured data the editor
 round-trips into the Cedar `in [...]` scope (built via the typed cedar-go API /
@@ -1012,13 +1051,13 @@ connection" can't corrupt a rule).
 
 ### 9.2 Filter library (reusable obligations)
 
-Unchanged (§7): named redact/exclude/script obligations referenced by **guardrails**
-via `@filters("…")`. The reusable *transform* layer. (Filters are the one thing
+Unchanged (§7): named redact/exclude/script obligations referenced by **rules and
+guardrails** via `@filters("…")`. The reusable *transform* layer. (Filters are the one thing
 that *is* identical across unrelated guardrails, so they stay a named library; rule
 *logic* reuses via the scope sets above, roles reuse via assignment.) Stored in
 `iam_filters (id, name, description, kind, phase, order, config_json)` — the fifth
-concept's table, alongside `iam_roles`/`iam_rules`/`iam_token_roles`/`iam_guardrails`
-(§9.1).
+concept's table, alongside `iam_roles`/`iam_policies`/`iam_guardrails` (§9.1; the
+token→role-set is a `role_ids` column on `tokens`, not a join table).
 
 ### 9.3 The active policy sets (assembly)
 
@@ -1029,10 +1068,13 @@ set (every enabled guardrail). Pass 1 evaluates grants; pass 2 evaluates guardra
 
 - Each rule / guardrail contributes its statement directly (already concrete Cedar
   — no linker, no materialization step).
-- Every statement gets a **stable, unique PolicyID** — `"grant:<rule_id>"` in the
-  grants set, `"guard:<guardrail_id>"` in the guardrails set. This is what
-  `gdiag.Reasons` / `hdiag.Reasons` return, so the explorer/audit maps a determining
-  statement back to its source rule (or guardrail) and reads its annotations.
+- Every statement gets a **stable, unique PolicyID** of the form
+  `"<prefix>:<source_id>#<idx>"` — the grants set uses the legacy prefix `pol`
+  (`"pol:<rule_id>#<n>"`, kept for audit/explorer back-compat), the guardrails set
+  uses `guard` (`"guard:<guardrail_id>#<n>"`); `#<n>` disambiguates multiple
+  statements compiled from one source. This is what `gdiag.Reasons` / `hdiag.Reasons`
+  return, so the explorer/audit maps a determining statement back to its source rule
+  (or guardrail) and reads its annotations.
 - Both sets are cached in memory, rebuilt on change. Evaluation never hits storage.
 - **Scale via principal partitioning (review H3) — done correctly (review N1).**
   A request from a token assigned roles `{R1,…,Rn}` evaluates only the rules whose
@@ -1094,21 +1136,31 @@ expressiveness rather than a hardcoded menu.
   inside a role (§7.2); the editor enforces permit-only + obligation-only
   annotations and defaults the condition to the fail-safe `unless` form.
 - **Filter library editor.** Named, reusable **redact / exclude / script_filter /
-  script_guard / rate_limit** definitions (§7.1) that guardrails reference by name;
-  `script_*` commands are checked against the allowlist at save (§7.1).
+  script_guard** definitions (§7.1), referenced by **rules or guardrails** by name.
+  redact/exclude take patterns + a match mode and are field-aware (§7.1); a
+  `script_*` filter takes a script **path** + interpreter (`python3`/`node`), checked
+  against the allowlist at save. (`rate_limit` is specified but **not offered** in the
+  UI — deferred, §15.)
+- **Full lifecycle — every artifact is editable in place.** Roles, rules,
+  guardrails, filters, and a token's role set are all editable from the admin UI
+  (not delete-and-recreate); rules, guardrails, and roles are deletable. A token edit
+  **never regenerates the secret** — it changes only the role set. **Deleting a role
+  cascades:** it strips the role from every token's set, deletes the role's rules and
+  any guardrails scoped to it, then removes the role — so access is *truly* revoked
+  (a token cannot retain capability through a dangling role id the engine would still
+  synthesize as a parent, §5.1).
 - **Resource scope = set-valued, structured.** "Apply to connection(s)" edits a
   structured list that becomes the rule's `resource in [..]` set (§9.1); for
   connectors with object types, scope to an owner/repo/channel/etc. The editor only
   offers connector-compatible targets (the connector-safety gate, §9.1).
-- **Conditions = a general editor, not a fixed menu.** A condition is
-  **(attribute · operator · value)** over the request's **resource attributes** and
-  **context** (the connector advertises which paths exist and their types via the
-  `ConditionAttributes` interface, §5.4 — `context.param.max_tokens : Long`,
-  `context.recipient_domains : Set<String>`, `resource.connection_status : String`,
-  …). Operators are the type's Cedar
-  operators (`==`, `<`, `<=`, `in`, `.contains*`, `like`). The builder compiles
-  these to fail-closed `when` terms (§7.6: conditions live on permits). This is what
-  makes the structured path *expressive*, not a canned list of three checks.
+- **Conditions = (attribute · operator · value), from the connector's declared set.**
+  Each connector advertises the attributes it exposes for conditions
+  (`ConnectorMeta.RuleConditions`, §5.4) — e.g. anthropic `model` (an `one_of`
+  allowlist) and `max_tokens` (a numeric cap) — and the builder offers exactly those,
+  with the operators the kind supports (`number`, `string`, `domain_allowlist`,
+  `one_of`). The builder compiles these to fail-closed `when` terms (§7.6: conditions
+  live on permits). A fully general, op-param-derived condition editor (every typed
+  param auto-exposed) is the planned generalization (§5.4, §15).
 - **Raw Cedar is the escape hatch, not the only door.** Anything the structured
   editor can't express (novel attribute logic, intricate `unless`) is authorable as
   raw Cedar in the same role. Round-tripped into the structured view where it maps
@@ -1241,10 +1293,12 @@ permit(principal in Sieve::Role::"email-access",
        resource in Sieve::Connection::"work-gmail");
 ```
 
-The "sends need approval" requirement is a **guardrail** in the separate guardrail
-set (§7.2), *not* an annotation on the grant — so it binds **every** allowed send
-regardless of which role granted it (a sibling role with a plain send grant can't
-route around it, §7.0):
+The "sends need approval" requirement is expressed here as a **guardrail** in the
+separate guardrail set (§7.2) so it binds **every** allowed send regardless of which
+role granted it — the role-agnostic, can't-be-omitted form. (It could instead be a
+`@approval` annotation on the send grant when you want it scoped to *that* grant;
+both are composition-safe — a sibling plain-send grant can't route around either,
+because obligations union across every matching permit, §7.0.):
 
 ```cedar
 // guardrail set (global overlay)
@@ -1340,9 +1394,12 @@ permit(principal, action == Sieve::Action::"google/send_email", resource);
 
 **Grant condition vs. obligation — the load-bearing distinction.** The internal-only
 test *narrows the grant* (it changes allow→deny), so it is a **condition on the
-`permit`**; the approval *adds an obligation to an already-allowed send*, so it is a
-**guardrail** (§7.0). Putting approval on the permit would let a sibling role's
-plain send grant route around it.
+`permit`**. The approval *adds an obligation to an already-allowed send*; it is
+authored as a **guardrail** here because the invariant is global — every send needs
+approval, whoever granted it. (It could equally ride on the grant rule when you want
+it scoped to *that* grant; both are composition-safe — obligations union across every
+matching permit, §7.0. The guardrail form is the right choice when no grant-author
+should be able to omit it.)
 
 The internal-only condition follows the **fail-closed authoring rule** (§7.6): a
 condition on a `permit`, never a `forbid … unless`. If `recipient_domains` is absent
@@ -1408,8 +1465,10 @@ First, two library filters (PAP objects, defined once, referenced anywhere):
   "config": { "command": "/opt/sieve-py/bin/python3", "path": "/opt/sieve-py/guards/biz_hours.py", "timeout_ms": 2000 } }
 ```
 
-Then a **rule** grants the access and a **guardrail** attaches the filters (filters
-are obligations → guardrail set, §7.2; never annotations on the grant):
+Then a **rule** grants the access and a **guardrail** attaches the filters (here a
+guardrail, so the scrub binds support_bot's Linear reads regardless of which rule
+granted them; the same filters could instead ride on the grant rule when you want
+them scoped to that grant — both are composition-safe, §7.0):
 
 ```cedar
 // GRANT (rule): allow the read
@@ -1542,10 +1601,10 @@ approval queue, the response-filter applier, the two-port topology, the connecto
 ## 15. Open questions / future work
 
 - **`rate_limit` execution (deferred).** The `rate_limit` filter kind is specified
-  (§7.1) but **not executed in v1**: a guardrail that references a `rate_limit`
-  filter is **rejected at save** until the counter (`internal/ratelimit`) is wired —
-  no silent no-op. `script_guard`/`redact`/`exclude_items`/`script_filter` execute
-  in v1.
+  (§7.1) but **not executed in v1** and **not offered in the filter-library UI**: a
+  rule or guardrail that references a `rate_limit` filter is **rejected at save**
+  until the counter (`internal/ratelimit`) is wired — no silent no-op.
+  `script_guard`/`redact`/`exclude_items`/`script_filter` execute in v1.
 - **MCP per-tool resource scoping (deferred).** v1 scopes `mcp_proxy/call` at
   **connection grain** (§5.2/§5.3); the `Sieve::Mcp::Tool` resource type is reserved
   in the schema but extractors emit the connection, so a token granted MCP on a

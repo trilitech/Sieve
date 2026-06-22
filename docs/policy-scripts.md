@@ -5,6 +5,13 @@ They receive a JSON request on **stdin** and write a JSON decision to **stdout**
 
 Scripts can be written in any language. Python is the default.
 
+> **IAM filter/guard scripts.** When used as IAM filter-library guards or response
+> filters (see `docs/architecture/iam/01-spec.md` §7.1), a script is referenced by
+> **path** and run under an allowlisted interpreter — **`python3` or `node`** by
+> default (Python or JavaScript; the stdin-JSON→stdout-JSON contract below is
+> identical for both). The path must sit under an allowlisted scripts directory
+> (default `/opt/sieve-py`).
+
 ## How scripts are called
 
 Sieve calls your script **twice** per operation:
