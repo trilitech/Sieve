@@ -135,6 +135,7 @@ func Meta() connector.ConnectorMeta {
 				Label:       "Bot token (xoxb-…)",
 				Type:        "password",
 				Required:    true,
+				Secret:      true,
 				Placeholder: "xoxb-…",
 				HelpText:    "Find under your Slack app's OAuth & Permissions page after install.",
 			},

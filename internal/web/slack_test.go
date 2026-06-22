@@ -228,6 +228,86 @@ func TestHandleSlackUserToken_HappyPath(t *testing.T) {
 	}
 }
 
+// TestEditSlackUserConnection_KeepsStoredSecrets is the regression for
+// the edit-form gap: bot_token is declared Required, so before it was
+// marked Secret an empty submission on the generic edit form was
+// rejected ("Bot token is required") — which made a user_token
+// connection (no bot token at all) impossible to edit. With bot_token
+// Secret, an empty submission is "keep stored", so editing a user
+// connection succeeds and the user_token survives untouched.
+func TestEditSlackUserConnection_KeepsStoredSecrets(t *testing.T) {
+	handler, env := slackUITestServer(t)
+
+	if err := env.Connections.Add("u1", "slack", "User Conn", map[string]any{
+		"auth_kind":   slackconn.KindUserToken,
+		"user_token":  "xoxp-stored-user-token",
+		"team_id":     "T012",
+		"team_name":   "Acme",
+		"bot_user_id": "U0INSTALLER",
+	}); err != nil {
+		t.Fatalf("seed user connection: %v", err)
+	}
+
+	// The edit page must render for a user connection (it includes the
+	// bot_token + user_token fields as "(unchanged)" secrets).
+	page := getRequest(handler, env, "/connections/u1/edit")
+	if page.Code != http.StatusOK {
+		t.Fatalf("edit page: expected 200, got %d (body: %s)", page.Code, page.Body.String())
+	}
+
+	// Submit the form with both secrets left blank — the realistic
+	// browser submission. Must succeed (303), not 400 "required". The
+	// generic edit-save enforces a same-origin check, so set Origin to
+	// match the request host (httptest defaults to example.com).
+	form := url.Values{"bot_token": {""}, "user_token": {""}}
+	req := httptest.NewRequest(http.MethodPost, "/connections/u1/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+req.Host)
+	if c := env.SessionCookie(); c != nil {
+		req.AddCookie(c)
+	}
+	if tok := env.CSRFToken(); tok != "" {
+		req.Header.Set("X-CSRF-Token", tok)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("edit save: expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	full, err := env.Connections.GetWithConfig("u1")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if full.Config["auth_kind"] != slackconn.KindUserToken {
+		t.Fatalf("auth_kind changed: %v", full.Config["auth_kind"])
+	}
+	if full.Config["user_token"] != "xoxp-stored-user-token" {
+		t.Fatalf("user_token not preserved across edit: %v", full.Config["user_token"])
+	}
+}
+
+// TestHandleSlackUserToken_RejectsAgentToken — the user-token install
+// path mutates connection state, so (like the bot-token path) it must
+// reject any request carrying an agent bearer rather than an operator
+// session.
+func TestHandleSlackUserToken_RejectsAgentToken(t *testing.T) {
+	handler, _, _ := slackTestServer(t)
+	form := url.Values{
+		"id":           {"agent-user"},
+		"display_name": {"Agent"},
+		"user_token":   {"xoxp-real"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/connections/slack/user-token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer sieve_tok_abc")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for agent token, got %d", rec.Code)
+	}
+}
+
 // TestHandleSlackUserToken_RejectsBadPrefix asserts a bot token pasted
 // into the user-token field is rejected before any upstream call.
 func TestHandleSlackUserToken_RejectsBadPrefix(t *testing.T) {
@@ -829,4 +909,3 @@ func TestPoliciesPage_SlackScope(t *testing.T) {
 		t.Errorf("expected JS SCOPE to be set to \"slack\"")
 	}
 }
-
