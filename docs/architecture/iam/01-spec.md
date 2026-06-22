@@ -490,12 +490,27 @@ operators its type supports.
 **Shipped vs planned (reconciliation).** What ships today is the connector-declared
 form, not the fully general `ConditionAttributes` above: each connector advertises a
 **curated** `ConnectorMeta.RuleConditions` list (the specific attributes it chooses
-to expose — e.g. anthropic `model` and `max_tokens`), and the builder offers exactly
-those. Condition **kinds** are `number`, `string`, `domain_allowlist`, and `one_of`
-(a scalar constrained to an allowlist — the form anthropic `model` uses). The fully
-general, op-param-**derived** editor above (every typed `param` auto-exposed) is the
-planned generalization (§15); until then a connector must declare a condition for it
-to appear in the builder.
+to expose), and the builder offers exactly those. Condition **kinds** are `number`,
+`string`, `one_of` (a scalar constrained to an allowlist), `domain_allowlist` (every
+value in an allowed set), and `bool` (a flag param `== true|false`).
+
+Conditions are **operation-aware**: a `RuleCondition` carries `Ops` (the operation
+names it applies to; empty ⇒ all ops). The builder only *offers* a condition when one
+of its ops is in the selected operation scope (so anthropic `max_tokens`/`model`
+appear under `messages_create`, not `messages_count_tokens`), and the compiler
+**guards** an op-scoped condition — `(!action_in_ops || condition)` — so it binds
+ONLY those ops. This is load-bearing: a `recipient_count` cap scoped to sends,
+attached to an *all-operations* allow, must not fail-close a read that carries no
+`recipient_count`; the guard short-circuits for non-matching ops so the condition is
+never evaluated there.
+
+Conditions shipped per connector today: **gmail** `recipient_count` + `recipient_domains`
+(scoped to send/draft/reply; backed by `EnrichContext`), **anthropic** `model` (one_of)
++ `max_tokens` (scoped to `messages_create`), **github** `draft` (bool, scoped to
+`github_create_pr`). The fully general, op-param-**derived** editor above (every typed
+`param` auto-exposed without a per-connector declaration) is the remaining planned
+generalization (§15); until then a connector must declare a condition for it to appear
+in the builder.
 
 **Decision-time context is request-time only — response/body content is NOT
 available.** Cedar `context` is built *before* `Execute` (§5.5), so a `when`/`unless`
@@ -1153,14 +1168,18 @@ expressiveness rather than a hardcoded menu.
   structured list that becomes the rule's `resource in [..]` set (§9.1); for
   connectors with object types, scope to an owner/repo/channel/etc. The editor only
   offers connector-compatible targets (the connector-safety gate, §9.1).
-- **Conditions = (attribute · operator · value), from the connector's declared set.**
-  Each connector advertises the attributes it exposes for conditions
-  (`ConnectorMeta.RuleConditions`, §5.4) — e.g. anthropic `model` (an `one_of`
-  allowlist) and `max_tokens` (a numeric cap) — and the builder offers exactly those,
-  with the operators the kind supports (`number`, `string`, `domain_allowlist`,
-  `one_of`). The builder compiles these to fail-closed `when` terms (§7.6: conditions
-  live on permits). A fully general, op-param-derived condition editor (every typed
-  param auto-exposed) is the planned generalization (§5.4, §15).
+- **Conditions = (attribute · operator · value), from the connector's declared set,
+  operation-aware.** Each connector advertises the attributes it exposes for
+  conditions (`ConnectorMeta.RuleConditions`, §5.4) — e.g. anthropic `model` (an
+  `one_of` allowlist) and `max_tokens` (a numeric cap), gmail `recipient_count`
+  (`number`) and `recipient_domains` (`domain_allowlist`), github `draft` (`bool`) —
+  and the builder offers exactly those, with the operators the kind supports
+  (`number`, `string`, `one_of`, `domain_allowlist`, `bool`). Each condition declares
+  the operations it applies to (`Ops`); the builder only shows it when one of those
+  ops is in scope, and the compiler guards it so it binds only those ops (§5.4). The
+  builder compiles these to fail-closed `when` terms (§7.6: conditions live on
+  permits). A fully general, op-param-derived condition editor (every typed param
+  auto-exposed) is the planned generalization (§5.4, §15).
 - **Raw Cedar is the escape hatch, not the only door.** Anything the structured
   editor can't express (novel attribute logic, intricate `unless`) is authorable as
   raw Cedar in the same role. Round-tripped into the structured view where it maps

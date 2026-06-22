@@ -70,6 +70,18 @@ func Meta() connector.ConnectorMeta {
 			{Key: "body", Label: "Body"},
 			{Key: "message", Label: "Commit message"},
 		},
+		// github_create_pr decodes a `draft` flag — let an operator require PRs be
+		// opened as drafts (e.g. "this agent may open PRs, but only drafts").
+		RuleConditions: []connector.RuleCondition{
+			{
+				Key:     "draft",
+				Label:   "Draft pull request",
+				Kind:    "bool",
+				CtxPath: "context.param.draft",
+				Help:    "Constrain whether the PR is opened as a draft (true) or ready-for-review (false)",
+				Ops:     []string{"github_create_pr"},
+			},
+		},
 		ResourceTypes: []connector.ResourceType{
 			{Name: "Sieve::Github::Owner"},
 			{Name: "Sieve::Github::Repo", Parent: "Sieve::Github::Owner"},

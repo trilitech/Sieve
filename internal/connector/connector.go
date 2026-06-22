@@ -116,14 +116,24 @@ type ScopeField struct {
 // CtxPath and ANDs it into the rule's `when` clause. Kinds:
 //   - "number":           CtxPath <op> <value>           (op: <=,<,>=,>,==)
 //   - "string":           CtxPath == "<value>"
+//   - "one_of":           ["<v1>","<v2>"].contains(CtxPath)       (scalar in a set
+//     — e.g. allow only listed models)
 //   - "domain_allowlist": ["<v1>","<v2>"].containsAll(CtxPath)  (every actual
 //     value must be in the allowed set — e.g. send only to listed domains)
+//   - "bool":             CtxPath == true|false                  (a flag param)
+//
+// Ops restricts the condition to specific operation NAMES (empty ⇒ every op). The
+// rule-builder only OFFERS a condition when one of its ops is in the selected op
+// scope, and the compiler guards it so it binds ONLY those ops — so e.g. a
+// recipient_count cap scoped to send ops does not fail-close reads on an
+// all-operations rule.
 type RuleCondition struct {
 	Key     string // form key
 	Label   string
 	Help    string
-	Kind    string // "number" | "string" | "domain_allowlist" | "one_of"
-	CtxPath string // Cedar path, e.g. "context.param.amount", "context.recipient_domains"
+	Kind    string   // "number" | "string" | "one_of" | "domain_allowlist" | "bool"
+	CtxPath string   // Cedar path, e.g. "context.param.amount", "context.recipient_domains"
+	Ops     []string // operation names this condition applies to; empty ⇒ all ops
 }
 
 // ContentField names a response text field that is safe/intended for content

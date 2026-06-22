@@ -28,13 +28,17 @@ type ScopeRef struct {
 	ID         string // e.g. "<conn>/<owner>/<repo>"
 }
 
-// ConditionInput is a resolved condition: Kind+CtxPath come from the connector's
-// RuleCondition declaration, Op+Value from the operator's input.
+// ConditionInput is a resolved condition: Kind+CtxPath+Ops come from the
+// connector's RuleCondition declaration, Op+Value from the operator's input.
 type ConditionInput struct {
-	Kind    string // "number" | "string" | "domain_allowlist"
+	Kind    string // "number" | "string" | "one_of" | "domain_allowlist" | "bool"
 	CtxPath string // e.g. "context.param.amount"
 	Op      string // number ops only: "lte" | "lt" | "gte" | "gt" | "eq"
 	Value   string // raw user input
+	// Ops restricts the condition to specific operation names (empty ⇒ all ops).
+	// whenClause guards a scoped condition so it binds ONLY those ops; for any
+	// other op the condition is vacuously true and never fail-closes the permit.
+	Ops []string
 }
 
 // RuleSpec is one rule composed in the builder form.
@@ -286,7 +290,12 @@ func resourceScopeTerm(spec RuleSpec) string {
 }
 
 // whenClause builds the `when { … }` constraining the resource and any
-// conditions (for a GRANT rule).
+// conditions (for a GRANT rule). An op-scoped condition (ConditionInput.Ops set)
+// is wrapped so it binds ONLY those ops: `(!actionInOps || condition)`. For any
+// other op the left side is true and short-circuits, so the condition is never
+// evaluated — a recipient_count cap scoped to sends can't fail-close reads on an
+// all-operations rule, and an absent attribute only fail-closes the op(s) the
+// condition actually governs.
 func whenClause(spec RuleSpec) (string, error) {
 	terms := []string{resourceScopeTerm(spec)}
 	for _, c := range spec.Conditions {
@@ -294,9 +303,26 @@ func whenClause(spec RuleSpec) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if guard := actionGuard(spec.ConnectorType, c.Ops); guard != "" {
+			expr = "(" + guard + " || (" + expr + "))"
+		}
 		terms = append(terms, expr)
 	}
 	return " when { " + strings.Join(terms, " && ") + " }", nil
+}
+
+// actionGuard renders "the action is NOT one of these ops" — the left disjunct of
+// an op-scoped condition. Empty ops ⇒ "" (condition applies to every op). Action
+// ids come from the SAME taxonomy (iam.ActionID) the runtime PIP uses.
+func actionGuard(connType string, ops []string) string {
+	if len(ops) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(ops))
+	for _, op := range ops {
+		ids = append(ids, iam.TypeAction+"::"+cedarString(iam.ActionID(connType, connector.OperationDef{Name: op})))
+	}
+	return "!([" + strings.Join(ids, ", ") + "].contains(action))"
 }
 
 // conditionExpr renders one condition to a Cedar boolean expression.
@@ -336,6 +362,13 @@ func conditionExpr(c ConditionInput) (string, error) {
 		}
 	case "string":
 		return fmt.Sprintf("%s == %s", c.CtxPath, cedarString(c.Value)), nil
+	case "bool":
+		// A boolean flag param (e.g. a github PR's draft): context.param.X == true.
+		v := strings.ToLower(strings.TrimSpace(c.Value))
+		if v != "true" && v != "false" {
+			return "", fmt.Errorf("boolean condition needs true or false, got %q", c.Value)
+		}
+		return fmt.Sprintf("%s == %s", c.CtxPath, v), nil
 	case "one_of":
 		// A scalar attribute (e.g. context.param.model) must be one of a set of
 		// allowed values: ["a","b"].contains(<scalar>). Allow + one_of = an

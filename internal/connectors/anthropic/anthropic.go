@@ -71,6 +71,7 @@ func Meta() connector.ConnectorMeta {
 				Kind:    "one_of",
 				CtxPath: "context.param.model",
 				Help:    "Allow (or, on a deny rule, block) specific models — comma-separated, e.g. claude-opus-4-8, claude-sonnet-4-6",
+				Ops:     []string{"messages_create"},
 			},
 			{
 				Key:     "max_tokens",
@@ -78,6 +79,7 @@ func Meta() connector.ConnectorMeta {
 				Kind:    "number",
 				CtxPath: "context.param.max_tokens",
 				Help:    "Cap max_tokens per request",
+				Ops:     []string{"messages_create"},
 			},
 		},
 		SetupFields: []connector.Field{

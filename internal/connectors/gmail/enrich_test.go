@@ -82,6 +82,21 @@ func TestEnrichContext_NilForNonRecipientOps(t *testing.T) {
 	}
 }
 
+func TestEnrichContext_RecipientCount(t *testing.T) {
+	g := &GoogleConnector{}
+	out := g.EnrichContext("send_email", map[string]any{
+		// a@x.com appears in both to and cc → counted once: 3 distinct recipients.
+		"to": []string{"a@x.com", "b@x.com"},
+		"cc": []any{"a@x.com", "c@y.com"},
+	})
+	if out == nil {
+		t.Fatal("expected non-nil result for a send with recipients")
+	}
+	if got := out["recipient_count"]; got != 3 {
+		t.Errorf("recipient_count = %v, want 3 (distinct addresses)", got)
+	}
+}
+
 func TestEnrichContext_SkipsMalformedAddresses(t *testing.T) {
 	g := &GoogleConnector{}
 	out := g.EnrichContext("send_email", map[string]any{

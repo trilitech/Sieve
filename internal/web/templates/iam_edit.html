@@ -303,9 +303,18 @@
             }
             row.appendChild(op);
           }
-          const val = document.createElement('input');
-          val.type = 'text'; val.name = 'cond_' + c.key + '_val';
-          val.placeholder = c.kind === 'domain_allowlist' ? 'example.com, trilitech.com' : (c.kind === 'number' ? '1000' : 'value');
+          let val;
+          if (c.kind === 'bool') {
+            val = document.createElement('select');
+            for (const b of ['true', 'false']) {
+              const o = document.createElement('option'); o.value = b; o.textContent = b; val.appendChild(o);
+            }
+          } else {
+            val = document.createElement('input');
+            val.type = 'text';
+            val.placeholder = c.kind === 'domain_allowlist' ? 'example.com, trilitech.com' : (c.kind === 'number' ? '1000' : 'value');
+          }
+          val.name = 'cond_' + c.key + '_val';
           val.className = 'rounded bg-slate-900 border border-slate-600 px-2 py-1 text-sm text-white flex-1 min-w-[8rem]';
           row.appendChild(val);
           if (c.help) {
@@ -395,7 +404,8 @@
             if (cb) cb.checked = true;
             const opSel = document.querySelector('#rb-conds select[name="cond_' + cssEsc(c.key) + '_op"]');
             if (opSel && c.op) opSel.value = c.op;
-            const valInp = document.querySelector('#rb-conds input[name="cond_' + cssEsc(c.key) + '_val"]');
+            // [name] (not input[name]) so a bool condition's <select> is matched too.
+            const valInp = document.querySelector('#rb-conds [name="cond_' + cssEsc(c.key) + '_val"]');
             if (valInp && c.value != null) valInp.value = c.value;
           }
 

@@ -62,6 +62,15 @@ var Meta = connector.ConnectorMeta{
 			Kind:    "domain_allowlist",
 			CtxPath: "context.recipient_domains",
 			Help:    "Sends allowed only if every recipient domain is in this list",
+			Ops:     []string{"send_email", "create_draft", "update_draft", "reply"},
+		},
+		{
+			Key:     "recipient_count",
+			Label:   "Recipient count",
+			Kind:    "number",
+			CtxPath: "context.recipient_count",
+			Help:    "Cap how many distinct recipients (To+Cc) a send may have",
+			Ops:     []string{"send_email", "create_draft", "update_draft", "reply"},
 		},
 	},
 	// ContentFields are the response text fields safe for content filtering.
@@ -317,25 +326,40 @@ func (g *GoogleConnector) EnrichContext(op string, params map[string]any) map[st
 		return nil
 	}
 
-	seen := make(map[string]struct{})
+	addrSeen := make(map[string]struct{})
+	domSeen := make(map[string]struct{})
 	domains := make([]string, 0)
 	for _, key := range keys {
 		for _, addr := range recipientAddresses(params, key) {
+			a := strings.ToLower(strings.TrimSpace(addr))
+			if a == "" {
+				continue
+			}
+			if _, dup := addrSeen[a]; dup {
+				continue
+			}
+			addrSeen[a] = struct{}{}
 			d := domainOf(addr)
 			if d == "" {
 				continue
 			}
-			if _, dup := seen[d]; dup {
+			if _, dup := domSeen[d]; dup {
 				continue
 			}
-			seen[d] = struct{}{}
+			domSeen[d] = struct{}{}
 			domains = append(domains, d)
 		}
 	}
-	if len(domains) == 0 {
+	if len(addrSeen) == 0 {
 		return nil
 	}
-	return map[string]any{"recipient_domains": domains}
+	// recipient_count = distinct recipient addresses (the "blast radius" of a
+	// send); recipient_domains = the distinct domains among them.
+	out := map[string]any{"recipient_count": len(addrSeen)}
+	if len(domains) > 0 {
+		out["recipient_domains"] = domains
+	}
+	return out
 }
 
 // recipientAddresses reads a recipient param that may arrive as []string,

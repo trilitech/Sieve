@@ -83,11 +83,12 @@ type iamScopeView struct {
 }
 
 type iamCondView struct {
-	Key     string `json:"key"`
-	Label   string `json:"label"`
-	Help    string `json:"help"`
-	Kind    string `json:"kind"`
-	CtxPath string `json:"ctxPath"`
+	Key     string   `json:"key"`
+	Label   string   `json:"label"`
+	Help    string   `json:"help"`
+	Kind    string   `json:"kind"`
+	CtxPath string   `json:"ctxPath"`
+	Ops     []string `json:"ops,omitempty"` // op names this condition applies to; empty ⇒ all
 }
 
 // iamConnectorOption is one entry in the connector dropdown.
@@ -390,7 +391,7 @@ func (s *Server) specFromState(st builderFormState) iampolicies.RuleSpec {
 	for _, bc := range st.Conditions {
 		cm := condMeta[bc.Key]
 		spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
-			Kind: cm.Kind, CtxPath: cm.CtxPath, Op: bc.Op, Value: bc.Value,
+			Kind: cm.Kind, CtxPath: cm.CtxPath, Op: bc.Op, Value: bc.Value, Ops: cm.Ops,
 		})
 	}
 	spec.Filters = st.Filters
@@ -532,7 +533,7 @@ func (s *Server) populateBuilderData(data *iamBuilderData) {
 			}
 			conds := make([]iamCondView, 0, len(m.RuleConditions))
 			for _, c := range m.RuleConditions {
-				conds = append(conds, iamCondView{Key: c.Key, Label: c.Label, Help: c.Help, Kind: c.Kind, CtxPath: c.CtxPath})
+				conds = append(conds, iamCondView{Key: c.Key, Label: c.Label, Help: c.Help, Kind: c.Kind, CtxPath: c.CtxPath, Ops: c.Ops})
 			}
 			for _, cf := range m.ContentFields {
 				if _, ok := contentUnion[cf.Key]; !ok {
@@ -1072,7 +1073,7 @@ func (s *Server) parseConditionSet(r *http.Request, conds []connector.RuleCondit
 				code: http.StatusBadRequest,
 			}
 		}
-		out = append(out, iampolicies.ConditionInput{Kind: c.Kind, CtxPath: c.CtxPath, Op: op, Value: val})
+		out = append(out, iampolicies.ConditionInput{Kind: c.Kind, CtxPath: c.CtxPath, Op: op, Value: val, Ops: c.Ops})
 		state = append(state, builderCond{Key: c.Key, Op: op, Value: val})
 	}
 	return out, state, nil

@@ -210,6 +210,63 @@ func TestBuildRuleCedar_OneOfCondition(t *testing.T) {
 	}
 }
 
+func TestBuildRuleCedar_BoolCondition(t *testing.T) {
+	cedar, err := BuildRuleCedar(RuleSpec{
+		RoleID: "R", Effect: "allow", ConnectorType: "github", OpScope: "all",
+		Conditions: []ConditionInput{{Kind: "bool", CtxPath: "context.param.draft", Value: "true"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := decideEngine(t, cedar)
+	mk := func(draft bool) iam.Request {
+		return iam.BuildRequest("tok", []string{"R"}, "github", "gh", "active",
+			connector.OperationDef{Name: "github_create_pr"}, map[string]any{"draft": draft})
+	}
+	if d, _ := eng.Decide(mk(true)); !d.Allow {
+		t.Errorf("draft=true should satisfy the condition\ncedar:\n%s", cedar)
+	}
+	if d, _ := eng.Decide(mk(false)); d.Allow {
+		t.Errorf("draft=false must be denied (condition requires draft == true)")
+	}
+}
+
+// TestBuildRuleCedar_OpScopedConditionGuard proves an op-scoped condition binds
+// ONLY its ops: a recipient_count cap scoped to send_email, attached to an
+// all-operations allow, must NOT fail-close a read op that carries no
+// recipient_count — and must still enforce the cap on a send.
+func TestBuildRuleCedar_OpScopedConditionGuard(t *testing.T) {
+	cedar, err := BuildRuleCedar(RuleSpec{
+		RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "all",
+		Conditions: []ConditionInput{{
+			Kind: "number", CtxPath: "context.recipient_count", Op: "lte", Value: "2",
+			Ops: []string{"send_email"},
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := decideEngine(t, cedar)
+	// A read op carries no recipient_count — the op-guard must let it through.
+	read := iam.BuildRequest("tok", []string{"R"}, "google", "g", "active",
+		connector.OperationDef{Name: "list_emails", ReadOnly: true}, map[string]any{})
+	if d, _ := eng.Decide(read); !d.Allow {
+		t.Errorf("read op must be allowed (an op-scoped send condition must not fail-close it)\ncedar:\n%s", cedar)
+	}
+	send := func(n int) iam.Request {
+		r := iam.BuildRequest("tok", []string{"R"}, "google", "g", "active",
+			connector.OperationDef{Name: "send_email"}, map[string]any{})
+		r.Context["recipient_count"] = n // simulate EnrichContext
+		return r
+	}
+	if d, _ := eng.Decide(send(2)); !d.Allow {
+		t.Errorf("send within the cap (2<=2) should be allowed")
+	}
+	if d, _ := eng.Decide(send(5)); d.Allow {
+		t.Errorf("send over the cap (5>2) must be denied")
+	}
+}
+
 func TestBuildRuleCedar_DomainAllowlist(t *testing.T) {
 	cedar, err := BuildRuleCedar(RuleSpec{
 		RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "write",

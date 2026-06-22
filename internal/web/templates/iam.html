@@ -696,17 +696,26 @@ else:
             }
             row.appendChild(op);
           }
-          const val = document.createElement('input');
-          val.name = prefix + '_' + c.key + '_val';
-          if (c.kind === 'number') {
-            val.type = 'number'; val.step = 'any'; val.placeholder = 'e.g. 1000 or 0.5';
-          } else if (c.kind === 'domain_allowlist') {
-            val.type = 'text'; val.placeholder = 'example.com, trilitech.com';
-          } else if (c.kind === 'one_of') {
-            val.type = 'text'; val.placeholder = 'comma-separated, e.g. claude-opus-4-8, claude-sonnet-4-6';
+          let val;
+          if (c.kind === 'bool') {
+            // a true/false picker instead of a free-text value
+            val = document.createElement('select');
+            for (const b of ['true', 'false']) {
+              const o = document.createElement('option'); o.value = b; o.textContent = b; val.appendChild(o);
+            }
           } else {
-            val.type = 'text'; val.placeholder = 'enter a value';
+            val = document.createElement('input');
+            if (c.kind === 'number') {
+              val.type = 'number'; val.step = 'any'; val.placeholder = 'e.g. 1000 or 0.5';
+            } else if (c.kind === 'domain_allowlist') {
+              val.type = 'text'; val.placeholder = 'example.com, trilitech.com';
+            } else if (c.kind === 'one_of') {
+              val.type = 'text'; val.placeholder = 'comma-separated, e.g. claude-opus-4-8, claude-sonnet-4-6';
+            } else {
+              val.type = 'text'; val.placeholder = 'enter a value';
+            }
           }
+          val.name = prefix + '_' + c.key + '_val';
           val.dataset.condValue = c.key;
           val.className = 'rounded bg-slate-900 border border-slate-600 px-2 py-1 text-sm text-white flex-1 min-w-[8rem]';
           row.appendChild(val);
@@ -759,13 +768,38 @@ else:
             if (!single) get('scope').value = '';
             scopeFields();
           }
-          function condVis() {
+          // condInScope reports whether an op-aware condition is relevant to the
+          // currently selected operation scope (so e.g. anthropic max_tokens only
+          // appears when messages_create is in scope). A condition with no ops
+          // applies to every operation.
+          function condInScope(c, cat) {
+            const ops = c.ops || [];
+            if (!ops.length) return true;
+            const scope = get('opscope').value;
+            if (scope === 'all') return true;
+            if (scope === 'read' || scope === 'write') {
+              const want = scope === 'read';
+              const names = new Set((cat.operations || []).filter(o => !!o.readOnly === want).map(o => o.name));
+              return ops.some(n => names.has(n));
+            }
+            // specific: any checked op must be among the condition's ops
+            const box = get('ops-list');
+            const sel = new Set(box ? Array.from(box.querySelectorAll('input[name="operations"]:checked')).map(i => i.value) : []);
+            return ops.some(n => sel.has(n));
+          }
+          // renderConds rebuilds the condition rows filtered by the current op
+          // scope, and hides the whole section on a deny effect or when nothing is
+          // in scope.
+          function renderConds() {
             if (!opts.withConds) return;
             const cat = IAM_CATALOG[get('connector').value] || {};
-            const hasConds = (cat.conditions || []).length > 0;
             const effect = opts.effectSel ? document.querySelector(opts.effectSel) : null;
             const isDeny = effect && effect.value === 'deny';
-            get('conds-wrap').classList.toggle('hidden', !hasConds || isDeny);
+            const list = (cat.conditions || []).filter(c => condInScope(c, cat));
+            const conds = get('conds');
+            conds.textContent = '';
+            for (const c of list) conds.appendChild(condRow(c, opts.condPrefix));
+            get('conds-wrap').classList.toggle('hidden', isDeny || list.length === 0);
             // Obligations (rule form only) apply to allows; a deny carries none.
             const obl = get('obligations');
             if (obl) obl.classList.toggle('hidden', isDeny);
@@ -796,14 +830,9 @@ else:
               scopeSel.appendChild(o);
             }
             scopeVis();
-            if (opts.withConds) {
-              const conds = get('conds');
-              conds.textContent = '';
-              for (const c of (cat.conditions || [])) conds.appendChild(condRow(c, opts.condPrefix));
-              condVis();
-            }
+            renderConds();
           }
-          function toggleOps() { get('ops').classList.toggle('hidden', get('opscope').value !== 'specific'); }
+          function toggleOps() { get('ops').classList.toggle('hidden', get('opscope').value !== 'specific'); renderConds(); }
           function toggleConns() { get('conns').classList.toggle('hidden', get('connscope').value !== 'specific'); scopeVis(); }
           get('connector').addEventListener('change', refresh);
           get('opscope').addEventListener('change', toggleOps);
@@ -813,9 +842,13 @@ else:
           // changes (delegated — the checkboxes are (re)built dynamically).
           const connsListBox = get('conns-list');
           if (connsListBox) connsListBox.addEventListener('change', scopeVis);
+          // Re-filter conditions when the specific-op selection changes (an
+          // op-aware condition only shows when one of its ops is in scope).
+          const opsListBox = get('ops-list');
+          if (opsListBox) opsListBox.addEventListener('change', renderConds);
           if (opts.withConds && opts.effectSel) {
             const e = document.querySelector(opts.effectSel);
-            if (e) e.addEventListener('change', condVis);
+            if (e) e.addEventListener('change', renderConds);
           }
           refresh(); toggleOps(); toggleConns();
         }
