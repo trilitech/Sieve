@@ -26,7 +26,11 @@ var ErrNeedsReauth = errors.New("connection needs re-authentication")
 // error with the canonical "operation_not_enabled:" text prefix.
 // Distinct from ErrNeedsReauth (403, credential-state problem) and from
 // generic 5xx (something is broken). Today's only producer is Slack's
-// search_messages (gated until user-token install ships).
+// search_messages — it runs for real on user-token connections
+// (auth_kind=user_token) and returns this sentinel on bot-token
+// connections, since Slack's search.messages API only accepts user
+// tokens. The op stays in the catalog regardless so policies that
+// mention search_messages keep binding either kind.
 var ErrOperationNotEnabled = errors.New("operation not enabled")
 
 // Connector is the interface that all service connectors must implement.
