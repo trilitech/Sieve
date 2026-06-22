@@ -255,6 +255,33 @@ func (s *Service) TokensUsingRole(roleID string) (int, error) {
 	return n, nil
 }
 
+// UpdateRoles replaces a token's role set (RBAC edit) WITHOUT regenerating the
+// secret — the token hash is untouched, only role_ids (and the legacy role_id =
+// first role, for back-compat) change. Used by the admin UI's "edit roles".
+func (s *Service) UpdateRoles(id string, roleIDs []string) error {
+	if roleIDs == nil {
+		roleIDs = []string{}
+	}
+	roleIDsJSON, err := json.Marshal(roleIDs)
+	if err != nil {
+		return fmt.Errorf("marshal role_ids: %w", err)
+	}
+	primary := ""
+	if len(roleIDs) > 0 {
+		primary = roleIDs[0]
+	}
+	res, err := s.db.Exec(`UPDATE tokens SET role_id = ?, role_ids = ? WHERE id = ?`,
+		primary, string(roleIDsJSON), id)
+	if err != nil {
+		return fmt.Errorf("update token roles: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("token not found")
+	}
+	return nil
+}
+
 func (s *Service) Revoke(id string) error {
 	result, err := s.db.Exec(`UPDATE tokens SET revoked = 1 WHERE id = ?`, id)
 	if err != nil {

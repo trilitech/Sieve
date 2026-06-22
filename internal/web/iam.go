@@ -602,58 +602,9 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kindStr := r.FormValue("kind")
-	var kind iam.FilterKind
-	config := map[string]any{}
-	switch kindStr {
-	case string(iam.KindRedact), string(iam.KindExcludeItems):
-		// redact and exclude share the SAME matching model: a list of patterns
-		// interpreted by a match mode (contains|regex). redact masks matches;
-		// exclude drops list items that match.
-		if kindStr == string(iam.KindRedact) {
-			kind = iam.KindRedact
-		} else {
-			kind = iam.KindExcludeItems
-		}
-		var patterns []string
-		for _, line := range strings.Split(r.FormValue("patterns"), "\n") {
-			if p := strings.TrimSpace(line); p != "" {
-				patterns = append(patterns, p)
-			}
-		}
-		if len(patterns) == 0 {
-			http.Error(w, "at least one pattern is required", http.StatusBadRequest)
-			return
-		}
-		config["patterns"] = patterns
-		if m := r.FormValue("match"); m == "regex" {
-			config["match"] = "regex"
-		} else {
-			config["match"] = "contains"
-		}
-		// A library filter is a connector-AGNOSTIC transform (just a pattern) — it
-		// can't know whether it'll be attached to an email or a PR, so it declares
-		// no fields. Field-targeting comes from the connector of the rule/guardrail
-		// it's attached to: the applier scopes redact/exclude to THAT connector's
-		// content fields at request time (so base64/metadata are never touched).
-	case string(iam.KindScriptGuard):
-		kind = iam.KindScriptGuard
-		path := strings.TrimSpace(r.FormValue("script_path"))
-		if err := iampolicies.ValidateScriptPath(path); err != nil {
-			http.Error(w, "script path rejected: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		// Language selector → interpreter (Python or JavaScript/Node). Validate it
-		// against the command allowlist before storing.
-		command := iampolicies.ScriptCommandFor(r.FormValue("language"))
-		if err := iampolicies.ValidateScriptCommand(command); err != nil {
-			http.Error(w, "script runtime rejected: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		config["command"] = command
-		config["path"] = path
-	default:
-		http.Error(w, "unknown filter kind", http.StatusBadRequest)
+	kind, config, perr := s.parseFilterConfig(r)
+	if perr != nil {
+		http.Error(w, perr.msg, perr.code)
 		return
 	}
 
@@ -662,8 +613,56 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.create", name,
-		map[string]any{"kind": kindStr}, "success")
+		map[string]any{"kind": string(kind)}, "success")
 	http.Redirect(w, r, "/iam?section=filters", http.StatusSeeOther)
+}
+
+// parseFilterConfig reads the filter form's kind + per-kind config, shared by
+// filter create and edit so the two can never diverge. r.ParseForm must have
+// been called. A library filter is a connector-AGNOSTIC transform (just a
+// pattern / a script) — it declares no fields; field-targeting comes from the
+// connector of the rule/guardrail it's attached to at request time.
+func (s *Server) parseFilterConfig(r *http.Request) (iam.FilterKind, map[string]any, *parseError) {
+	kindStr := r.FormValue("kind")
+	config := map[string]any{}
+	switch kindStr {
+	case string(iam.KindRedact), string(iam.KindExcludeItems):
+		// redact and exclude share the SAME matching model: a list of patterns
+		// interpreted by a match mode (contains|regex). redact masks matches;
+		// exclude drops list items that match.
+		var patterns []string
+		for _, line := range strings.Split(r.FormValue("patterns"), "\n") {
+			if p := strings.TrimSpace(line); p != "" {
+				patterns = append(patterns, p)
+			}
+		}
+		if len(patterns) == 0 {
+			return "", nil, &parseError{msg: "at least one pattern is required", code: http.StatusBadRequest}
+		}
+		config["patterns"] = patterns
+		if m := r.FormValue("match"); m == "regex" {
+			config["match"] = "regex"
+		} else {
+			config["match"] = "contains"
+		}
+		return iam.FilterKind(kindStr), config, nil
+	case string(iam.KindScriptGuard):
+		path := strings.TrimSpace(r.FormValue("script_path"))
+		if err := iampolicies.ValidateScriptPath(path); err != nil {
+			return "", nil, &parseError{msg: "script path rejected: " + err.Error(), code: http.StatusBadRequest}
+		}
+		// Language selector → interpreter (Python or JavaScript/Node). Validate it
+		// against the command allowlist before storing.
+		command := iampolicies.ScriptCommandFor(r.FormValue("language"))
+		if err := iampolicies.ValidateScriptCommand(command); err != nil {
+			return "", nil, &parseError{msg: "script runtime rejected: " + err.Error(), code: http.StatusBadRequest}
+		}
+		config["command"] = command
+		config["path"] = path
+		return iam.KindScriptGuard, config, nil
+	default:
+		return "", nil, &parseError{msg: "unknown filter kind", code: http.StatusBadRequest}
+	}
 }
 
 // handleIAMFilterDelete removes a filter-library entry
@@ -689,6 +688,144 @@ func (s *Server) handleIAMFilterDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.delete", name, nil, "success")
 	http.Redirect(w, r, "/iam?section=filters", http.StatusSeeOther)
+}
+
+// iamFilterEditPageData is the view-model for iam_filter_edit.html. The name is
+// the stable key (not editable); the form prefills the kind + per-kind config.
+type iamFilterEditPageData struct {
+	Active      string
+	CSRFToken   string
+	Error       string
+	Name        string
+	Description string
+	Kind        string
+	// redact / exclude_items
+	Patterns string // one per line
+	Match    string // contains|regex
+	// script_guard
+	ScriptPath string
+	Language   string // python|javascript
+}
+
+// handleIAMFilterEditPage renders the edit form for one filter
+// (GET /iam/filters/{name}/edit).
+func (s *Server) handleIAMFilterEditPage(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	s.renderFilterEditPage(w, r, r.PathValue("name"), "")
+}
+
+// renderFilterEditPage renders the filter edit form prefilled from storage,
+// optionally with a friendly error banner (shared by the GET page and the
+// update handler's validation-failure path).
+func (s *Server) renderFilterEditPage(w http.ResponseWriter, r *http.Request, name, errMsg string) {
+	f, err := s.iam.GetFilter(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	data := &iamFilterEditPageData{
+		Active: "iam-filters", Error: errMsg,
+		Name: f.Name, Description: f.Description, Kind: string(f.Kind), Match: "contains",
+	}
+	switch f.Kind {
+	case iam.KindRedact, iam.KindExcludeItems:
+		data.Patterns = strings.Join(anyToStrings(f.Config["patterns"]), "\n")
+		if m, _ := f.Config["match"].(string); m == "regex" {
+			data.Match = "regex"
+		}
+	case iam.KindScriptGuard:
+		data.ScriptPath, _ = f.Config["path"].(string)
+		cmd, _ := f.Config["command"].(string)
+		data.Language = languageForCommand(cmd)
+	}
+	s.render(w, r, "iam_filter_edit", data)
+}
+
+// handleIAMFilterUpdate edits a filter in place (POST /iam/filters/{name}/update).
+// It reuses parseFilterConfig so create and edit can't diverge.
+func (s *Server) handleIAMFilterUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := r.PathValue("name")
+	kind, config, perr := s.parseFilterConfig(r)
+	if perr != nil {
+		s.renderFilterEditPage(w, r, name, perr.msg)
+		return
+	}
+	if err := s.iam.UpdateFilter(name, r.FormValue("description"), kind, config); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.update", name,
+		map[string]any{"kind": string(kind)}, "success")
+	http.Redirect(w, r, "/iam?section=filters", http.StatusSeeOther)
+}
+
+// handleIAMRoleRename renames a role in place (POST /iam/roles/{id}/rename). The
+// id is stable, so rules/guardrails/tokens that reference the role are unaffected.
+func (s *Server) handleIAMRoleRename(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		http.Error(w, "role name is required", http.StatusBadRequest)
+		return
+	}
+	role, err := s.roles.Get(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if err := s.roles.Update(id, name, role.Bindings); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.role.rename", id,
+		map[string]any{"name": name}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// anyToStrings flattens a JSON-decoded []any (or []string) of strings — filter
+// config patterns come back as []any after a round-trip through SQLite JSON.
+func anyToStrings(v any) []string {
+	switch x := v.(type) {
+	case []string:
+		return x
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, e := range x {
+			if str, ok := e.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// languageForCommand maps a stored interpreter command back to the form's
+// language option (a node command → javascript, else python).
+func languageForCommand(cmd string) string {
+	if strings.Contains(strings.ToLower(cmd), "node") {
+		return "javascript"
+	}
+	return "python"
 }
 
 // handleIAMPolicyCreate creates an IAM policy (POST /iam/policies). mode=builder
@@ -1253,6 +1390,100 @@ func (s *Server) handleIAMGuardrailSetEnabled(w http.ResponseWriter, r *http.Req
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.set_enabled", id,
 		map[string]any{"enabled": enabled}, "success")
+	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
+}
+
+// iamGuardrailEditPageData is the view-model for iam_guardrail_edit.html
+// (edit-in-place of one builder-authored guardrail). The guardrail's spec_json
+// is the same builderFormState the rule builder stores, so the prefill JS mirrors
+// the rule edit page.
+type iamGuardrailEditPageData struct {
+	Active      string
+	CSRFToken   string
+	Error       string
+	HasSpec     bool
+	GuardrailID string
+	Name        string
+	Spec        builderFormState
+	iamBuilderData
+}
+
+// handleIAMGuardrailEditPage renders the edit-in-place form for one
+// builder-authored guardrail (GET /iam/guardrails/{id}/edit). Guardrails with no
+// stored structured form (raw Cedar) render a notice instead.
+func (s *Server) handleIAMGuardrailEditPage(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	s.renderGuardrailEditPage(w, r, r.PathValue("id"), "")
+}
+
+// renderGuardrailEditPage renders the guardrail edit form, optionally with an
+// error banner (shared by the GET page and the update handler's failure path).
+func (s *Server) renderGuardrailEditPage(w http.ResponseWriter, r *http.Request, id, errMsg string) {
+	g, err := s.iam.GetGuardrail(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	data := &iamGuardrailEditPageData{
+		Active: "iam-guardrails", Error: errMsg,
+		GuardrailID: g.ID, Name: g.Name, HasSpec: g.SpecJSON != "",
+	}
+	if data.HasSpec {
+		if err := json.Unmarshal([]byte(g.SpecJSON), &data.Spec); err != nil {
+			data.HasSpec = false
+		} else {
+			s.populateBuilderData(&data.iamBuilderData)
+		}
+	}
+	s.render(w, r, "iam_guardrail_edit", data)
+}
+
+// handleIAMGuardrailUpdate recompiles an edited guardrail in place
+// (POST /iam/guardrails/{id}/update). It reuses parseBuilderForm +
+// BuildGuardrailCedar so create/edit share identical parsing and compilation.
+func (s *Server) handleIAMGuardrailUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+
+	spec, _, formStateJSON, perr := s.parseBuilderForm(r)
+	if perr != nil {
+		s.renderGuardrailEditPage(w, r, id, perr.msg)
+		return
+	}
+	if spec.Effect != "require_approval" && len(spec.Filters) == 0 {
+		s.renderGuardrailEditPage(w, r, id, "A guardrail must impose approval and/or at least one filter — otherwise it does nothing.")
+		return
+	}
+
+	meta := s.connectorMeta(spec.ConnectorType)
+	cedar, err := iampolicies.BuildGuardrailCedar(spec, meta.Operations)
+	if err != nil {
+		s.renderGuardrailEditPage(w, r, id, "Could not build guardrail: "+err.Error())
+		return
+	}
+
+	summary := guardrailSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
+	name := r.FormValue("name")
+	if name == "" {
+		name = summary
+	}
+	if err := s.iam.UpdateGuardrail(id, name, summary, cedar, true); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.iam.SetGuardrailSpec(id, formStateJSON)
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.update", id,
+		map[string]any{"name": name}, "success")
 	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
 }
 

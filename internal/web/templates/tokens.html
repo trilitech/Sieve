@@ -126,6 +126,7 @@
               </td>
               <td class="px-6 py-4 text-right">
                 {{if not .Revoked}}
+                <a href="/tokens/{{.ID}}/edit" class="text-sm text-indigo-400 hover:text-indigo-300 font-medium mr-3">Edit roles</a>
                 <form method="POST" action="/tokens/{{.ID}}/revoke"
                       onsubmit="return confirm('Revoke token \'{{.Name}}\'?')"
                       class="inline">

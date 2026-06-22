@@ -1,0 +1,116 @@
+{{define "iam_filter_edit"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edit filter - Sieve</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>body { font-family: 'Inter', sans-serif; }</style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  {{template "nav" .}}
+
+  <main class="ml-64 p-8">
+    <div class="max-w-3xl">
+      <div class="mb-6">
+        <a href="/iam?section=filters" class="text-sm text-slate-400 hover:text-slate-200">&larr; Back to Filters</a>
+        <h1 class="text-2xl font-bold text-white mt-2">Edit filter — {{.Name}}</h1>
+      </div>
+
+      {{if .Error}}
+      <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-6">
+        <p class="text-sm text-red-300">{{.Error}}</p>
+      </div>
+      {{end}}
+
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6">
+        <p class="text-xs text-slate-500 mb-5">Edit this filter in place. The <strong>name</strong> is fixed — rules and guardrails reference it by name, so renaming would silently detach them.</p>
+        <form method="POST" action="/iam/filters/{{.Name}}/update" id="filter-form">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Name</label>
+              <input type="text" value="{{.Name}}" disabled
+                     class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-400 cursor-not-allowed">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Kind</label>
+              <select name="kind" id="filter-kind"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="redact" {{if eq .Kind "redact"}}selected{{end}}>Redact (mask matching text in the response)</option>
+                <option value="exclude_items" {{if eq .Kind "exclude_items"}}selected{{end}}>Exclude items (drop list items containing text)</option>
+                <option value="script_guard" {{if eq .Kind "script_guard"}}selected{{end}}>Script guard (may deny before execution)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
+            <input type="text" name="description" value="{{.Description}}" placeholder="what this filter does"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+
+          <!-- redact / exclude_items config -->
+          <div id="filter-cfg-patterns" class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Patterns</label>
+            <textarea name="patterns" rows="4" placeholder="One per line, e.g.&#10;confidential&#10;\b\d{16}\b"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">{{.Patterns}}</textarea>
+            <div class="mt-2 flex items-center gap-3">
+              <label class="text-sm text-slate-400">Match</label>
+              <select name="match" id="filter-match" class="rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="contains" {{if eq .Match "contains"}}selected{{end}}>Contains — literal text, case-insensitive</option>
+                <option value="regex" {{if eq .Match "regex"}}selected{{end}}>Regex — RE2 pattern</option>
+              </select>
+            </div>
+            <p class="text-xs text-slate-500 mt-2">Runs <strong>after</strong> the operation, only within the <strong>content fields</strong> of whichever connector you attach it to — never ids, metadata, or base64 attachments. One pattern per line; a field matches if it matches <strong>any</strong> line.</p>
+          </div>
+
+          <!-- script_guard config -->
+          <div id="filter-cfg-script_guard" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Language</label>
+            <select name="language" class="mb-3 rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="python" {{if eq .Language "python"}}selected{{end}}>Python</option>
+              <option value="javascript" {{if eq .Language "javascript"}}selected{{end}}>JavaScript (Node)</option>
+            </select>
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Guard script path</label>
+            <input type="text" name="script_path" value="{{.ScriptPath}}" placeholder="/opt/sieve-py/guards/biz_hours.py"
+                   class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-xs text-slate-500 mt-2">Absolute path to a script on the Sieve host, under the allowed scripts directory (<code>/opt/sieve-py</code> by default; no <code>..</code>). Reads a JSON request on stdin, writes a JSON decision on stdout; anything else is treated as deny.</p>
+          </div>
+
+          <div class="mt-6 flex items-center gap-3">
+            <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Save changes</button>
+            <a href="/iam?section=filters" class="text-sm text-slate-400 hover:text-slate-200">Cancel</a>
+          </div>
+        </form>
+      </div>
+
+      <script>
+        // Show only the selected kind's config block. Pure show/hide keyed off a
+        // fixed <select> value (no dynamic data, no markup injection). On a user
+        // kind CHANGE we reset the match to the per-kind default; on initial load
+        // we leave the stored match selection intact.
+        (function () {
+          const kindSel = document.getElementById('filter-kind');
+          function sync(setDefaults) {
+            const v = kindSel.value;
+            const usesPatterns = (v === 'redact' || v === 'exclude_items');
+            const patterns = document.getElementById('filter-cfg-patterns');
+            const guard = document.getElementById('filter-cfg-script_guard');
+            if (patterns) patterns.classList.toggle('hidden', !usesPatterns);
+            if (guard) guard.classList.toggle('hidden', v !== 'script_guard');
+            if (setDefaults && usesPatterns) {
+              const matchSel = document.getElementById('filter-match');
+              if (matchSel) matchSel.value = (v === 'redact') ? 'regex' : 'contains';
+            }
+          }
+          kindSel.addEventListener('change', function () { sync(true); });
+          sync(false);
+        })();
+      </script>
+    </div>
+  </main>
+</body>
+</html>
+{{end}}

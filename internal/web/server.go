@@ -332,7 +332,7 @@ func NewServer(
 	// given partial just ignore it. The ops picker partial is included so
 	// policies.html and policy_edit.html resolve to the same scope-aware
 	// markup — making create/edit divergence structurally impossible.
-	pages := []string{"connections", "connection_edit", "tokens", "approvals", "audit", "settings", "iam", "iam_edit", "docs"}
+	pages := []string{"connections", "connection_edit", "tokens", "tokens_edit", "approvals", "audit", "settings", "iam", "iam_edit", "iam_guardrail_edit", "iam_filter_edit", "docs"}
 	for _, page := range pages {
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
@@ -435,6 +435,8 @@ func (s *Server) Handler() http.Handler {
 	// Tokens
 	mux.HandleFunc("GET /tokens", s.handleTokens)
 	mux.HandleFunc("POST /tokens/create", s.handleTokenCreate)
+	mux.HandleFunc("GET /tokens/{id}/edit", s.handleTokenEditPage)
+	mux.HandleFunc("POST /tokens/{id}/roles", s.handleTokenUpdateRoles)
 	mux.HandleFunc("POST /tokens/{id}/revoke", s.handleTokenRevoke)
 
 	// Roles + rules + guardrails are managed on the /iam admin page (IAM is the
@@ -459,6 +461,7 @@ func (s *Server) Handler() http.Handler {
 	// on the POSTs) and rejects agent tokens with 403. See iam.go.
 	mux.HandleFunc("GET /iam", s.handleIAM)
 	mux.HandleFunc("POST /iam/roles", s.handleIAMRoleCreate)
+	mux.HandleFunc("POST /iam/roles/{id}/rename", s.handleIAMRoleRename)
 	mux.HandleFunc("POST /iam/roles/{id}/delete", s.handleIAMRoleDelete)
 	mux.HandleFunc("POST /iam/policies", s.handleIAMPolicyCreate)
 	mux.HandleFunc("GET /iam/policies/{id}/edit", s.handleIAMPolicyEditPage)
@@ -466,8 +469,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /iam/policies/{id}/delete", s.handleIAMPolicyDelete)
 	mux.HandleFunc("POST /iam/policies/{id}/enabled", s.handleIAMPolicySetEnabled)
 	mux.HandleFunc("POST /iam/filters", s.handleIAMFilterCreate)
+	mux.HandleFunc("GET /iam/filters/{name}/edit", s.handleIAMFilterEditPage)
+	mux.HandleFunc("POST /iam/filters/{name}/update", s.handleIAMFilterUpdate)
 	mux.HandleFunc("POST /iam/filters/{name}/delete", s.handleIAMFilterDelete)
 	mux.HandleFunc("POST /iam/guardrails", s.handleIAMGuardrailCreate)
+	mux.HandleFunc("GET /iam/guardrails/{id}/edit", s.handleIAMGuardrailEditPage)
+	mux.HandleFunc("POST /iam/guardrails/{id}/update", s.handleIAMGuardrailUpdate)
 	mux.HandleFunc("POST /iam/guardrails/{id}/delete", s.handleIAMGuardrailDelete)
 	mux.HandleFunc("POST /iam/guardrails/{id}/enabled", s.handleIAMGuardrailSetEnabled)
 	mux.HandleFunc("POST /iam/explore", s.handleIAMExplore)
@@ -1425,6 +1432,56 @@ func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "token.revoke", id, nil, "success")
+	http.Redirect(w, r, "/tokens", http.StatusSeeOther)
+}
+
+// handleTokenEditPage renders the edit-roles form for one token
+// (GET /tokens/{id}/edit). The token secret is never shown or regenerated — only
+// its role set is editable.
+func (s *Server) handleTokenEditPage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tok, err := s.tokens.Get(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	rolesList, err := s.roles.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	current := make(map[string]bool, len(tok.RoleIDs))
+	for _, rid := range tok.RoleIDs {
+		current[rid] = true
+	}
+	data := map[string]any{
+		"Active":  "tokens",
+		"Token":   tok,
+		"Roles":   rolesList,
+		"Current": current,
+	}
+	s.render(w, r, "tokens_edit", data)
+}
+
+// handleTokenUpdateRoles replaces a token's role set (POST /tokens/{id}/roles)
+// without regenerating the secret.
+func (s *Server) handleTokenUpdateRoles(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := r.PathValue("id")
+	roleIDs := nonEmptyStrings(r.Form["role_id"])
+	if len(roleIDs) == 0 {
+		http.Error(w, "at least one role is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.tokens.UpdateRoles(id, roleIDs); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "token.update_roles", id,
+		map[string]any{"role_ids": roleIDs}, "success")
 	http.Redirect(w, r, "/tokens", http.StatusSeeOther)
 }
 

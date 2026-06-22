@@ -52,6 +52,10 @@
           <span class="inline-flex items-center gap-2 rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm">
             <span class="font-medium text-white">{{.Name}}</span>
             <span class="text-xs text-slate-500">{{.RuleCount}} rule{{if ne .RuleCount 1}}s{{end}} · {{.GuardrailCount}} guardrail{{if ne .GuardrailCount 1}}s{{end}} · {{.TokenCount}} token{{if ne .TokenCount 1}}s{{end}}</span>
+            <form method="POST" action="/iam/roles/{{.ID}}/rename" class="inline" data-role-name="{{.Name}}" onsubmit="return renameRole(this)">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <button type="submit" class="text-xs text-slate-400 hover:text-slate-200 font-medium">Rename</button>
+            </form>
             <form method="POST" action="/iam/roles/{{.ID}}/delete" class="inline"
                   data-role-name="{{.Name}}" data-rules="{{.RuleCount}}" data-guardrails="{{.GuardrailCount}}" data-tokens="{{.TokenCount}}"
                   onsubmit="return confirmRoleDelete(this)">
@@ -153,6 +157,7 @@ else:
             <span class="inline-flex items-center gap-2 rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm">
               <span class="font-medium text-white">{{.Name}}</span>
               <code class="text-xs text-slate-500">{{.Kind}}</code>
+              <a href="/iam/filters/{{.Name}}/edit" class="text-xs text-indigo-400 hover:text-indigo-300 font-medium">Edit</a>
               <form method="POST" action="/iam/filters/{{.Name}}/delete"
                     onsubmit="return confirm('Delete this filter?')" class="inline">
                 <button type="submit" class="text-xs text-red-400 hover:text-red-300 font-medium">Delete</button>
@@ -502,6 +507,9 @@ else:
                 </details>
               </td>
               <td class="px-6 py-4 text-right align-top whitespace-nowrap">
+                {{if .HasSpec}}
+                <a href="/iam/guardrails/{{.ID}}/edit" class="text-sm text-indigo-400 hover:text-indigo-300 font-medium mr-3">Edit</a>
+                {{end}}
                 <form method="POST" action="/iam/guardrails/{{.ID}}/enabled" class="inline mr-3">
                   {{if .Enabled}}
                   <input type="hidden" name="enabled" value="false">
@@ -615,6 +623,18 @@ else:
             ' guardrail(s) that target it, and removes it from ' + d.tokens +
             ' token(s) — those tokens immediately lose this access. This cannot be undone.'
           );
+        }
+
+        // renameRole prompts for a new name and submits it via the hidden input
+        // (value set as a property, not innerHTML — no markup injection).
+        function renameRole(form) {
+          const cur = form.dataset.roleName || '';
+          const next = window.prompt('Rename role', cur);
+          if (next == null) return false;
+          const trimmed = next.trim();
+          if (trimmed === '' || trimmed === cur) return false;
+          form.querySelector('input[name="name"]').value = trimmed;
+          return true;
         }
 
         // --- Builder dynamic fields (shared by the rule form 'rb' and the

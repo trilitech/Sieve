@@ -56,6 +56,31 @@ func TestCreateAndValidate(t *testing.T) {
 	}
 }
 
+func TestUpdateRoles(t *testing.T) {
+	tokenSvc, roleSvc := setup(t)
+	r1, _ := roleSvc.Create("role-1", nil)
+	r2, _ := roleSvc.Create("role-2", nil)
+
+	result, err := tokenSvc.Create(&tokens.CreateRequest{Name: "t", RoleID: r1.ID})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if err := tokenSvc.UpdateRoles(result.Token.ID, []string{r2.ID}); err != nil {
+		t.Fatalf("update roles: %v", err)
+	}
+
+	// The SAME plaintext token must still validate (the secret is NOT regenerated
+	// by a role edit) and must now carry the new role set.
+	v, err := tokenSvc.Validate(result.PlaintextToken)
+	if err != nil {
+		t.Fatalf("validate after role edit: %v", err)
+	}
+	if len(v.RoleIDs) != 1 || v.RoleIDs[0] != r2.ID {
+		t.Fatalf("expected roles [%s] after edit, got %v", r2.ID, v.RoleIDs)
+	}
+}
+
 func TestValidateInvalid(t *testing.T) {
 	tokenSvc, _ := setup(t)
 

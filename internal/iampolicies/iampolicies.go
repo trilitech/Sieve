@@ -444,6 +444,52 @@ func (s *Service) FilterInUse(name string) (bool, error) {
 	return false, nil
 }
 
+// FilterDetail is one filter-library entry with everything the admin edit form
+// needs (iam.Filter omits Description, which the form shows). Returned by
+// GetFilter for edit-in-place.
+type FilterDetail struct {
+	Name        string
+	Description string
+	Kind        iam.FilterKind
+	Config      map[string]any
+}
+
+// GetFilter returns one filter-library entry by name (for edit-in-place).
+func (s *Service) GetFilter(name string) (*FilterDetail, error) {
+	row := s.db.DB.QueryRow(`SELECT name, description, kind, config FROM iam_filters WHERE name = ?`, name)
+	var f FilterDetail
+	var kind, cfgJSON string
+	if err := row.Scan(&f.Name, &f.Description, &kind, &cfgJSON); err != nil {
+		return nil, fmt.Errorf("get iam filter %q: %w", name, err)
+	}
+	f.Kind = iam.FilterKind(kind)
+	if cfgJSON != "" {
+		if err := json.Unmarshal([]byte(cfgJSON), &f.Config); err != nil {
+			return nil, fmt.Errorf("unmarshal filter config (%s): %w", f.Name, err)
+		}
+	}
+	return &f, nil
+}
+
+// UpdateFilter modifies a filter-library entry in place. The name is the stable
+// key (rules/guardrails reference a filter by name via @filters, so renaming
+// would silently detach them) — only description, kind, and config change.
+func (s *Service) UpdateFilter(name, description string, kind iam.FilterKind, config map[string]any) error {
+	cfgJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("marshal filter config: %w", err)
+	}
+	res, err := s.db.DB.Exec(
+		`UPDATE iam_filters SET description = ?, kind = ?, config = ? WHERE name = ?`,
+		description, string(kind), string(cfgJSON), name,
+	)
+	if err != nil {
+		return fmt.Errorf("update iam filter: %w", err)
+	}
+	s.invalidate()
+	return mustAffect(res, name)
+}
+
 // DeleteFilter removes a filter-library entry by name.
 func (s *Service) DeleteFilter(name string) error {
 	res, err := s.db.DB.Exec(`DELETE FROM iam_filters WHERE name = ?`, name)
