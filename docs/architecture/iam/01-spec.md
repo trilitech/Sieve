@@ -1,8 +1,19 @@
 # Sieve IAM — Specification
 
-**Status:** Implemented (rev 2 — RBAC composition + grant/guardrail obligations) · **Date:** 2026-06-22
+**Status:** Implemented (rev 2 — RBAC composition + grant/guardrail obligations); **rev 3 model canonical (§3.2), engine realignment pending** · **Date:** 2026-06-22
 **Shipped on `feat/iam-rbac-impl`; the legacy `internal/policy` composition engine is removed (cutover, §1).**
 
+> **Rev 3 (ontology + ordering).** §3.2 makes the model explicit and canonical:
+> **every policy statement is a role-anchored (or global), object-scoped thing** — a
+> *Grant* (a decision) or an *Obligation* (approval / a response transform).
+> Composition is purely **additive** — a `deny` is the only subtractor, and there is
+> **no privilege-override** ("raw" is a role-composition outcome, not an exemption);
+> a transform's application **order is a global rank on the transform, not the role**.
+> "Rule", "guardrail", and "filter library" are *views* over these primitives, not
+> separate kinds. Two engine realignments are pending (§3.2, §15): obligations become
+> one role-anchored concept (today: grant-annotations + a separate guardrail set), and
+> ordering becomes the explicit global rank (today: the to-be-removed span-union, §7.1).
+>
 > **Rev 2 (RBAC).** The model is now explicit RBAC on the subject side: a **token
 > is assigned a set of roles**, a **role is a reusable bundle of rules**,
 > composition is the **union** of a token's roles (deny overrides, §3.1). This
@@ -209,6 +220,114 @@ read is redacted, whoever granted it").
 Capability is monotonic in roles; **constraint is monotonic too** — but in the
 other direction (you cannot compose *away* a guardrail). This is the property the
 permit-annotation model failed (§7.0).
+
+### 3.2 The ontology: every policy statement is a role-anchored, object-scoped thing
+
+§3.1 names the concepts; this is the **model they reduce to** — the backbone the
+rest of the spec is a view onto. There are **objects** (what is acted on),
+**subjects** (who acts), and over them exactly **two kinds of policy statement**,
+each **anchored to a role** (or global) and carrying an **object-scope**.
+
+**Objects — what is acted on.**
+- **Connector** (a *type*: gmail, anthropic, github…): the schema. Declares its
+  **Operations**, the **Conditions** testable on each (per-op context attributes,
+  §5.4), **Resource scopes** (org / repo / label…, §5.2), **Content fields** (which
+  response fields are text vs metadata/binary — what a transform may touch, §7.1),
+  and request-context enrichment.
+- **Connection**: a configured instance of a Connector (one credential/account).
+- **Request**: `(connection, operation, resource?, params)` — one thing an agent attempts.
+
+**Subjects — who acts.**
+- **Role**: a named **anchor** — essentially `{ id, name }`. It is *not* a
+  container; nothing lives "inside" it. It is the join key that statements point at
+  and tokens collect.
+- **Token**: the agent credential, holding a **set of roles**.
+
+**Policy — two role-anchored, object-scoped statement kinds.**
+
+```
+Grant       { role,          object-scope, condition?  } → allow | deny
+Obligation  { role | global, object-scope, rank        } → approval | transform
+            object-scope = (connector, op-or-op-class, resource?)
+```
+
+- A **Grant** is a **decision**. It names **exactly one role** as its principal:
+  "for tokens in role R, on `<object-scope>` [when `<condition>`] → allow/deny." A
+  *decision-script* (allow / deny / ask) is a Grant whose verdict is computed by
+  code — it lives in the **decision layer, with Grants, not in the transform
+  library**.
+- An **Obligation** rides on an *allow* and **stacks**. It names **a role, or
+  `global`**, and is either **approval** (a pre-execution gate — this is "ask") or a
+  **transform** (post-execution response modification: redact / exclude / rewrite).
+  A transform is **connector-contextual**: it operates within the declared content
+  fields of the connector its object-scope names (§7.1).
+
+**Composition — the algebra.**
+- **Subject:** a token is the **union** of its roles.
+- **Decide:** over all Grants whose role the token holds and whose object-scope
+  matches — **deny overrides**; else any allow allows; else **default-deny**.
+- **Obligations:** **every** matching one applies — **union, no lifting, no
+  override**. Approval fires if **any** matching statement asks (any-ask ⇒ ask).
+  Transforms **all** run, deduped by identity, in **one global rank order**.
+- **The core law — composition is *additive*.** More roles only ever *add* access,
+  *add* approvals, *add* transforms. **The one subtractor is an explicit `deny`.**
+  There is **no privilege-override**: "see it raw" is expressed by **not holding a
+  redacting role**, never by a flag or exemption. So a token with both
+  `read_everything` and `read_with_pii_removed` reads **redacted** — both apply; to
+  read raw, don't put the redacting role on that token. The convenience cost of
+  restructuring roles is accepted in exchange for never being able to *compose away*
+  a redaction.
+
+**Ordering — a global rank on the transform, not on the role.** When transforms
+stack, they run in a deterministic order given by a **rank carried on each
+transform**. It **cannot** live on the role: a token's roles are an unordered *set*,
+so "A before B in R₁, B before A in R₂" has no defined interleaving once a token
+holds both. Two separate axes — **presence** (*whether* a transform applies) is
+contextual: role + object-scope match; **order** (*where* it sits when present) is
+the global rank, deterministic tie-break by name/id. The effective ordered pipeline
+is **operator-visible** — shown in the role view, the token's "what it can do", and
+the decision explorer (`applied: redact-ssn → llm-pii-strip → exclude-internal`).
+
+**Phases.** decide → (if allowed) approval gate → execute → run the ranked
+transform pipeline over the response (§7.4).
+
+**The authoring words are *views* over these primitives**, not separate kinds:
+- A **Rule** is a Grant authored inside a Role; its principal-scope *is* that role.
+  Authoring a filter "on a rule" creates an **Obligation that inherits the rule's
+  role and object-scope** — a *sibling* statement sharing the anchor and scope, **not
+  a child of the grant**. Per-grant precision is just a tighter object-scope on the
+  Obligation.
+- A **Guardrail** is an Obligation with `role: global` (or a named role) authored
+  standalone — the floor that isn't tied to one grant.
+- The **filter library** holds reusable **Transform** definitions (each with a
+  rank); decision-scripts are not library entries (they are Grants).
+
+**Worked example (`read_everything` / `read_with_pii_removed`).**
+```
+Role  read_everything        { }
+Grant      { role: read_everything,       scope:(gmail, read),  allow }
+
+Role  read_with_pii_removed  { }
+Grant      { role: read_with_pii_removed, scope:(gmail, read),  allow }
+Obligation { role: read_with_pii_removed, scope:(gmail, read),  redact-pii, rank: 50 }
+```
+A token `{read_everything, read_with_pii_removed}` reading gmail: both Grants allow,
+and the Obligation matches (the token *is in* `read_with_pii_removed`) → **read, PII
+redacted**. Drop `read_with_pii_removed` → the Obligation's role isn't held →
+**raw**. Privilege/raw is a *role-composition outcome*, never an override.
+
+**Implementation deltas (honest — the model is canonical; the engine is catching up).**
+1. **One obligation concept.** Canonically an Obligation is a single role-anchored,
+   object-scoped statement, and "on a rule" merely copies the rule's scope. *Today*
+   the engine has **two** attachment forms (§7): grant-obligations are Cedar
+   **annotations on the grant permit**, and guardrails are a **separate role/global
+   permit set**. Behaviour already matches the model (both are collected by union,
+   §7.0/§7.3); the unification to one role-anchored concept is pending.
+2. **Explicit global-rank ordering.** Canonically order is the global rank above.
+   *Today* the post-filter applier makes regex redaction **order-free by span-union**
+   (§7.1) — a workaround that only covers regex redaction and misses that the real
+   transforms are opaque scripts. It is to be **replaced** by the explicit,
+   operator-visible global-rank pipeline (§15).
 
 ---
 
@@ -629,7 +748,7 @@ Filter {
   id, name, description
   kind:    "redact" | "exclude_items" | "script_filter" | "script_guard" | "rate_limit"
   phase:   "pre" (guard / rate_limit) | "post" (response transform)   // implied by kind
-  order:   int      // script_filter application order (redact/exclude are order-independent — §7.1)
+  order:   int      // GLOBAL transform rank — application order across ALL kinds (§3.2/§7.1), lower first
   config:  { patterns: [...], match: "contains"|"regex", fields?: [...] }  // redact/exclude
         |  { command, path, timeout_ms }                              // script_* (command = python3 | node)
         |  { limit, window_seconds, key: "token"|"token+resource"|"token+action"|"token+action_group" } // rate_limit (deferred §15)
@@ -654,9 +773,17 @@ operation still executes and returns, but the agent receives a transformed
 result. "Don't return every email" is an *allow of the list operation with a
 filtered result*, not a deny — only the pre-phase guards (`script_guard` /
 `rate_limit`) and a rule's `deny` actually block execution. This is precisely why
-these obligations **compose by union** (§7.3) and are **order-independent**
-(below): they shape output, they don't gate access, so collecting more of them
-can only remove more content, never grant any back.
+these obligations **compose by union** (§7.3) and **stack in a deterministic,
+operator-visible rank order** (below): they shape output, they don't gate access, so
+collecting more of them can only remove more content, never grant any back.
+
+**Decisions vs transforms (canonical placement, §3.2).** The pre-phase guards
+(`script_guard`, `rate_limit`) are **decisions** — they return allow/deny/ask — and
+canonically belong to the **grant/decision layer**, not the transform library;
+`redact` / `exclude_items` / `script_filter` are the **transforms**. *Today* a
+`script_guard` is authored as a library filter referenced by a guardrail; re-homing
+decision-scripts onto grants is part of the §3.2 realignment (§15) and changes no
+behaviour — a guard still runs pre-execution and a deny still denies.
 
 **Field-aware matching (redact / exclude).** A filter is a connector-**agnostic**
 transform — `patterns` + a `match` mode: `"contains"` (case-insensitive literal
@@ -690,29 +817,37 @@ guardrail that references a `rate_limit` filter is rejected at save until the
 counter is wired (no silent no-op — see §15). `script_guard`, `redact`,
 `exclude_items`, `script_filter` execute in v1.
 
-**Order independence (post-filters).** Response modification is order-independent
-**by construction**, so two rules (or a rule and a guardrail) that each contribute
-filters can never produce a different result depending on the order obligations
-were collected:
+**Ordering — a deterministic global rank (canonical); order *matters*.** Stacked
+transforms run in a deterministic order given by a **global rank carried on each
+transform** (§3.2) — *not* a per-role sequence (roles are a set; no defined
+interleaving) and *not* "order-independent." Redaction is **not** commutative:
+overlapping patterns differ by order (in `"x12345y"`, `123` then `345` gives
+`x[REDACTED]45y` but `345` then `123` gives `x12[REDACTED]y`), and a script transform
+is an opaque rewrite whose output the next stage sees. So order **matters**; the
+design's job is to make it **deterministic, explicit, and operator-visible**, not to
+pretend it away:
 
-- **Redaction** masks the **union of match spans** computed against the *original*
-  string: every pattern from every applicable redact filter is matched on the
-  unmodified value, overlapping **and** adjacent spans are merged, and each merged
-  span is replaced **in place** with a single `[REDACTED]`. A naïve
-  replace-one-filter-at-a-time pipeline is *not* commutative — overlapping patterns
-  differ by order (in `"x12345y"`, `123` then `345` gives `x[REDACTED]45y` but
-  `345` then `123` gives `x12[REDACTED]y`), and a replacement can manufacture or
-  destroy a downstream match (the `abc`/`123` deletion-splice hazard). Span-union
-  on the original removes both. Field-aware redactions run over content-field
-  values first, then the connector-agnostic whole-response auth-scrub — each group
-  span-merged, the two groups in a fixed order.
-- **Exclusion** drops an item if **any** exclude filter matches it (union of
-  drops), applied **before** redaction so masking only touches surviving items.
-- **Script filters** are the one **order-dependent** step: each is an opaque
-  rewrite that sees whatever ran before it, so they run last, in filter order. The
-  built-in `AuthValueScrubFilter` (HTTP proxy) is a whole-response redaction and
-  composes order-free with the rest. Pre-phase guards are unordered (any deny
-  denies).
+- Each transform carries a **rank**; a request's effective pipeline is every matching
+  transform (across the token's roles + guardrails), deduped, **sorted by rank**
+  (deterministic tie-break by name/id), run in sequence. The operator sets the rank
+  and **sees the resulting pipeline** (role view, token view, decision explorer), with
+  sensible per-kind starting defaults (exclusions → redactions → rewrites) so the
+  common case needs no fiddling.
+- **Exclusions** drop an item if **any** exclude matches it (a union of drops, itself
+  order-free) and run first, so later stages only touch survivors.
+- **Scripts** (LLM PII-strip, custom rewrite) are first-class stages in the same
+  ranked pipeline — they are exactly *why* the order has to be explicit.
+
+> **Implementation delta (§3.2, §15).** *Today* the applier instead makes regex
+> redaction **order-free by span-union** — mask the union of match spans on the
+> *original* (overlapping/adjacent merged, replaced in place), so a naïve
+> replace-one-at-a-time pipeline's non-commutativity and the `abc`/`123`
+> deletion-splice hazard don't arise — and runs `script_filter`s last in `(order, id)`
+> sequence (the built-in `AuthValueScrubFilter` is a whole-response redaction that
+> composes with the rest). That was an over-correction: it only covers regex redaction
+> and misses that the real transforms are opaque scripts. The canonical model above
+> (one explicit global rank across all transform kinds) **replaces** it; realignment
+> pending. Pre-phase guards remain unordered (any deny denies).
 
 Scripts reuse the existing policy-script runtime (`/opt/sieve-py`, stdin→stdout
 JSON; Python *or* JavaScript; `docs/policy-scripts.md`). The library is the home for
@@ -802,10 +937,9 @@ filters = dedupeByID(resolve(filters, library))
   the `unless`-exemption authoring form (§7.2), neither an absent attribute nor an
   evaluation error can bypass a guardrail.
 - **Approval** = OR over matched guardrails **and** matching grant permits (§7.0);
-  **filters** = union, deduped by id. Redact/exclude apply order-independently
-  (§7.1: redaction = span-union on the original; exclusion = union of drops first);
-  `script_filter`s run last, in `(order, id)` sequence. Obligations are computed
-  **only when pass 1 allowed**.
+  **filters** = union, deduped by id, applied in **global rank** order (§3.2/§7.1),
+  exclusions first. (Today's applier orders regex redaction by span-union — the
+  to-be-replaced delta, §7.1.) Obligations are computed **only when pass 1 allowed**.
 - `@approval` + post-`@filters` on the same matched guardrail **both** apply: the
   post-filters run on the response *after* approval resolves (fixes the rev-1
   "approval drops filters" gap — review item; the approval branch must run
@@ -820,9 +954,9 @@ Grants Allow → collect guardrail obligations (§7.3)
   → run pre guards: script_guard (rate_limit deferred, §7.1); any deny ⇒ DENY   [pre, fail-closed]
   → if approval required: submit + block(REST)/ticket(MCP)                       [pre]
   → conn.Execute(...)
-  → apply post filters: exclude (union of drops) → redact (span-union, order-free)
-       → script_filter (opaque rewrites, in (order,id) sequence)                   [post]
-       (AuthValueScrubFilter = whole-response redaction, composes order-free)
+  → run transform pipeline: every matching transform, deduped, in GLOBAL RANK      [post]
+       order (§3.2/§7.1) — exclusions first, then the rest by rank
+       (today's applier: exclude → span-union redact → script_filter (order,id) — §7.1 delta)
   → return
 ```
 
@@ -1186,8 +1320,9 @@ expressiveness rather than a hardcoded menu.
   script_guard** definitions (§7.1), referenced by **rules or guardrails** by name.
   redact/exclude take patterns + a match mode and are field-aware (§7.1); a
   `script_*` filter takes a script **path** + interpreter (`python3`/`node`), checked
-  against the allowlist at save. (`rate_limit` is specified but **not offered** in the
-  UI — deferred, §15.)
+  against the allowlist at save. (`script_guard` is a **decision**, not a transform —
+  canonically a grant, §3.2/§15 — though today it is authored here. `rate_limit` is
+  specified but **not offered** in the UI — deferred, §15.)
 - **Full lifecycle — every artifact is editable in place.** Roles, rules,
   guardrails, filters, and a token's role set are all editable from the admin UI
   (not delete-and-recreate); rules, guardrails, and roles are deletable. A token edit
@@ -1246,7 +1381,7 @@ agent → PEP (api/mcp)
                     REST: submit + WaitForResolution(5m) + re-validate token
                     MCP:  submit + return ticket (non-blocking)   (unchanged shapes)
                  result := conn.Execute(ctx, op, params)
-                 result  = ApplyResponseFilters(result, obligations.filters)  [post; exclude+redact order-free, scripts in (order,id); fail-closed]
+                 result  = ApplyResponseFilters(result, obligations.filters)  [post; transforms in GLOBAL RANK order (§3.2/§7.1); fail-closed]
                  audit(decision, determining_rules=gdiag.Reasons, guardrails=hdiag.Reasons, label)
                  return result
 ```
@@ -1651,6 +1786,22 @@ approval queue, the response-filter applier, the two-port topology, the connecto
 
 ## 15. Open questions / future work
 
+- **§3.2 realignment 1 — one obligation concept (planned).** Collapse the two current
+  attachment forms (grant-annotations + a separate guardrail permit set, §7) into a
+  single **role-anchored, object-scoped Obligation**; "on a rule" becomes scope-inheriting
+  authoring (§3.2). Behaviour is already the model's (union, §7.0/§7.3); this is an
+  internal-representation + authoring unification, not a semantic change.
+- **§3.2 realignment 2 — explicit global-rank ordering (planned).** Replace the
+  span-union order-free applier (§7.1) with a single **global rank** over all transform
+  kinds (redact / exclude / rewrite-script), deterministic and **operator-visible** in the
+  role view, the token's "what it can do", and the decision explorer. Order *matters* for
+  the real (script) transforms; the design makes it explicit rather than pretending it away.
+- **`ask` composition (resolution: any-ask ⇒ ask).** When matching grants disagree —
+  one allows plainly, another allows-with-approval — the **approval still applies**:
+  approval is an obligation and composes by union like every other (§3.2 core law), so a
+  plain sibling grant cannot skip it. Recorded here as the deliberate choice (consistent
+  with "no privilege-override"); the alternative (a plain allow lifts approval) is rejected
+  for the same reason raw-view-by-composition is.
 - **`rate_limit` execution (deferred).** The `rate_limit` filter kind is specified
   (§7.1) but **not executed in v1** and **not offered in the filter-library UI**: a
   rule or guardrail that references a `rate_limit` filter is **rejected at save**
