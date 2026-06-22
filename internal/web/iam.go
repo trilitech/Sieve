@@ -138,6 +138,10 @@ type iamPageData struct {
 	Configured bool
 	Enabled    bool
 	Policies   []iamPolicyView
+	// RoleViews is the role list with per-role blast-radius counts (Roles card).
+	RoleViews []iamRoleView
+	// RuleGroups is the rules list grouped by the role each rule targets.
+	RuleGroups []ruleGroupView
 	Guardrails []iamGuardrailView
 	CSRFToken  string
 
@@ -162,9 +166,30 @@ type iamPageData struct {
 // iamPolicyView wraps a StoredPolicy with a HasSpec flag so the rules list can
 // show an "Edit" link only for builder-authored rules (those with a stored
 // structured spec). Raw/migrated rules (SpecJSON == "") have no form to reload.
+// Summary is the plain-English rendering recomputed from the stored spec (or ""
+// for raw rules, which display their Cedar instead). Description is the
+// operator's own free-form text (StoredPolicy.Description).
 type iamPolicyView struct {
 	iampolicies.StoredPolicy
 	HasSpec bool
+	Summary string
+}
+
+// iamRoleView wraps a role with its blast-radius counts, shown beside the role
+// in the Roles list and used to confirm a cascade delete.
+type iamRoleView struct {
+	roles.Role
+	RuleCount      int
+	GuardrailCount int
+	TokenCount     int
+}
+
+// ruleGroupView is one role's worth of rules in the (grouped) rules list. RoleID
+// "" / RoleName "" is the catch-all bucket for raw/unscoped rules.
+type ruleGroupView struct {
+	RoleID   string
+	RoleName string
+	Policies []iamPolicyView
 }
 
 // iamGuardrailView wraps a StoredGuardrail for the guardrails list.
@@ -185,9 +210,10 @@ type iamEditPageData struct {
 
 	// HasSpec is false for raw/migrated rules — the template then renders a
 	// "no structured form" notice instead of the builder.
-	HasSpec  bool
-	PolicyID string
-	Name     string
+	HasSpec     bool
+	PolicyID    string
+	Name        string
+	Description string
 	// Spec is the decoded builder form-state, emitted into a data-attribute via
 	// jsonAttr and read client-side via JSON.parse (never template.JS /
 	// innerHTML). Decoding server-side means a single, predictable JSON object
@@ -227,6 +253,8 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 	data.Configured = true
 	data.Enabled = s.iamEnabled()
 
+	rolesList, _ := s.roles.List()
+
 	pols, err := s.iam.ListPolicies()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -234,7 +262,11 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 	}
 	data.Policies = make([]iamPolicyView, 0, len(pols))
 	for _, p := range pols {
-		data.Policies = append(data.Policies, iamPolicyView{StoredPolicy: p, HasSpec: p.SpecJSON != ""})
+		data.Policies = append(data.Policies, iamPolicyView{
+			StoredPolicy: p,
+			HasSpec:      p.SpecJSON != "",
+			Summary:      s.summaryFromSpecJSON(p.SpecJSON),
+		})
 	}
 
 	guards, err := s.iam.ListGuardrails()
@@ -247,8 +279,152 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 		data.Guardrails = append(data.Guardrails, iamGuardrailView{StoredGuardrail: g, HasSpec: g.SpecJSON != ""})
 	}
 
+	data.RoleViews = s.roleViews(rolesList, pols, guards)
+	data.RuleGroups = groupPoliciesByRole(data.Policies, rolesList)
+
 	s.populateBuilderData(&data.iamBuilderData)
 	s.render(w, r, "iam", data)
+}
+
+// summaryFromSpecJSON recomputes a rule's plain-English summary from its stored
+// builder form-state (spec_json), so the list reflects the rule's *current*
+// definition rather than a summary frozen at create time. Returns "" for raw or
+// migrated rules (no spec_json) — those display their Cedar instead.
+func (s *Server) summaryFromSpecJSON(specJSON string) string {
+	if specJSON == "" {
+		return ""
+	}
+	var st builderFormState
+	if err := json.Unmarshal([]byte(specJSON), &st); err != nil {
+		return ""
+	}
+	spec := s.specFromState(st)
+	return iampolicies.HumanSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
+}
+
+// specFromState reconstructs a RuleSpec from a stored builder form-state, the
+// inverse of the capture in parseBuilderForm. It is used only to render a
+// human-readable summary, so it resolves scopes and condition kinds via the
+// connector metadata exactly as parseBuilderForm did.
+func (s *Server) specFromState(st builderFormState) iampolicies.RuleSpec {
+	meta := s.connectorMeta(st.ConnectorType)
+	spec := iampolicies.RuleSpec{
+		RoleID:        st.RoleID,
+		Effect:        st.Effect,
+		ConnectorType: st.ConnectorType,
+		OpScope:       st.OpScope,
+		Operations:    st.Operations,
+	}
+	if st.ConnScope == "specific" {
+		spec.ConnectionIDs = st.Connections
+	}
+	if st.ScopeKey != "" {
+		for _, sc := range meta.RuleScopes {
+			if sc.Key != st.ScopeKey {
+				continue
+			}
+			for _, connID := range spec.ConnectionIDs {
+				spec.Scopes = append(spec.Scopes, iampolicies.ScopeRef{
+					EntityType: sc.EntityType,
+					ID:         iampolicies.BuildScopeID(sc.IDFormat, connID, st.ScopeFields),
+				})
+			}
+			break
+		}
+	}
+	condMeta := map[string]connector.RuleCondition{}
+	for _, c := range meta.RuleConditions {
+		condMeta[c.Key] = c
+	}
+	for _, bc := range st.Conditions {
+		cm := condMeta[bc.Key]
+		spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
+			Kind: cm.Kind, CtxPath: cm.CtxPath, Op: bc.Op, Value: bc.Value,
+		})
+	}
+	spec.Filters = st.Filters
+	return spec
+}
+
+// roleViews pairs each role with its blast-radius counts (rules + guardrails
+// that target it, tokens that reference it) for the Roles list / delete confirm.
+func (s *Server) roleViews(rolesList []roles.Role, pols []iampolicies.StoredPolicy, guards []iampolicies.StoredGuardrail) []iamRoleView {
+	out := make([]iamRoleView, 0, len(rolesList))
+	for _, role := range rolesList {
+		marker := iampolicies.RoleMarker(role.ID)
+		v := iamRoleView{Role: role}
+		for _, p := range pols {
+			if strings.Contains(p.Cedar, marker) {
+				v.RuleCount++
+			}
+		}
+		for _, g := range guards {
+			if strings.Contains(g.Cedar, marker) {
+				v.GuardrailCount++
+			}
+		}
+		if n, err := s.tokens.TokensUsingRole(role.ID); err == nil {
+			v.TokenCount = n
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// groupPoliciesByRole buckets the rules list under the role each rule targets,
+// in role-creation order, with raw/unscoped rules collected last under "". A
+// rule's role comes from its builder spec when present, else from the role
+// marker in its raw Cedar.
+func groupPoliciesByRole(pols []iamPolicyView, rolesList []roles.Role) []ruleGroupView {
+	idToName := make(map[string]string, len(rolesList))
+	for _, r := range rolesList {
+		idToName[r.ID] = r.Name
+	}
+	groups := make([]ruleGroupView, 0, len(rolesList)+1)
+	index := map[string]int{}
+	ensure := func(roleID string) int {
+		if i, ok := index[roleID]; ok {
+			return i
+		}
+		index[roleID] = len(groups)
+		groups = append(groups, ruleGroupView{RoleID: roleID, RoleName: idToName[roleID]})
+		return index[roleID]
+	}
+	// Seed groups in role order so empty roles still appear, then append rules.
+	for _, r := range rolesList {
+		ensure(r.ID)
+	}
+	for _, p := range pols {
+		i := ensure(policyRoleID(p.StoredPolicy, rolesList))
+		groups[i].Policies = append(groups[i].Policies, p)
+	}
+	// Drop seeded role groups that ended up with no rules (keep the page tight),
+	// but always keep a group that has rules.
+	pruned := groups[:0]
+	for _, g := range groups {
+		if len(g.Policies) > 0 {
+			pruned = append(pruned, g)
+		}
+	}
+	return pruned
+}
+
+// policyRoleID resolves the role a stored rule targets: its builder spec's
+// role_id when present, else the first role whose Cedar marker appears in the
+// raw policy text. "" means "any role / unscoped".
+func policyRoleID(p iampolicies.StoredPolicy, rolesList []roles.Role) string {
+	if p.SpecJSON != "" {
+		var st builderFormState
+		if json.Unmarshal([]byte(p.SpecJSON), &st) == nil && st.RoleID != "" {
+			return st.RoleID
+		}
+	}
+	for _, r := range rolesList {
+		if strings.Contains(p.Cedar, iampolicies.RoleMarker(r.ID)) {
+			return r.ID
+		}
+	}
+	return ""
 }
 
 // renderIAMError re-renders the IAM page with a friendly error banner instead of
@@ -365,6 +541,44 @@ func (s *Server) handleIAMRoleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.role.create", role.ID,
 		map[string]any{"name": name}, "success")
+	http.Redirect(w, r, "/iam", http.StatusSeeOther)
+}
+
+// handleIAMRoleDelete deletes a role and CASCADES (POST /iam/roles/{id}/delete):
+// it strips the role from every token, then deletes the rules and guardrails
+// that target it, then the role itself. The token strip runs FIRST and is the
+// security-critical step — a token that kept the (now-deleted) role id in its
+// set would be synthesized as `in` that role by the IAM engine, so the access
+// would survive a UI-only delete. Ordering is fail-safe: if a later step errors,
+// access is already revoked.
+func (s *Server) handleIAMRoleDelete(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	id := r.PathValue("id")
+
+	tokensChanged, err := s.tokens.RemoveRoleFromAll(id)
+	if err != nil {
+		http.Error(w, "revoke role from tokens: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rulesDeleted, err := s.iam.DeletePoliciesForRole(id)
+	if err != nil {
+		http.Error(w, "delete role rules: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	guardsDeleted, err := s.iam.DeleteGuardrailsForRole(id)
+	if err != nil {
+		http.Error(w, "delete role guardrails: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.roles.Delete(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.role.delete", id,
+		map[string]any{"tokens_changed": tokensChanged, "rules_deleted": rulesDeleted, "guardrails_deleted": guardsDeleted}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 
@@ -579,8 +793,12 @@ func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string
 				fields[f.Key] = v
 				state.ScopeFields[f.Key] = v
 			}
-			if len(spec.ConnectionIDs) == 0 {
-				return spec, "", "", &parseError{msg: "resource scoping requires selecting specific connection(s)", code: http.StatusBadRequest}
+			// A resource-scope id is connection-prefixed (`<conn>/<owner>/…`), so
+			// it is meaningful for exactly one connection. The builder hides the
+			// scope controls unless a single connection is picked; this is the
+			// server-side backstop for a hand-crafted submit.
+			if len(spec.ConnectionIDs) != 1 {
+				return spec, "", "", &parseError{msg: "Resource scoping (e.g. org/repo) targets a single connection — select exactly one connection above, or remove the resource scope.", code: http.StatusBadRequest}
 			}
 			for _, connID := range spec.ConnectionIDs {
 				spec.Scopes = append(spec.Scopes, iampolicies.ScopeRef{
@@ -698,6 +916,10 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Description is the operator's own free-form note (may be empty); the
+	// plain-English summary is recomputed from spec_json for display, so we don't
+	// overwrite the operator's words with it.
+	description := strings.TrimSpace(r.FormValue("description"))
 	name := r.FormValue("name")
 	if name == "" {
 		name = summary
@@ -707,7 +929,7 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 	// or compose roles on a token — not cloning rules.)
 	name = s.uniqueRuleName(name)
 
-	pol, err := s.iam.CreatePolicy(name, summary, cedar, true)
+	pol, err := s.iam.CreatePolicy(name, description, cedar, true)
 	if err != nil {
 		s.renderIAMError(w, r, err.Error())
 		return
@@ -768,11 +990,12 @@ func (s *Server) renderEditPage(w http.ResponseWriter, r *http.Request, id, errM
 		return
 	}
 	data := &iamEditPageData{
-		Active:   "iam",
-		Error:    errMsg,
-		PolicyID: pol.ID,
-		Name:     pol.Name,
-		HasSpec:  pol.SpecJSON != "",
+		Active:      "iam",
+		Error:       errMsg,
+		PolicyID:    pol.ID,
+		Name:        pol.Name,
+		Description: pol.Description,
+		HasSpec:     pol.SpecJSON != "",
 	}
 	if data.HasSpec {
 		// Decode the stored form-state so the template emits one clean JSON
@@ -818,6 +1041,7 @@ func (s *Server) handleIAMPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	description := strings.TrimSpace(r.FormValue("description"))
 	name := r.FormValue("name")
 	if name == "" {
 		name = summary
@@ -825,7 +1049,7 @@ func (s *Server) handleIAMPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// Editing keeps the rule enabled (the list has its own enable/disable
 	// toggle; edit-in-place is about the rule's content, not its on/off state).
-	if err := s.iam.UpdatePolicy(id, name, summary, cedar, true); err != nil {
+	if err := s.iam.UpdatePolicy(id, name, description, cedar, true); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

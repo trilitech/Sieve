@@ -310,6 +310,58 @@ func (s *Service) EnabledGuardrails() ([]iam.Policy, error) {
 	return out, nil
 }
 
+// --- role cascade (delete a role → remove its rules + guardrails) ---
+
+// RoleMarker is the Cedar substring present in any rule or guardrail that
+// targets roleID (the builder emits `principal in Sieve::Role::"<id>"`, and a
+// raw rule references the role the same way). Used to find role-scoped rules
+// without re-parsing Cedar. Role ids are hex, so no Cedar-string escaping is
+// needed.
+func RoleMarker(roleID string) string {
+	return iam.TypeRole + `::"` + roleID + `"`
+}
+
+// DeletePoliciesForRole deletes every stored policy whose Cedar targets roleID,
+// returning the count removed. Part of the role-delete cascade so a deleted role
+// never leaves orphaned rules that silently re-attach if the id is reused.
+func (s *Service) DeletePoliciesForRole(roleID string) (int, error) {
+	all, err := s.ListPolicies()
+	if err != nil {
+		return 0, err
+	}
+	marker := RoleMarker(roleID)
+	n := 0
+	for _, p := range all {
+		if strings.Contains(p.Cedar, marker) {
+			if err := s.DeletePolicy(p.ID); err != nil {
+				return n, err
+			}
+			n++
+		}
+	}
+	return n, nil
+}
+
+// DeleteGuardrailsForRole deletes every stored guardrail whose Cedar targets
+// roleID, returning the count removed. Companion to DeletePoliciesForRole.
+func (s *Service) DeleteGuardrailsForRole(roleID string) (int, error) {
+	all, err := s.ListGuardrails()
+	if err != nil {
+		return 0, err
+	}
+	marker := RoleMarker(roleID)
+	n := 0
+	for _, g := range all {
+		if strings.Contains(g.Cedar, marker) {
+			if err := s.DeleteGuardrail(g.ID); err != nil {
+				return n, err
+			}
+			n++
+		}
+	}
+	return n, nil
+}
+
 // --- filters ---
 
 // CreateFilter stores a filter-library entry.

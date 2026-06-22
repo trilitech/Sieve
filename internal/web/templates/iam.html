@@ -34,15 +34,6 @@
       </div>
       {{end}}
 
-      <!-- Engine status: IAM is the unconditional authorization engine (no toggle —
-           there is no legacy evaluator to fall back to post-cutover). -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "roles"}} hidden{{end}}">
-        <div class="flex items-center gap-3">
-          <span class="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 text-xs font-medium text-emerald-400">IAM active</span>
-          <p class="text-sm text-slate-400">IAM is the authorization engine for <strong>every</strong> agent request — the roles, rules, and guardrails below decide what each token may do.</p>
-        </div>
-      </div>
-
       <!-- Roles -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "roles"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Roles</h2>
@@ -55,12 +46,17 @@
           </div>
           <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Create role</button>
         </form>
-        {{if .Roles}}
+        {{if .RoleViews}}
         <div class="flex flex-wrap gap-2">
-          {{range .Roles}}
+          {{range .RoleViews}}
           <span class="inline-flex items-center gap-2 rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm">
             <span class="font-medium text-white">{{.Name}}</span>
-            <code class="text-xs text-slate-500">{{.ID}}</code>
+            <span class="text-xs text-slate-500">{{.RuleCount}} rule{{if ne .RuleCount 1}}s{{end}} · {{.GuardrailCount}} guardrail{{if ne .GuardrailCount 1}}s{{end}} · {{.TokenCount}} token{{if ne .TokenCount 1}}s{{end}}</span>
+            <form method="POST" action="/iam/roles/{{.ID}}/delete" class="inline"
+                  data-role-name="{{.Name}}" data-rules="{{.RuleCount}}" data-guardrails="{{.GuardrailCount}}" data-tokens="{{.TokenCount}}"
+                  onsubmit="return confirmRoleDelete(this)">
+              <button type="submit" class="text-xs text-red-400 hover:text-red-300 font-medium">Delete</button>
+            </form>
           </span>
           {{end}}
         </div>
@@ -197,7 +193,7 @@ else:
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Role</label>
               <select name="role_id" required
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="">— select a role —</option>
+                <option value="" disabled selected>Select a role…</option>
                 {{range .Roles}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
               </select>
             </div>
@@ -218,7 +214,7 @@ else:
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Connector</label>
               <select name="connector_type" id="rb-connector" required
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="">— select a connector —</option>
+                <option value="" disabled selected>Select a connector…</option>
                 {{range .Connectors}}<option value="{{.Type}}">{{.Name}} ({{.Type}})</option>{{end}}
               </select>
             </div>
@@ -255,22 +251,34 @@ else:
             </div>
           </div>
 
-          <!-- Resource scope (connector-tailored, JS-populated) -->
+          <!-- Resource scope (connector-tailored, JS-populated). Gated on a single
+               specific connection: the scope id is connection-prefixed, so it's
+               only meaningful for exactly one connection. -->
           <div id="rb-scope-wrap" class="mt-5 hidden">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Resource scope <span class="text-slate-600">(optional)</span></label>
-            <select name="scope_key" id="rb-scope"
-                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-              <option value="">No resource scope (whole connection)</option>
-            </select>
-            <p id="rb-scope-help" class="text-xs text-slate-500 mt-1"></p>
-            <div id="rb-scope-fields" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3"></div>
-            <p class="text-xs text-amber-500/80 mt-2">Resource scoping applies to the specific connection(s) selected above.</p>
+            <p id="rb-scope-hint" class="text-xs text-amber-500/80 mt-1 hidden">Pick a single specific connection under “Applies to” above to scope by org / repo.</p>
+            <div id="rb-scope-controls">
+              <select name="scope_key" id="rb-scope"
+                      class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">No resource scope (whole connection)</option>
+              </select>
+              <p id="rb-scope-help" class="text-xs text-slate-500 mt-1"></p>
+              <div id="rb-scope-fields" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3"></div>
+              <p class="text-xs text-amber-500/80 mt-2">Applies to the single connection selected above.</p>
+            </div>
           </div>
 
           <!-- Conditions (connector-tailored, JS-populated) -->
           <div id="rb-conds-wrap" class="mt-5 hidden">
             <label class="block text-sm font-medium text-slate-400 mb-2">Conditions <span class="text-slate-600">(optional)</span></label>
             <div id="rb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+          </div>
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
+            <input type="text" name="description" placeholder="why this rule exists, in your words"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-xs text-slate-500 mt-1">Your own note. A plain-English summary of what the rule does is generated automatically and shown in the list.</p>
           </div>
 
           <div class="mt-5">
@@ -284,14 +292,20 @@ else:
         </form>
       </div>
 
-      <!-- Rules / policies list -->
+      <!-- Rules / policies list (grouped by the role each rule targets) -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden mb-8{{if ne .Section "roles"}} hidden{{end}}">
         <div class="px-6 py-4 border-b border-slate-700">
           <h2 class="text-lg font-semibold text-white">Rules</h2>
-          <p class="text-xs text-slate-500 mt-0.5">The active chain. Deny overrides allow; unmatched requests are denied.</p>
+          <p class="text-xs text-slate-500 mt-0.5">The active chain, grouped by role. Deny overrides allow; unmatched requests are denied.</p>
         </div>
         <table class="w-full">
           <tbody class="divide-y divide-slate-700">
+            {{range .RuleGroups}}
+            <tr class="bg-slate-900/50">
+              <td colspan="2" class="px-6 py-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                {{if .RoleName}}Role: <span class="normal-case text-slate-200">{{.RoleName}}</span>{{else}}Any role / unscoped{{end}}
+              </td>
+            </tr>
             {{range .Policies}}
             <tr class="hover:bg-slate-700/30 transition-colors align-top">
               <td class="px-6 py-4">
@@ -301,10 +315,13 @@ else:
                   {{else}}
                   <span class="inline-flex rounded-full bg-slate-700 border border-slate-600 px-2 py-0.5 text-xs font-medium text-slate-400">off</span>
                   {{end}}
-                  <span class="text-sm font-medium text-white">{{if .Description}}{{.Description}}{{else}}{{.Name}}{{end}}</span>
+                  <span class="text-sm font-medium text-white">{{.Name}}</span>
                 </div>
+                {{if .Description}}<p class="text-sm text-slate-300 mt-1">{{.Description}}</p>{{end}}
+                {{if .Summary}}<p class="text-xs text-slate-400 mt-1">{{.Summary}}</p>
+                {{else}}<p class="text-xs text-slate-500 mt-1 italic">Raw Cedar rule — expand below to read it.</p>{{end}}
                 <details class="mt-2">
-                  <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">show Cedar · {{.Name}}</summary>
+                  <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">show Cedar</summary>
                   <pre class="whitespace-pre-wrap break-words text-xs text-slate-400 bg-slate-900 border border-slate-700 rounded-lg p-3 mt-2 max-w-2xl">{{.Cedar}}</pre>
                 </details>
               </td>
@@ -327,6 +344,7 @@ else:
                 </form>
               </td>
             </tr>
+            {{end}}
             {{else}}
             <tr><td class="px-6 py-12 text-center text-slate-500">No rules yet. Add one above.</td></tr>
             {{end}}
@@ -355,7 +373,7 @@ else:
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Connector</label>
               <select name="connector_type" id="gb-connector" required
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="">— select a connector —</option>
+                <option value="" disabled selected>Select a connector…</option>
                 {{range .Connectors}}<option value="{{.Type}}">{{.Name}} ({{.Type}})</option>{{end}}
               </select>
             </div>
@@ -392,16 +410,20 @@ else:
             </div>
           </div>
 
-          <!-- Resource scope (connector-tailored, JS-populated) -->
+          <!-- Resource scope (connector-tailored, JS-populated). Gated on a single
+               specific connection (the scope id is connection-prefixed). -->
           <div id="gb-scope-wrap" class="mt-5 hidden">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Resource scope <span class="text-slate-600">(optional)</span></label>
-            <select name="scope_key" id="gb-scope"
-                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-              <option value="">No resource scope (whole connection)</option>
-            </select>
-            <p id="gb-scope-help" class="text-xs text-slate-500 mt-1"></p>
-            <div id="gb-scope-fields" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3"></div>
-            <p class="text-xs text-amber-500/80 mt-2">Resource scoping applies to the specific connection(s) selected above.</p>
+            <p id="gb-scope-hint" class="text-xs text-amber-500/80 mt-1 hidden">Pick a single specific connection under “Applies to” above to scope by org / repo.</p>
+            <div id="gb-scope-controls">
+              <select name="scope_key" id="gb-scope"
+                      class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">No resource scope (whole connection)</option>
+              </select>
+              <p id="gb-scope-help" class="text-xs text-slate-500 mt-1"></p>
+              <div id="gb-scope-fields" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3"></div>
+              <p class="text-xs text-amber-500/80 mt-2">Applies to the single connection selected above.</p>
+            </div>
           </div>
 
           <!-- Obligation: the constraint this guardrail imposes -->
@@ -506,9 +528,9 @@ else:
             </div>
             <div>
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Connection</label>
-              <select name="connection_id" id="ex-conn" data-selected="{{.ExploreConnID}}"
+              <select name="connection_id" id="ex-conn" data-selected="{{.ExploreConnID}}" required
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="">—</option>
+                <option value="" disabled selected>Select a connection…</option>
               </select>
             </div>
             <div>
@@ -570,6 +592,19 @@ else:
         }
 
         function el(id) { return document.getElementById(id); }
+
+        // confirmRoleDelete shows the cascade blast-radius before deleting a role.
+        // Values come from data-* attributes (textContent semantics via dataset —
+        // no markup injection) and are shown in a native confirm() as plain text.
+        function confirmRoleDelete(form) {
+          const d = form.dataset;
+          return confirm(
+            'Delete role "' + d.roleName + '"?\n\n' +
+            'This permanently deletes ' + d.rules + ' rule(s) and ' + d.guardrails +
+            ' guardrail(s) that target it, and removes it from ' + d.tokens +
+            ' token(s) — those tokens immediately lose this access. This cannot be undone.'
+          );
+        }
 
         // --- Builder dynamic fields (shared by the rule form 'rb' and the
         // guardrail form 'gb') ---
@@ -664,6 +699,23 @@ else:
               wrap.appendChild(lbl); wrap.appendChild(inp); box.appendChild(wrap);
             }
           }
+          function selectedConnCount() {
+            const box = get('conns-list');
+            return box ? box.querySelectorAll('input[name="connections"]:checked').length : 0;
+          }
+          // scopeVis gates the resource-scope controls on a SINGLE specific
+          // connection (the scope id is connection-prefixed). Otherwise it shows a
+          // hint and clears any stale scope selection so it can't be submitted.
+          function scopeVis() {
+            const cat = IAM_CATALOG[get('connector').value] || {};
+            const hasScopes = !!(cat.scopes && cat.scopes.length);
+            get('scope-wrap').classList.toggle('hidden', !hasScopes);
+            const single = hasScopes && get('connscope').value === 'specific' && selectedConnCount() === 1;
+            get('scope-hint').classList.toggle('hidden', !hasScopes || single);
+            get('scope-controls').classList.toggle('hidden', !single);
+            if (!single) get('scope').value = '';
+            scopeFields();
+          }
           function condVis() {
             if (!opts.withConds) return;
             const cat = IAM_CATALOG[get('connector').value] || {};
@@ -694,8 +746,7 @@ else:
               o.value = sc.key; o.textContent = sc.label;
               scopeSel.appendChild(o);
             }
-            get('scope-wrap').classList.toggle('hidden', !(cat.scopes && cat.scopes.length));
-            scopeFields();
+            scopeVis();
             if (opts.withConds) {
               const conds = get('conds');
               conds.textContent = '';
@@ -704,11 +755,15 @@ else:
             }
           }
           function toggleOps() { get('ops').classList.toggle('hidden', get('opscope').value !== 'specific'); }
-          function toggleConns() { get('conns').classList.toggle('hidden', get('connscope').value !== 'specific'); }
+          function toggleConns() { get('conns').classList.toggle('hidden', get('connscope').value !== 'specific'); scopeVis(); }
           get('connector').addEventListener('change', refresh);
           get('opscope').addEventListener('change', toggleOps);
           get('connscope').addEventListener('change', toggleConns);
           get('scope').addEventListener('change', scopeFields);
+          // Re-gate the scope controls whenever the set of checked connections
+          // changes (delegated — the checkboxes are (re)built dynamically).
+          const connsListBox = get('conns-list');
+          if (connsListBox) connsListBox.addEventListener('change', scopeVis);
           if (opts.withConds && opts.effectSel) {
             const e = document.querySelector(opts.effectSel);
             if (e) e.addEventListener('change', condVis);

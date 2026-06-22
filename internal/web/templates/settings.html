@@ -52,7 +52,7 @@
             <label for="llm_connection" class="block text-sm font-medium text-slate-300 mb-1.5">LLM Connection</label>
             <select id="llm_connection" name="llm_connection"
                     class="w-full rounded-lg bg-slate-700 border border-slate-600 text-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent">
-              <option value="">-- Select a connection --</option>
+              <option value="">None (AI features off)</option>
               {{range .Connections}}
               <option value="{{.ID}}" {{if eq .ID $.LLMConnection}}selected{{end}}>{{.DisplayName}} ({{.ID}})</option>
               {{end}}
@@ -189,7 +189,7 @@
 
     function fetchModels(connId) {
       if (!connId) {
-        modelSelect.innerHTML = '<option value="">-- Select a connection first --</option>';
+        modelSelect.innerHTML = '<option value="">Select a connection first…</option>';
         modelHint.textContent = "Select a connection first to load available models.";
         return;
       }
@@ -229,7 +229,7 @@
           modelSelect.innerHTML = "";
           var placeholder = document.createElement("option");
           placeholder.value = "";
-          placeholder.textContent = "-- Select a model --";
+          placeholder.textContent = "Select a model…";
           modelSelect.appendChild(placeholder);
           models.forEach(function(m) {
             var opt = document.createElement("option");
@@ -268,7 +268,7 @@
     if (connSelect.value) {
       fetchModels(connSelect.value);
     } else {
-      modelSelect.innerHTML = '<option value="">-- Select a connection first --</option>';
+      modelSelect.innerHTML = '<option value="">Select a connection first…</option>';
       if (currentModel) {
         // Build via createElement to keep operator-supplied model strings
         // out of the innerHTML sink. .textContent treats them as inert

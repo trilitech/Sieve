@@ -194,6 +194,67 @@ func (s *Service) List() ([]Token, error) {
 	return tokens, rows.Err()
 }
 
+// RemoveRoleFromAll strips roleID from every token's role set and reports how
+// many tokens changed. Used by the role-delete cascade: a token that still
+// listed the id would be synthesized as `in` that (now-deleted) role by the IAM
+// engine — its rules/guardrails would keep applying — so the access must be
+// truly revoked here, not merely hidden in the UI. The legacy single role_id
+// column is kept consistent (= first remaining role, or "").
+func (s *Service) RemoveRoleFromAll(roleID string) (int, error) {
+	toks, err := s.List()
+	if err != nil {
+		return 0, err
+	}
+	changed := 0
+	for _, t := range toks {
+		kept := make([]string, 0, len(t.RoleIDs))
+		had := false
+		for _, id := range t.RoleIDs {
+			if id == roleID {
+				had = true
+				continue
+			}
+			kept = append(kept, id)
+		}
+		if !had {
+			continue
+		}
+		roleIDsJSON, err := json.Marshal(kept)
+		if err != nil {
+			return changed, fmt.Errorf("marshal role_ids: %w", err)
+		}
+		primary := ""
+		if len(kept) > 0 {
+			primary = kept[0]
+		}
+		if _, err := s.db.Exec(`UPDATE tokens SET role_id = ?, role_ids = ? WHERE id = ?`,
+			primary, string(roleIDsJSON), t.ID); err != nil {
+			return changed, fmt.Errorf("update token %q: %w", t.ID, err)
+		}
+		changed++
+	}
+	return changed, nil
+}
+
+// TokensUsingRole reports how many tokens reference roleID (for the role-delete
+// blast-radius shown in the admin UI).
+func (s *Service) TokensUsingRole(roleID string) (int, error) {
+	toks, err := s.List()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, t := range toks {
+		for _, id := range t.RoleIDs {
+			if id == roleID {
+				n++
+				break
+			}
+		}
+	}
+	return n, nil
+}
+
 func (s *Service) Revoke(id string) error {
 	result, err := s.db.Exec(`UPDATE tokens SET revoked = 1 WHERE id = ?`, id)
 	if err != nil {
