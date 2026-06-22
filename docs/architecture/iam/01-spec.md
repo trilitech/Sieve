@@ -629,7 +629,7 @@ Filter {
   id, name, description
   kind:    "redact" | "exclude_items" | "script_filter" | "script_guard" | "rate_limit"
   phase:   "pre" (guard / rate_limit) | "post" (response transform)   // implied by kind
-  order:   int      // post-filter application order (lower first); ties broken by id (M3)
+  order:   int      // script_filter application order (redact/exclude are order-independent — §7.1)
   config:  { patterns: [...], match: "contains"|"regex", fields?: [...] }  // redact/exclude
         |  { command, path, timeout_ms }                              // script_* (command = python3 | node)
         |  { limit, window_seconds, key: "token"|"token+resource"|"token+action"|"token+action_group" } // rate_limit (deferred §15)
@@ -647,6 +647,16 @@ Filter {
 ¹ A `script_filter` that errors fails closed (the un-transformed result is
 withheld) — it can effectively block, but it cannot *grant* or alter the
 allow decision.
+
+**Response modification ≠ deny.** `redact`, `exclude_items`, and `script_filter`
+are **response modifications on an allowed operation**, not access decisions: the
+operation still executes and returns, but the agent receives a transformed
+result. "Don't return every email" is an *allow of the list operation with a
+filtered result*, not a deny — only the pre-phase guards (`script_guard` /
+`rate_limit`) and a rule's `deny` actually block execution. This is precisely why
+these obligations **compose by union** (§7.3) and are **order-independent**
+(below): they shape output, they don't gate access, so collecting more of them
+can only remove more content, never grant any back.
 
 **Field-aware matching (redact / exclude).** A filter is a connector-**agnostic**
 transform — `patterns` + a `match` mode: `"contains"` (case-insensitive literal
@@ -680,10 +690,29 @@ guardrail that references a `rate_limit` filter is rejected at save until the
 counter is wired (no silent no-op — see §15). `script_guard`, `redact`,
 `exclude_items`, `script_filter` execute in v1.
 
-**Post-filter ordering (M3):** post filters apply in ascending `order`, ties by
-`id` — deterministic, operator-controllable. The built-in `AuthValueScrubFilter`
-(HTTP proxy) has `order = -∞` (always first). Pre-phase guards are unordered (any
-deny denies).
+**Order independence (post-filters).** Response modification is order-independent
+**by construction**, so two rules (or a rule and a guardrail) that each contribute
+filters can never produce a different result depending on the order obligations
+were collected:
+
+- **Redaction** masks the **union of match spans** computed against the *original*
+  string: every pattern from every applicable redact filter is matched on the
+  unmodified value, overlapping **and** adjacent spans are merged, and each merged
+  span is replaced **in place** with a single `[REDACTED]`. A naïve
+  replace-one-filter-at-a-time pipeline is *not* commutative — overlapping patterns
+  differ by order (in `"x12345y"`, `123` then `345` gives `x[REDACTED]45y` but
+  `345` then `123` gives `x12[REDACTED]y`), and a replacement can manufacture or
+  destroy a downstream match (the `abc`/`123` deletion-splice hazard). Span-union
+  on the original removes both. Field-aware redactions run over content-field
+  values first, then the connector-agnostic whole-response auth-scrub — each group
+  span-merged, the two groups in a fixed order.
+- **Exclusion** drops an item if **any** exclude filter matches it (union of
+  drops), applied **before** redaction so masking only touches surviving items.
+- **Script filters** are the one **order-dependent** step: each is an opaque
+  rewrite that sees whatever ran before it, so they run last, in filter order. The
+  built-in `AuthValueScrubFilter` (HTTP proxy) is a whole-response redaction and
+  composes order-free with the rest. Pre-phase guards are unordered (any deny
+  denies).
 
 Scripts reuse the existing policy-script runtime (`/opt/sieve-py`, stdin→stdout
 JSON; Python *or* JavaScript; `docs/policy-scripts.md`). The library is the home for
@@ -772,9 +801,11 @@ filters = dedupeByID(resolve(filters, library))
   guardrail is treated as **matched** and its obligation **applies**. Combined with
   the `unless`-exemption authoring form (§7.2), neither an absent attribute nor an
   evaluation error can bypass a guardrail.
-- **Approval** = OR over matched guardrails; **filters** = union, deduped by id;
-  post-filters sorted by `(order, id)`. Obligations are computed **only when pass 1
-  allowed**.
+- **Approval** = OR over matched guardrails **and** matching grant permits (§7.0);
+  **filters** = union, deduped by id. Redact/exclude apply order-independently
+  (§7.1: redaction = span-union on the original; exclusion = union of drops first);
+  `script_filter`s run last, in `(order, id)` sequence. Obligations are computed
+  **only when pass 1 allowed**.
 - `@approval` + post-`@filters` on the same matched guardrail **both** apply: the
   post-filters run on the response *after* approval resolves (fixes the rev-1
   "approval drops filters" gap — review item; the approval branch must run
@@ -789,8 +820,9 @@ Grants Allow → collect guardrail obligations (§7.3)
   → run pre guards: script_guard (rate_limit deferred, §7.1); any deny ⇒ DENY   [pre, fail-closed]
   → if approval required: submit + block(REST)/ticket(MCP)                       [pre]
   → conn.Execute(...)
-  → apply post filters sorted by (order,id): redact/exclude/script_filter         [post]
-       (AuthValueScrubFilter at order -∞, always first, for the HTTP proxy)
+  → apply post filters: exclude (union of drops) → redact (span-union, order-free)
+       → script_filter (opaque rewrites, in (order,id) sequence)                   [post]
+       (AuthValueScrubFilter = whole-response redaction, composes order-free)
   → return
 ```
 
@@ -1214,7 +1246,7 @@ agent → PEP (api/mcp)
                     REST: submit + WaitForResolution(5m) + re-validate token
                     MCP:  submit + return ticket (non-blocking)   (unchanged shapes)
                  result := conn.Execute(ctx, op, params)
-                 result  = ApplyResponseFilters(result, obligations.filters, sorted by (order,id))  [post; fail-closed]
+                 result  = ApplyResponseFilters(result, obligations.filters)  [post; exclude+redact order-free, scripts in (order,id); fail-closed]
                  audit(decision, determining_rules=gdiag.Reasons, guardrails=hdiag.Reasons, label)
                  return result
 ```
