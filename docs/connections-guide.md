@@ -283,6 +283,15 @@ A Slack connection lets agents read and write to one Slack workspace under polic
 2. In Sieve, **Add Connection** → **Slack** → **Use existing bot token**. Paste the token and submit.
 3. Sieve calls `auth.test`; on success the connection lands `active`.
 
+### Bot vs. user identity
+
+A Slack connection acts as **one of two identities**:
+
+- **Bot** (`auth_kind` `oauth`/`token`, `xoxb-…`): sees only channels the app's bot user is invited to; cannot search. The least-privilege default.
+- **User** (`auth_kind` `user_token`, `xoxp-…`): acts as the installing human with their full permissions — every channel/DM they can see, plus `search_messages`.
+
+Install a user connection via the **Install via OAuth (as user)** button (add the scopes under your Slack app's **User Token Scopes**, including `search:read`) or the **Add via user token** form (paste the `xoxp-…` **User OAuth Token**). You can run a bot and a user connection on the same workspace under different aliases. See [`connectors-slack.md`](connectors-slack.md) for the full walkthrough.
+
 ### What you get
 
 Curated operations exposed to agents (subject to policies):
@@ -328,7 +337,7 @@ Add a second Slack connection with a different alias (e.g., `acme-slack` and `en
 
 ### Limitations (v1)
 
-- `search_messages` is disabled — Slack's `search.*` API requires a user token, not a bot token. The operation is exposed for policy binding stability and always returns `{"error": "operation_not_enabled", ...}` until a future release adds user-token install support.
+- `search_messages` works only on **user** connections (`auth_kind=user_token`) — Slack's `search.*` API requires a user token. On a **bot** connection it is exposed for policy-binding stability and returns `{"error": "operation_not_enabled", ...}`.
 - No Slack Enterprise Grid org-level installs.
 - No inbound webhooks (Slack Events API). Sieve is outbound-only in v1; agents poll `read_channel_history` for event-driven workflows.
 - No granular-scope token rotation. v1 uses classic non-rotating bot tokens.

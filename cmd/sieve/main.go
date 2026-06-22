@@ -166,23 +166,9 @@ func main() {
 func runRotate(dbPath string) int {
 	log.SetFlags(0)
 
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "sieve: create db dir: %v\n", err)
-		return rotateExitGeneric
-	}
-	db, err := database.New(dbPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sieve: open db %q: %v\n", dbPath, err)
-		// Most "open db" failures from a busy DB look like SQLITE_BUSY;
-		// surface the lock-conflict exit code so scripts can branch.
-		if isLockConflict(err) {
-			fmt.Fprintln(os.Stderr, "sieve: another Sieve process appears to hold the DB; stop it first.")
-			return rotateExitLockConflict
-		}
-		return rotateExitGeneric
-	}
-	defer db.Close()
-
+	// Acquire passphrases BEFORE opening the database — see comment in run()
+	// for why the FD 3 source must be drained before SQLite can claim FD 3.
+	//
 	// Acquire current passphrase. Confirm=false: only one prompt.
 	// The current passphrase may come from SIEVE_PASSPHRASE_FILE or
 	// FD 3 — operators rotating an unattended deployment shouldn't
@@ -227,6 +213,23 @@ func runRotate(dbPath string) int {
 		fmt.Fprintln(os.Stderr, "sieve: new passphrase identical to current; no rotation performed")
 		return rotateExitSameAsCurrent
 	}
+
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: create db dir: %v\n", err)
+		return rotateExitGeneric
+	}
+	db, err := database.New(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sieve: open db %q: %v\n", dbPath, err)
+		// Most "open db" failures from a busy DB look like SQLITE_BUSY;
+		// surface the lock-conflict exit code so scripts can branch.
+		if isLockConflict(err) {
+			fmt.Fprintln(os.Stderr, "sieve: another Sieve process appears to hold the DB; stop it first.")
+			return rotateExitLockConflict
+		}
+		return rotateExitGeneric
+	}
+	defer db.Close()
 
 	// Wire the audit logger so the rotation row commits inside the
 	// rotation transaction.
@@ -429,6 +432,19 @@ func runResetKeyring(dbPath string) int {
 }
 
 func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) error {
+	// --- Keyring (passphrase) ---
+	// Acquire the passphrase BEFORE opening the database. secrets.Acquire's
+	// FD 3 branch probes "is FD 3 open" via fstat; if SQLite has already
+	// opened the DB by then, it owns FD 3 (the lowest free slot after
+	// stdio), the probe lights up, acquireFD3 reads garbage from the DB
+	// file as "passphrase" and closes the FD via defer — and the next
+	// SQLite query fails with EBADF ("disk I/O error: bad file descriptor").
+	pp, err := secrets.Acquire(secrets.PromptOptions{Confirm: setup})
+	if err != nil {
+		return fmt.Errorf("read passphrase: %w", err)
+	}
+	defer zero(pp)
+
 	// --- Database ---
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
@@ -438,13 +454,6 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 		return fmt.Errorf("open db %q: %w", dbPath, err)
 	}
 	defer db.Close()
-
-	// --- Keyring ---
-	pp, err := secrets.Acquire(secrets.PromptOptions{Confirm: setup})
-	if err != nil {
-		return fmt.Errorf("read passphrase: %w", err)
-	}
-	defer zero(pp)
 
 	keyring := &secrets.Keyring{}
 	if setup {

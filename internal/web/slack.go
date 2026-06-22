@@ -55,10 +55,21 @@ const (
 	slackTokenURL     = "https://slack.com/api/oauth.v2.access"
 	slackAuthTestURL  = "https://slack.com/api/auth.test"
 
-	// Default bot scopes for v1 (classic non-rotating). Expanded scopes
-	// — search:read, user-token install — are deferred along with
-	// Enterprise Grid.
+	// Default bot scopes (classic non-rotating). These are requested as
+	// the OAuth `scope` param and produce the app's xoxb- bot token.
 	slackDefaultBotScopes = "channels:read,groups:read,users:read,users.profile:read,channels:history,groups:history,chat:write"
+
+	// Full-permission user scopes, requested as the OAuth `user_scope`
+	// param for the "act as a user" install. Slack returns an xoxp- token
+	// under authed_user.access_token that carries these scopes, so the
+	// connector can read every channel/DM the installing user can see,
+	// search the workspace, and post under the user's name.
+	//
+	// This is the broadest practical read+write user-scope set for the
+	// curated operation surface. search:read is the scope that unlocks
+	// search.messages (impossible with a bot token). Add scopes here if
+	// new user-identity operations are introduced.
+	slackDefaultUserScopes = "channels:read,channels:history,groups:read,groups:history,im:read,im:history,mpim:read,mpim:history,users:read,users:read.email,users.profile:read,search:read,chat:write"
 )
 
 // slackOAuthEndpointOverride lets tests point Slack OAuth at a mock
@@ -146,15 +157,56 @@ func (s *Server) handleSlackOAuthStart(w http.ResponseWriter, r *http.Request) {
 	s.beginSlackOAuth(w, r, id, displayName)
 }
 
+// handleSlackUserOAuthStart kicks off the Slack OAuth v2 install flow
+// for a USER-identity connection — Slack returns an xoxp- user token
+// carrying the installing user's full permissions. Same shape as
+// handleSlackOAuthStart but delegates to beginSlackUserOAuth.
+func (s *Server) handleSlackUserOAuthStart(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	displayName := strings.TrimSpace(r.FormValue("display_name"))
+	if id == "" || displayName == "" {
+		http.Error(w, "id and display_name are required", http.StatusBadRequest)
+		return
+	}
+	if exists, _ := s.connections.Exists(id); exists {
+		http.Error(w, fmt.Sprintf("connection %q already exists", id), http.StatusBadRequest)
+		return
+	}
+	s.beginSlackUserOAuth(w, r, id, displayName)
+}
+
 // beginSlackOAuth stashes a pendingOAuth entry and redirects to the
-// Slack v2 authorize endpoint. Callers (handleSlackOAuthStart for a
-// fresh install, handleSlackReauth for re-installing an existing
-// connection) supply the id + display name; this helper handles the
-// state generation, TTL setup, and redirect uniformly.
+// Slack v2 authorize endpoint for a BOT install (xoxb- token). Callers
+// (handleSlackOAuthStart for a fresh install, handleSlackReauth for
+// re-installing an existing connection) supply the id + display name;
+// this helper handles the state generation, TTL setup, and redirect
+// uniformly.
 func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, displayName string) {
+	s.beginSlackOAuthWithScopes(w, r, id, displayName, slackDefaultBotScopes, "")
+}
+
+// beginSlackUserOAuth is the user-identity analogue of beginSlackOAuth:
+// it requests full-permission `user_scope` (and no bot `scope`) so Slack
+// returns an xoxp- user token under authed_user.access_token. The shared
+// callback (slackOAuthExchange) detects the user token and persists an
+// auth_kind=user_token connection that acts as the installing human.
+func (s *Server) beginSlackUserOAuth(w http.ResponseWriter, r *http.Request, id, displayName string) {
+	s.beginSlackOAuthWithScopes(w, r, id, displayName, "", slackDefaultUserScopes)
+}
+
+// beginSlackOAuthWithScopes is the shared implementation. botScope is
+// sent as the OAuth `scope` param (bot token), userScope as `user_scope`
+// (user token); either may be empty. The two install variants differ
+// only in which of these is populated — the callback figures out which
+// identity it got back by inspecting the token-exchange response.
+func (s *Server) beginSlackOAuthWithScopes(w http.ResponseWriter, r *http.Request, id, displayName, botScope, userScope string) {
 	clientID := s.slackOAuthClientID()
 	if clientID == "" {
-		http.Error(w, "Slack OAuth not configured — paste your Slack app credentials at /connections (the 'Set up Slack OAuth' form), or use the bot-token entry path", http.StatusBadRequest)
+		http.Error(w, "Slack OAuth not configured — paste your Slack app credentials at /connections (the 'Set up Slack OAuth' form), or use the token entry path", http.StatusBadRequest)
 		return
 	}
 
@@ -177,7 +229,12 @@ func (s *Server) beginSlackOAuth(w http.ResponseWriter, r *http.Request, id, dis
 
 	q := url.Values{}
 	q.Set("client_id", clientID)
-	q.Set("scope", slackDefaultBotScopes)
+	if botScope != "" {
+		q.Set("scope", botScope)
+	}
+	if userScope != "" {
+		q.Set("user_scope", userScope)
+	}
 	// redirect_uri MUST come from publicBaseURL — Slack's OAuth flow
 	// validates that the redirect_uri presented to oauth.v2.access (below)
 	// matches the one used at install time, so this value is also the value
@@ -226,6 +283,55 @@ func (s *Server) handleSlackToken(w http.ResponseWriter, r *http.Request) {
 		"team_id":     teamID,
 		"team_name":   teamName,
 		"bot_user_id": botUserID,
+	}
+	if err := s.connections.Add(id, "slack", displayName, cfg); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
+// handleSlackUserToken handles the direct user-token entry path. Admin
+// pastes a pre-existing xoxp- user token (from the "User OAuth Token"
+// field on their Slack app's OAuth & Permissions page); we validate it
+// against auth.test and persist an auth_kind=user_token connection that
+// acts as that user with their full permissions.
+func (s *Server) handleSlackUserToken(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("id"))
+	displayName := strings.TrimSpace(r.FormValue("display_name"))
+	token := strings.TrimSpace(r.FormValue("user_token"))
+	if id == "" || displayName == "" || token == "" {
+		http.Error(w, "id, display_name, and user_token are required", http.StatusBadRequest)
+		return
+	}
+	if !strings.HasPrefix(token, "xoxp-") && !strings.HasPrefix(token, "xoxe.") {
+		http.Error(w, "user_token must start with xoxp- (Slack user token format)", http.StatusBadRequest)
+		return
+	}
+	if exists, _ := s.connections.Exists(id); exists {
+		http.Error(w, fmt.Sprintf("connection %q already exists", id), http.StatusBadRequest)
+		return
+	}
+
+	// auth.test works identically for user tokens — it returns the
+	// installing user's id under user_id (rather than a bot user id) plus
+	// the team metadata. We reuse the same call.
+	teamID, teamName, userID, err := slackAuthTest(r.Context(), token)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Slack auth.test failed: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	cfg := map[string]any{
+		"auth_kind":   slackconn.KindUserToken,
+		"user_token":  token,
+		"team_id":     teamID,
+		"team_name":   teamName,
+		"bot_user_id": userID, // the authenticated user's id for user tokens
 	}
 	if err := s.connections.Add(id, "slack", displayName, cfg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -287,10 +393,60 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/connections", http.StatusSeeOther)
 		return
 	}
+	// User-token-path reauth: re-paste a fresh xoxp- user token.
+	if newToken := strings.TrimSpace(r.FormValue("user_token")); newToken != "" {
+		if !strings.HasPrefix(newToken, "xoxp-") && !strings.HasPrefix(newToken, "xoxe.") {
+			http.Error(w, "user_token must start with xoxp-", http.StatusBadRequest)
+			return
+		}
+		teamID, teamName, userID, err := slackAuthTest(r.Context(), newToken)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Slack auth.test failed: %v", err), http.StatusBadRequest)
+			return
+		}
+		cfg := map[string]any{
+			"auth_kind":   slackconn.KindUserToken,
+			"user_token":  newToken,
+			"team_id":     teamID,
+			"team_name":   teamName,
+			"bot_user_id": userID,
+		}
+		if err := s.connections.UpdateConfig(id, cfg); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := s.connections.SetStatus(id, connections.StatusActive); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/connections", http.StatusSeeOther)
+		return
+	}
 	// OAuth-path reauth: stash + redirect to Slack. handleOAuthCallback
 	// notices that the connection id already exists and routes the
 	// completion through UpdateConfig + SetStatus(active) instead of Add.
+	// Re-run the same identity the connection was installed with: a
+	// user-token connection re-installs as a user, everything else as a
+	// bot. We read the persisted auth_kind to decide (keyring must be
+	// loaded; a locked keyring surfaces as a clear error).
+	if s.slackConnIsUserIdentity(id) {
+		s.beginSlackUserOAuth(w, r, id, existing.DisplayName)
+		return
+	}
 	s.beginSlackOAuth(w, r, id, existing.DisplayName)
+}
+
+// slackConnIsUserIdentity reports whether the stored Slack connection
+// authenticates as a user (auth_kind=user_token). Best-effort: returns
+// false if the config can't be read (e.g. keyring locked), which falls
+// back to the bot re-install path.
+func (s *Server) slackConnIsUserIdentity(id string) bool {
+	full, err := s.connections.GetWithConfig(id)
+	if err != nil {
+		return false
+	}
+	kind, _ := full.Config["auth_kind"].(string)
+	return kind == slackconn.KindUserToken
 }
 
 // slackAuthTest calls Slack auth.test and returns the team / user
@@ -454,6 +610,15 @@ func (s *Server) slackOAuthExchange(ctx context.Context, baseURL, code string) (
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"team"`
+		// AuthedUser carries the user-identity token when the install
+		// requested user_scope. For a bot-only install access_token here
+		// is empty and only id is set.
+		AuthedUser struct {
+			ID          string `json:"id"`
+			Scope       string `json:"scope"`
+			AccessToken string `json:"access_token"`
+			TokenType   string `json:"token_type"`
+		} `json:"authed_user"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("oauth.v2.access decode: %w", err)
@@ -462,11 +627,20 @@ func (s *Server) slackOAuthExchange(ctx context.Context, baseURL, code string) (
 		return nil, fmt.Errorf("oauth.v2.access rejected: %s", out.Error)
 	}
 
-	scopes := []any{}
-	for _, sc := range strings.Split(out.Scope, ",") {
-		if sc = strings.TrimSpace(sc); sc != "" {
-			scopes = append(scopes, sc)
-		}
+	// User-install: Slack returned a user token under authed_user. This is
+	// the "act as a user" path — persist an auth_kind=user_token config
+	// whose credential is the xoxp- user token. Detected by presence of
+	// authed_user.access_token so the same callback serves both the bot
+	// and user install flows without a side-channel flag.
+	if out.AuthedUser.AccessToken != "" {
+		return map[string]any{
+			"auth_kind":   slackconn.KindUserToken,
+			"team_id":     out.Team.ID,
+			"team_name":   out.Team.Name,
+			"bot_user_id": out.AuthedUser.ID, // the installing user's id
+			"scopes":      splitScopes(out.AuthedUser.Scope),
+			"user_token":  out.AuthedUser.AccessToken,
+		}, nil
 	}
 
 	cfg := map[string]any{
@@ -474,11 +648,23 @@ func (s *Server) slackOAuthExchange(ctx context.Context, baseURL, code string) (
 		"team_id":     out.Team.ID,
 		"team_name":   out.Team.Name,
 		"bot_user_id": out.BotUserID,
-		"scopes":      scopes,
+		"scopes":      splitScopes(out.Scope),
 		"oauth_token": map[string]any{
 			"access_token": out.AccessToken,
 			"token_type":   out.TokenType,
 		},
 	}
 	return cfg, nil
+}
+
+// splitScopes turns Slack's comma-separated scope string into the
+// []any the connection config stores (json arrays decode as []any).
+func splitScopes(raw string) []any {
+	scopes := []any{}
+	for _, sc := range strings.Split(raw, ",") {
+		if sc = strings.TrimSpace(sc); sc != "" {
+			scopes = append(scopes, sc)
+		}
+	}
+	return scopes
 }

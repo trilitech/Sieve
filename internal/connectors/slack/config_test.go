@@ -116,6 +116,54 @@ func TestValidate_UnknownAuthKind(t *testing.T) {
 	}
 }
 
+func TestValidate_UserToken(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{"happy path xoxp", Config{AuthKind: KindUserToken, UserToken: "xoxp-T-1234-5678"}, false},
+		{"happy path enterprise xoxe", Config{AuthKind: KindUserToken, UserToken: "xoxe.xoxp-1-..."}, false},
+		{"missing user_token", Config{AuthKind: KindUserToken}, true},
+		{"bot prefix rejected", Config{AuthKind: KindUserToken, UserToken: "xoxb-T-1234"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validate(%+v) err=%v, wantErr=%v", tc.cfg, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseConfig_UserToken(t *testing.T) {
+	raw := map[string]any{
+		"auth_kind":   "user_token",
+		"team_id":     "T012ABCDEF",
+		"team_name":   "Acme",
+		"bot_user_id": "U0INSTALLER",
+		"scopes":      []any{"search:read", "channels:history"},
+		"user_token":  "xoxp-real-user-token",
+	}
+	c, err := parseConfig(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.AuthKind != KindUserToken {
+		t.Fatalf("auth_kind = %q, want user_token", c.AuthKind)
+	}
+	if c.UserToken != "xoxp-real-user-token" {
+		t.Fatalf("user_token not decoded: %q", c.UserToken)
+	}
+	if err := c.validate(); err != nil {
+		t.Fatalf("validate user_token config: %v", err)
+	}
+	if c.accessToken() != "xoxp-real-user-token" {
+		t.Fatalf("accessToken: %q", c.accessToken())
+	}
+}
+
 func TestAccessToken(t *testing.T) {
 	oauth := Config{
 		AuthKind:   KindOAuth,

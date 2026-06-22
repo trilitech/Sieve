@@ -296,9 +296,9 @@
                           </div>
                         </div>
                         <div>
-                          <p class="text-xs text-slate-500 font-medium mb-1.5">Search <span class="text-slate-600 font-normal">(disabled in v1 — user-token install required)</span></p>
+                          <p class="text-xs text-slate-500 font-medium mb-1.5">Search <span class="text-slate-600 font-normal">(requires a user-token Slack connection at run time)</span></p>
                           <div class="grid grid-cols-2 gap-1.5">
-                            <label class="flex items-center gap-1.5 cursor-not-allowed opacity-60"><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="search_messages" disabled><span class="text-xs text-slate-400">search_messages</span></label>
+                            <label class="flex items-center gap-1.5 cursor-pointer" title="Slack's search.messages only accepts user tokens. Calls against bot-token connections return HTTP 501 operation_not_enabled — the policy itself still binds to either kind."><input type="checkbox" class="rule-op rounded border-slate-500 bg-slate-700 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0" value="search_messages"><span class="text-xs text-slate-300">search_messages</span></label>
                           </div>
                         </div>
                         {{else if eq .Scope "github"}}

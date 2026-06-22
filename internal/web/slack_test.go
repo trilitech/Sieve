@@ -79,6 +79,26 @@ func slackMockHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
 	case "/api/oauth.v2.access":
+		// A user install (code "user-fake-code") returns the user token
+		// under authed_user; a bot install returns the bot access_token.
+		// This mirrors Slack: the determinant is whether the authorize
+		// request asked for user_scope.
+		_ = r.ParseForm()
+		if r.FormValue("code") == "user-fake-code" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":          true,
+				"token_type":  "bot",
+				"bot_user_id": "U0KRQLJ9H",
+				"team":        map[string]any{"id": "T012", "name": "Acme"},
+				"authed_user": map[string]any{
+					"id":           "U0INSTALLER",
+					"scope":        "search:read,channels:history,chat:write",
+					"access_token": "xoxp-test-user-installed",
+					"token_type":   "user",
+				},
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok":           true,
 			"access_token": "xoxb-test-installed",
@@ -164,6 +184,236 @@ func TestHandleSlackToken_HappyPath(t *testing.T) {
 	}
 	if full.Config["team_id"] != "T012" {
 		t.Fatalf("team_id not picked up from auth.test: %v", full.Config["team_id"])
+	}
+}
+
+// TestHandleSlackUserToken_HappyPath asserts a valid xoxp- user token is
+// validated against auth.test then persisted with auth_kind=user_token
+// and status=active. This is the "act as a user" paste path; the
+// existing bot-token path is unchanged and tested separately.
+func TestHandleSlackUserToken_HappyPath(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	rec := formPost(handler, env, "/connections/slack/user-token", url.Values{
+		"id":           {"acme-user"},
+		"display_name": {"Acme Slack (as me)"},
+		"user_token":   {"xoxp-real-user-token"},
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	c, err := env.Connections.Get("acme-user")
+	if err != nil {
+		t.Fatalf("connection not persisted: %v", err)
+	}
+	if c.ConnectorType != "slack" {
+		t.Fatalf("connector_type = %q, want slack", c.ConnectorType)
+	}
+	if c.Status != connections.StatusActive {
+		t.Fatalf("status = %q, want active", c.Status)
+	}
+	full, _ := env.Connections.GetWithConfig("acme-user")
+	if full.Config["auth_kind"] != slackconn.KindUserToken {
+		t.Fatalf("auth_kind = %v, want user_token", full.Config["auth_kind"])
+	}
+	if full.Config["user_token"] != "xoxp-real-user-token" {
+		t.Fatalf("user_token not encrypted-and-stored: %v", full.Config["user_token"])
+	}
+	if full.Config["team_id"] != "T012" {
+		t.Fatalf("team_id not picked up from auth.test: %v", full.Config["team_id"])
+	}
+	// The bot-token path must remain unaffected: no bot_token written.
+	if _, ok := full.Config["bot_token"]; ok {
+		t.Fatalf("user-token connection should not carry a bot_token: %v", full.Config["bot_token"])
+	}
+}
+
+// TestEditSlackUserConnection_KeepsStoredSecrets is the regression for
+// the edit-form gap: bot_token is declared Required, so before it was
+// marked Secret an empty submission on the generic edit form was
+// rejected ("Bot token is required") — which made a user_token
+// connection (no bot token at all) impossible to edit. With bot_token
+// Secret, an empty submission is "keep stored", so editing a user
+// connection succeeds and the user_token survives untouched.
+func TestEditSlackUserConnection_KeepsStoredSecrets(t *testing.T) {
+	handler, env := slackUITestServer(t)
+
+	if err := env.Connections.Add("u1", "slack", "User Conn", map[string]any{
+		"auth_kind":   slackconn.KindUserToken,
+		"user_token":  "xoxp-stored-user-token",
+		"team_id":     "T012",
+		"team_name":   "Acme",
+		"bot_user_id": "U0INSTALLER",
+	}); err != nil {
+		t.Fatalf("seed user connection: %v", err)
+	}
+
+	// The edit page must render for a user connection (it includes the
+	// bot_token + user_token fields as "(unchanged)" secrets).
+	page := getRequest(handler, env, "/connections/u1/edit")
+	if page.Code != http.StatusOK {
+		t.Fatalf("edit page: expected 200, got %d (body: %s)", page.Code, page.Body.String())
+	}
+
+	// Submit the form with both secrets left blank — the realistic
+	// browser submission. Must succeed (303), not 400 "required". The
+	// generic edit-save enforces a same-origin check, so set Origin to
+	// match the request host (httptest defaults to example.com).
+	form := url.Values{"bot_token": {""}, "user_token": {""}}
+	req := httptest.NewRequest(http.MethodPost, "/connections/u1/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://"+req.Host)
+	if c := env.SessionCookie(); c != nil {
+		req.AddCookie(c)
+	}
+	if tok := env.CSRFToken(); tok != "" {
+		req.Header.Set("X-CSRF-Token", tok)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("edit save: expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	full, err := env.Connections.GetWithConfig("u1")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if full.Config["auth_kind"] != slackconn.KindUserToken {
+		t.Fatalf("auth_kind changed: %v", full.Config["auth_kind"])
+	}
+	if full.Config["user_token"] != "xoxp-stored-user-token" {
+		t.Fatalf("user_token not preserved across edit: %v", full.Config["user_token"])
+	}
+}
+
+// TestHandleSlackUserToken_RejectsAgentToken — the user-token install
+// path mutates connection state, so (like the bot-token path) it must
+// reject any request carrying an agent bearer rather than an operator
+// session.
+func TestHandleSlackUserToken_RejectsAgentToken(t *testing.T) {
+	handler, _, _ := slackTestServer(t)
+	form := url.Values{
+		"id":           {"agent-user"},
+		"display_name": {"Agent"},
+		"user_token":   {"xoxp-real"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/connections/slack/user-token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer sieve_tok_abc")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for agent token, got %d", rec.Code)
+	}
+}
+
+// TestHandleSlackUserToken_RejectsBadPrefix asserts a bot token pasted
+// into the user-token field is rejected before any upstream call.
+func TestHandleSlackUserToken_RejectsBadPrefix(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+	rec := formPost(handler, env, "/connections/slack/user-token", url.Values{
+		"id":           {"bad-user"},
+		"display_name": {"Bad"},
+		"user_token":   {"xoxb-bot-token"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-user token, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if exists, _ := env.Connections.Exists("bad-user"); exists {
+		t.Fatal("connection persisted despite bad prefix")
+	}
+}
+
+// TestHandleOAuthCallback_SlackUserInstall drives the user-identity
+// OAuth flow: start at /connections/slack/oauth/user/start, then hit the
+// callback with the user-install code. The persisted connection must be
+// auth_kind=user_token carrying the xoxp- token from authed_user.
+func TestHandleOAuthCallback_SlackUserInstall(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	startRec := formPost(handler, env, "/connections/slack/oauth/user/start", url.Values{
+		"id":           {"acme-user-oauth"},
+		"display_name": {"Acme (as me)"},
+	})
+	if startRec.Code != http.StatusFound {
+		t.Fatalf("oauth/user/start failed: %d (body: %s)", startRec.Code, startRec.Body.String())
+	}
+	loc, _ := url.Parse(startRec.Header().Get("Location"))
+	// The authorize redirect must request user_scope (not bot scope).
+	if loc.Query().Get("user_scope") == "" {
+		t.Fatalf("user-install authorize URL missing user_scope: %s", loc)
+	}
+	state := loc.Query().Get("state")
+	if state == "" {
+		t.Fatal("no state in start redirect")
+	}
+
+	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=user-fake-code&state="+state, nil)
+	if c := env.SessionCookie(); c != nil {
+		cbReq.AddCookie(c)
+	}
+	cbRec := httptest.NewRecorder()
+	handler.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 after callback, got %d (body: %s)", cbRec.Code, cbRec.Body.String())
+	}
+
+	c, err := env.Connections.Get("acme-user-oauth")
+	if err != nil {
+		t.Fatalf("connection not persisted: %v", err)
+	}
+	if c.ConnectorType != "slack" || c.Status != connections.StatusActive {
+		t.Fatalf("connection metadata wrong: %+v", c)
+	}
+	full, _ := env.Connections.GetWithConfig("acme-user-oauth")
+	if full.Config["auth_kind"] != slackconn.KindUserToken {
+		t.Fatalf("expected auth_kind=user_token, got %v", full.Config["auth_kind"])
+	}
+	if full.Config["user_token"] != "xoxp-test-user-installed" {
+		t.Fatalf("user_token from authed_user not persisted: %v", full.Config["user_token"])
+	}
+	if _, ok := full.Config["oauth_token"]; ok {
+		t.Fatalf("user install should not store a bot oauth_token blob: %v", full.Config["oauth_token"])
+	}
+}
+
+// TestHandleOAuthCallback_SlackBotInstall_StillBot guards the existing
+// bot OAuth path: a plain install (no user_scope) still produces an
+// auth_kind=oauth connection with a bot token. Adding the user path must
+// not regress the bot path.
+func TestHandleOAuthCallback_SlackBotInstall_StillBot(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	startRec := formPost(handler, env, "/connections/slack/oauth/start", url.Values{
+		"id":           {"acme-bot-oauth"},
+		"display_name": {"Acme bot"},
+	})
+	if startRec.Code != http.StatusFound {
+		t.Fatalf("oauth/start failed: %d", startRec.Code)
+	}
+	loc, _ := url.Parse(startRec.Header().Get("Location"))
+	if loc.Query().Get("scope") == "" {
+		t.Fatalf("bot-install authorize URL missing scope: %s", loc)
+	}
+	state := loc.Query().Get("state")
+
+	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=fake-code&state="+state, nil)
+	if c := env.SessionCookie(); c != nil {
+		cbReq.AddCookie(c)
+	}
+	cbRec := httptest.NewRecorder()
+	handler.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", cbRec.Code, cbRec.Body.String())
+	}
+	full, _ := env.Connections.GetWithConfig("acme-bot-oauth")
+	if full.Config["auth_kind"] != slackconn.KindOAuth {
+		t.Fatalf("expected auth_kind=oauth, got %v", full.Config["auth_kind"])
+	}
+	tokenMap, _ := full.Config["oauth_token"].(map[string]any)
+	if tokenMap["access_token"] != "xoxb-test-installed" {
+		t.Fatalf("bot access_token not persisted: %v", tokenMap)
 	}
 }
 
@@ -372,6 +622,14 @@ func TestConnectionsPage_SlackCard_OAuthEnabled(t *testing.T) {
 	}
 	if !strings.Contains(body, `action="/connections/slack/token"`) {
 		t.Errorf("Slack card missing bot-token form (action=/connections/slack/token)")
+	}
+	// Both user-identity install paths must be offered alongside the bot
+	// paths (not instead of them).
+	if !strings.Contains(body, `action="/connections/slack/oauth/user/start"`) {
+		t.Errorf("Slack card missing user OAuth-start form (action=/connections/slack/oauth/user/start)")
+	}
+	if !strings.Contains(body, `action="/connections/slack/user-token"`) {
+		t.Errorf("Slack card missing user-token form (action=/connections/slack/user-token)")
 	}
 	// The Slack card must NOT have a generic /connections/add form
 	// with connector_type=slack — that's the broken fallthrough this
@@ -651,4 +909,3 @@ func TestPoliciesPage_SlackScope(t *testing.T) {
 		t.Errorf("expected JS SCOPE to be set to \"slack\"")
 	}
 }
-
