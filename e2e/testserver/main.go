@@ -24,6 +24,7 @@ import (
 	gmailconn "github.com/trilitech/Sieve/internal/connectors/gmail"
 	httpproxyconn "github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
+	"github.com/trilitech/Sieve/internal/iam"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/operator"
 	"github.com/trilitech/Sieve/internal/policy"
@@ -75,7 +76,9 @@ func main() {
 	// script_guard/script_filter policies actually execute in the demo / e2e
 	// (prod ships /opt/sieve-py and uses the bundled default).
 	var allowCmds []string
+	var pyCmd string
 	if py, lerr := exec.LookPath("python3"); lerr == nil {
+		pyCmd = py
 		allowCmds = append(allowCmds, py)
 	}
 	if nd, lerr := exec.LookPath("node"); lerr == nil {
@@ -104,8 +107,29 @@ console.log(JSON.stringify(body.includes('secret')
   ? {action: 'deny', reason: "blocked: contains 'secret'"}
   : {action: 'allow'}));
 `
+	// Sample script_filter (POST rewrite): a structured, programmatic redaction —
+	// walk the response JSON and blank any ssn/secret/token field. A real filter
+	// could call a local LLM here to decide what to strip.
+	const sampleFilterPy = `import sys, json
+req = json.load(sys.stdin)
+resp = (req.get("metadata") or {}).get("response", "")
+try:
+    data = json.loads(resp)
+except Exception:
+    print(json.dumps({"rewrite": resp}))  # not JSON -> pass through unchanged
+    sys.exit(0)
+SENSITIVE = {"ssn", "secret", "token"}
+def walk(v):
+    if isinstance(v, dict):
+        return {k: ("[redacted-by-script]" if k in SENSITIVE else walk(x)) for k, x in v.items()}
+    if isinstance(v, list):
+        return [walk(x) for x in v]
+    return v
+print(json.dumps({"rewrite": json.dumps(walk(data))}))
+`
 	must(os.WriteFile(filepath.Join(scriptDir, "block_secret.py"), []byte(sampleGuardPy), 0o600))
 	must(os.WriteFile(filepath.Join(scriptDir, "block_secret.js"), []byte(sampleGuardJS), 0o600))
+	must(os.WriteFile(filepath.Join(scriptDir, "scrub_pii.py"), []byte(sampleFilterPy), 0o600))
 	policy.SetScriptDirs([]string{scriptDir})
 
 	// Set up mock connector registry.
@@ -152,6 +176,22 @@ console.log(JSON.stringify(body.includes('secret')
 	mustErr(err, "build seed grant")
 	_, err = iamSvc.CreatePolicy("seed-read", "", grantCedar, true)
 	mustErr(err, "create seed grant")
+
+	// Seed sample script-based filters so the library shows BOTH a post-execution
+	// transform (script_filter) and a pre-execution decision (script_guard) —
+	// only when a Python runtime is present to actually run them.
+	if pyCmd != "" {
+		_, err = iamSvc.CreateFilter("scrub-pii-script",
+			"Script filter (Python): blanks ssn/secret/token fields in the response",
+			iam.KindScriptFilter, 0,
+			map[string]any{"command": pyCmd, "path": filepath.Join(scriptDir, "scrub_pii.py")})
+		mustErr(err, "seed script_filter")
+		_, err = iamSvc.CreateFilter("block-secret-guard",
+			"Script guard (Python): denies a send whose body contains 'secret'",
+			iam.KindScriptGuard, 0,
+			map[string]any{"command": pyCmd, "path": filepath.Join(scriptDir, "block_secret.py")})
+		mustErr(err, "seed script_guard")
+	}
 
 	tokResult, err := tokenSvc.Create(&tokens.CreateRequest{
 		Name:    "seed-token",

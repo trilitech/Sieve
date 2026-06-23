@@ -307,3 +307,81 @@ func TestIAMEnforce_FilterUnionUnderComposition(t *testing.T) {
 		t.Errorf("COMPOSITION BYPASS: role B (no filter) stripped role A's redact — SSN leaked: %s", body)
 	}
 }
+
+// apiFilterScript is a post-execution script_filter: it reads the response from
+// metadata.response, walks the JSON, blanks any `ssn` field, and returns the
+// rewritten response. Proves a script TRANSFORM (not just a guard) runs e2e.
+const apiFilterScript = `import sys, json
+req = json.load(sys.stdin)
+resp = (req.get("metadata") or {}).get("response", "")
+data = json.loads(resp)
+def walk(v):
+    if isinstance(v, dict):
+        return {k: ("[redacted-by-script]" if k == "ssn" else walk(x)) for k, x in v.items()}
+    if isinstance(v, list):
+        return [walk(x) for x in v]
+    return v
+print(json.dumps({"rewrite": json.dumps(walk(data))}))
+`
+
+// TestIAMEnforce_ScriptFilterRewritesResponse proves a script_filter (post-exec
+// transform) actually REWRITES the response through the real gateway — not a
+// guard (allow/deny) but a content transform, the case the UI now exposes.
+func TestIAMEnforce_ScriptFilterRewritesResponse(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	policy.SetCommandAllowlist([]string{py})
+	defer policy.SetCommandAllowlist(nil)
+
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "scrub.py")
+	if err := os.WriteFile(scriptPath, []byte(apiFilterScript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policy.SetScriptDirs([]string{dir})
+	defer policy.SetScriptDirs(nil)
+
+	env := setupIAMRouter(t)
+	if err := env.settingsSet("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
+	env.mock.SetResponse("list_emails", map[string]any{
+		"emails": []any{map[string]any{"id": "1", "ssn": "123-45-6789"}},
+	})
+	if _, err := env.iam.CreateFilter("scrub-script", "rewrite: redact ssn",
+		iam.KindScriptFilter, 0, map[string]any{"command": py, "path": scriptPath}); err != nil {
+		t.Fatal(err)
+	}
+	spec := iampolicies.RuleSpec{
+		RoleID: env.roleID, Effect: "allow", ConnectorType: "mock", OpScope: "read",
+		ConnectionIDs: []string{"mock-conn"}, Filters: []string{"scrub-script"},
+	}
+	grant, err := iampolicies.BuildRuleCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.iam.CreatePolicy("read-scrub", "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := iampolicies.BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.iam.CreateGuardrail("read-scrub-g", "", guard, true); err != nil {
+		t.Fatal(err)
+	}
+
+	status, body := apiPost(t, env.url+"/api/v1/connections/mock-conn/ops/list_emails", env.tok, "{}")
+	if status != 200 {
+		t.Fatalf("read should be allowed, got %d", status)
+	}
+	raw, _ := json.Marshal(body)
+	if strings.Contains(string(raw), "123-45-6789") {
+		t.Errorf("script_filter should have rewritten the SSN out of the response: %s", raw)
+	}
+	if !strings.Contains(string(raw), "[redacted-by-script]") {
+		t.Errorf("expected the script's redaction marker in the response: %s", raw)
+	}
+}

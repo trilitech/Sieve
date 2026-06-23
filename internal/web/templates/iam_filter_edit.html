@@ -40,6 +40,7 @@
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <option value="redact" {{if eq .Kind "redact"}}selected{{end}}>Redact (mask matching text in the response)</option>
                 <option value="exclude_items" {{if eq .Kind "exclude_items"}}selected{{end}}>Exclude items (drop list items containing text)</option>
+                <option value="script_filter" {{if eq .Kind "script_filter"}}selected{{end}}>Script filter (transforms the response after it runs)</option>
                 <option value="script_guard" {{if eq .Kind "script_guard"}}selected{{end}}>Script guard (may deny before execution)</option>
               </select>
             </div>
@@ -79,17 +80,18 @@
             </div>
           </div>
 
-          <!-- script_guard config -->
-          <div id="filter-cfg-script_guard" class="mt-5 hidden">
+          <!-- script_guard / script_filter config — shared inputs; help differs by kind. -->
+          <div id="filter-cfg-script" class="mt-5 hidden">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Language</label>
             <select name="language" class="mb-3 rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <option value="python" {{if eq .Language "python"}}selected{{end}}>Python</option>
               <option value="javascript" {{if eq .Language "javascript"}}selected{{end}}>JavaScript (Node)</option>
             </select>
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Guard script path</label>
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Script path</label>
             <input type="text" name="script_path" value="{{.ScriptPath}}" placeholder="/opt/sieve-py/guards/biz_hours.py"
                    class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <p class="text-xs text-slate-500 mt-2">Absolute path to a script on the Sieve host, under the allowed scripts directory (<code>/opt/sieve-py</code> by default; no <code>..</code>). Reads a JSON request on stdin, writes a JSON decision on stdout; anything else is treated as deny.</p>
+            <p id="filter-help-guard" class="text-xs text-slate-500 mt-2">Runs <strong>before</strong> the operation under the allowed scripts directory (<code>/opt/sieve-py</code>; no <code>..</code>). Reads a JSON request on stdin, writes a JSON decision (<code>allow</code>/<code>deny</code>/<code>approval_required</code>) on stdout; anything else is treated as deny.</p>
+            <p id="filter-help-filter" class="hidden text-xs text-slate-500 mt-2">Runs <strong>after</strong> the operation under the allowed scripts directory (<code>/opt/sieve-py</code>; no <code>..</code>) and <strong>rewrites the response</strong>. Reads the response on stdin as <code>metadata.response</code>; writes <code>{"rewrite": "&lt;new response&gt;"}</code> on stdout. Stacks with other transforms in rank order.</p>
           </div>
 
           <div class="mt-6 flex items-center gap-3">
@@ -109,10 +111,15 @@
           function sync(setDefaults) {
             const v = kindSel.value;
             const usesPatterns = (v === 'redact' || v === 'exclude_items');
+            const usesScript = (v === 'script_guard' || v === 'script_filter');
             const patterns = document.getElementById('filter-cfg-patterns');
-            const guard = document.getElementById('filter-cfg-script_guard');
+            const script = document.getElementById('filter-cfg-script');
             if (patterns) patterns.classList.toggle('hidden', !usesPatterns);
-            if (guard) guard.classList.toggle('hidden', v !== 'script_guard');
+            if (script) script.classList.toggle('hidden', !usesScript);
+            const hg = document.getElementById('filter-help-guard');
+            const hf = document.getElementById('filter-help-filter');
+            if (hg) hg.classList.toggle('hidden', v !== 'script_guard');
+            if (hf) hf.classList.toggle('hidden', v !== 'script_filter');
             if (setDefaults && usesPatterns) {
               const matchSel = document.getElementById('filter-match');
               if (matchSel) matchSel.value = (v === 'redact') ? 'regex' : 'contains';

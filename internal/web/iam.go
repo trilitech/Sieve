@@ -699,7 +699,11 @@ func (s *Server) parseFilterConfig(r *http.Request) (iam.FilterKind, map[string]
 			config["match"] = "contains"
 		}
 		return iam.FilterKind(kindStr), config, nil
-	case string(iam.KindScriptGuard):
+	case string(iam.KindScriptGuard), string(iam.KindScriptFilter):
+		// script_guard (pre-execution decision) and script_filter (post-execution
+		// response rewrite) share the same config — a language → interpreter and a
+		// path under the allowlisted scripts dir. Only the execution phase differs,
+		// and that's carried by the kind.
 		path := strings.TrimSpace(r.FormValue("script_path"))
 		if err := iampolicies.ValidateScriptPath(path); err != nil {
 			return "", nil, &parseError{msg: "script path rejected: " + err.Error(), code: http.StatusBadRequest}
@@ -712,7 +716,7 @@ func (s *Server) parseFilterConfig(r *http.Request) (iam.FilterKind, map[string]
 		}
 		config["command"] = command
 		config["path"] = path
-		return iam.KindScriptGuard, config, nil
+		return iam.FilterKind(kindStr), config, nil
 	default:
 		return "", nil, &parseError{msg: "unknown filter kind", code: http.StatusBadRequest}
 	}
@@ -815,7 +819,7 @@ func (s *Server) renderFilterEditPage(w http.ResponseWriter, r *http.Request, na
 		if m, _ := f.Config["match"].(string); m == "regex" {
 			data.Match = "regex"
 		}
-	case iam.KindScriptGuard:
+	case iam.KindScriptGuard, iam.KindScriptFilter:
 		data.ScriptPath, _ = f.Config["path"].(string)
 		cmd, _ := f.Config["command"].(string)
 		data.Language = languageForCommand(cmd)

@@ -90,7 +90,8 @@
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <option value="redact">Redact (mask matching text in the response)</option>
                 <option value="exclude_items">Exclude items (drop list items containing text)</option>
-                <option value="script_guard">Script guard (Python; may deny before execution)</option>
+                <option value="script_filter">Script filter (Python or JS; transforms the response after it runs)</option>
+                <option value="script_guard">Script guard (Python or JS; may deny before execution)</option>
               </select>
             </div>
           </div>
@@ -135,17 +136,20 @@
             </div>
           </div>
 
-          <!-- script_guard config -->
-          <div id="filter-cfg-script_guard" class="mt-5 hidden">
+          <!-- script_guard / script_filter config — shared inputs (one language +
+               one path); only the contract help below differs by kind. -->
+          <div id="filter-cfg-script" class="mt-5 hidden">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Language</label>
             <select name="language" class="mb-3 rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
               <option value="python">Python</option>
               <option value="javascript">JavaScript (Node)</option>
             </select>
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Guard script path</label>
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Script path</label>
             <input type="text" name="script_path" placeholder="/opt/sieve-py/guards/biz_hours.py"
                    class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <div class="text-xs text-slate-500 mt-2 space-y-2 rounded-lg bg-slate-900/60 border border-slate-700 p-3">
+
+            <!-- guard contract (pre-execution decision) -->
+            <div id="filter-help-guard" class="text-xs text-slate-500 mt-2 space-y-2 rounded-lg bg-slate-900/60 border border-slate-700 p-3">
               <p>Absolute path to a script file <strong>on the Sieve host</strong>, under the allowed scripts directory (<code>/opt/sieve-py</code> by default; no <code>..</code>). It runs <strong>before</strong> the operation via the sandboxed interpreter, with a 5-second timeout.</p>
               <p><strong class="text-slate-300">Reads</strong> a JSON request on <code>stdin</code>:</p>
               <pre class="text-slate-400 whitespace-pre-wrap">{"operation": "send_email", "connector": "google",
@@ -160,6 +164,27 @@ if "secret" in body.lower():
     print(json.dumps({"action": "deny", "reason": "contains 'secret'"}))
 else:
     print(json.dumps({"action": "allow"}))</pre>
+            </div>
+
+            <!-- filter contract (post-execution rewrite) -->
+            <div id="filter-help-filter" class="hidden text-xs text-slate-500 mt-2 space-y-2 rounded-lg bg-slate-900/60 border border-slate-700 p-3">
+              <p>Absolute path to a script file <strong>on the Sieve host</strong>, under the allowed scripts directory (<code>/opt/sieve-py</code> by default; no <code>..</code>). It runs <strong>after</strong> the operation via the sandboxed interpreter (5-second timeout) and <strong>rewrites the response</strong> the agent receives.</p>
+              <p><strong class="text-slate-300">Reads</strong> a JSON request on <code>stdin</code> whose <code>metadata.response</code> holds the response so far (a JSON string):</p>
+              <pre class="text-slate-400 whitespace-pre-wrap">{"metadata": {"phase": "post",
+   "response": "{\"emails\": [{\"id\": \"1\", \"ssn\": \"123-45-6789\"}]}"}}</pre>
+              <p><strong class="text-slate-300">Writes</strong> <code>{"rewrite": "&lt;new response string&gt;"}</code> on <code>stdout</code> — that string replaces the response. (Empty/no <code>rewrite</code> = pass through; an error or timeout fails closed.) Stacks with other transforms in rank order.</p>
+              <p class="text-slate-300">Example — structured PII scrub (a real one could call a local LLM):</p>
+              <pre class="text-slate-400 whitespace-pre-wrap">import sys, json
+req = json.load(sys.stdin)
+resp = (req.get("metadata") or {}).get("response", "")
+data = json.loads(resp)
+SENSITIVE = {"ssn", "secret", "token"}
+def walk(v):
+    if isinstance(v, dict):
+        return {k: ("[redacted]" if k in SENSITIVE else walk(x)) for k, x in v.items()}
+    if isinstance(v, list): return [walk(x) for x in v]
+    return v
+print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             </div>
           </div>
 
@@ -874,10 +899,15 @@ else:
             const v = kindSel.value;
             // redact + exclude_items share one config block (patterns + match).
             const usesPatterns = (v === 'redact' || v === 'exclude_items');
+            const usesScript = (v === 'script_guard' || v === 'script_filter');
             const patterns = el('filter-cfg-patterns');
-            const guard = el('filter-cfg-script_guard');
+            const script = el('filter-cfg-script');
             if (patterns) patterns.classList.toggle('hidden', !usesPatterns);
-            if (guard) guard.classList.toggle('hidden', v !== 'script_guard');
+            if (script) script.classList.toggle('hidden', !usesScript);
+            const hg = el('filter-help-guard');
+            const hf = el('filter-help-filter');
+            if (hg) hg.classList.toggle('hidden', v !== 'script_guard');
+            if (hf) hf.classList.toggle('hidden', v !== 'script_filter');
             const rh = el('filter-patterns-redact-hint');
             const eh = el('filter-patterns-exclude-hint');
             if (rh) rh.classList.toggle('hidden', v !== 'redact');

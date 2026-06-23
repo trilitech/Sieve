@@ -151,6 +151,15 @@ func (s *ScriptEvaluator) Evaluate(ctx context.Context, req *PolicyRequest) (*Po
 	switch decision.Action {
 	case "allow", "deny", "approval_required":
 		// valid
+	case "":
+		// A post-execution filter (script_filter) is a TRANSFORM, not a decision:
+		// it returns only {"rewrite": "..."} with no action. Accept that as
+		// allow + rewrite. An empty action with no rewrite is still treated as
+		// deny (fail-closed) — a guard that produced no decision.
+		if decision.Rewrite == "" {
+			return denyDecision(fmt.Sprintf("script evaluator: invalid action %q; treating as deny", decision.Action)), nil
+		}
+		decision.Action = "allow"
 	default:
 		return denyDecision(fmt.Sprintf("script evaluator: invalid action %q; treating as deny", decision.Action)), nil
 	}
