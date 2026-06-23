@@ -13,7 +13,23 @@ const (
 	annFilters    = "filters"      // @filters("name1 name2 …")
 	annAuditLabel = "audit_label"  // @audit_label("…")
 	annDenyMsg    = "deny_message" // @deny_message("…")  (read on deny, not here)
+	// A grant whose CONDITION is a script (spec §5.4) carries the interpreter +
+	// path as annotations; the engine surfaces them per-grant and the PEP runs the
+	// script (deny ⇒ that grant is vetoed). These are NOT obligations.
+	annCondScriptCmd  = "condition_script_command"
+	annCondScriptPath = "condition_script_path"
 )
+
+// scriptCondFromAnns returns the per-grant script condition a permit carries, or
+// nil if it has none (a declarative / unconditional grant).
+func scriptCondFromAnns(anns map[string]string) *ScriptCond {
+	cmd := strings.TrimSpace(anns[annCondScriptCmd])
+	path := strings.TrimSpace(anns[annCondScriptPath])
+	if cmd == "" || path == "" {
+		return nil
+	}
+	return &ScriptCond{Command: cmd, Path: path}
+}
 
 // collectObligations builds the Obligations for an ALLOW from the annotations of
 // the determining permits (spec §7.3). It is pure and cedar-free: engine.go

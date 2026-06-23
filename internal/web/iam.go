@@ -385,15 +385,23 @@ func (s *Server) specFromState(st builderFormState) iampolicies.RuleSpec {
 			break
 		}
 	}
-	condMeta := map[string]connector.RuleCondition{}
-	for _, c := range meta.RuleConditions {
-		condMeta[c.Key] = c
-	}
-	for _, bc := range st.Conditions {
-		cm := condMeta[bc.Key]
-		spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
-			Kind: cm.Kind, CtxPath: cm.CtxPath, Op: bc.Op, Value: bc.Value, Ops: cm.Ops,
-		})
+	if st.ConditionMode == "script" {
+		spec.ConditionMode = "script"
+		spec.ConditionScript = iampolicies.ScriptCondSpec{
+			Command: iampolicies.ScriptCommandFor(st.ConditionScriptLanguage),
+			Path:    st.ConditionScriptPath,
+		}
+	} else {
+		condMeta := map[string]connector.RuleCondition{}
+		for _, c := range meta.RuleConditions {
+			condMeta[c.Key] = c
+		}
+		for _, bc := range st.Conditions {
+			cm := condMeta[bc.Key]
+			spec.Conditions = append(spec.Conditions, iampolicies.ConditionInput{
+				Kind: cm.Kind, CtxPath: cm.CtxPath, Op: bc.Op, Value: bc.Value, Ops: cm.Ops,
+			})
+		}
 	}
 	spec.Filters = st.Filters
 	return spec
@@ -636,10 +644,11 @@ func (s *Server) handleIAMRoleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleIAMFilterCreate creates a filter-library entry (POST /iam/filters).
-// The filter library lets an operator author response filters (redact /
-// exclude_items) and pre-execution guards (script_guard) by name, without
-// writing Cedar; rules in the builder then reference them via the @filters
-// annotation (the builder handler reads r.Form["filters"]).
+// The filter library holds response TRANSFORMS (redact / exclude_items /
+// script_filter) authored by name; rules in the builder then reference them via
+// the @filters annotation (the builder handler reads r.Form["filters"]). A script
+// that DECIDES allow/deny/approval is not a filter — it's a rule's script
+// condition (spec §5.4), authored on the rule.
 func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 	if s.iam == nil {
 		http.Redirect(w, r, "/iam", http.StatusSeeOther)
@@ -699,11 +708,11 @@ func (s *Server) parseFilterConfig(r *http.Request) (iam.FilterKind, map[string]
 			config["match"] = "contains"
 		}
 		return iam.FilterKind(kindStr), config, nil
-	case string(iam.KindScriptGuard), string(iam.KindScriptFilter):
-		// script_guard (pre-execution decision) and script_filter (post-execution
-		// response rewrite) share the same config — a language → interpreter and a
-		// path under the allowlisted scripts dir. Only the execution phase differs,
-		// and that's carried by the kind.
+	case string(iam.KindScriptFilter):
+		// script_filter is a post-execution response transform (rewrite). Config is
+		// a language → interpreter and a path under the allowlisted scripts dir.
+		// (A script that DECIDES allow/deny/approval is not a filter — it's a rule's
+		// script CONDITION, authored on the rule, spec §5.4.)
 		path := strings.TrimSpace(r.FormValue("script_path"))
 		if err := iampolicies.ValidateScriptPath(path); err != nil {
 			return "", nil, &parseError{msg: "script path rejected: " + err.Error(), code: http.StatusBadRequest}
@@ -819,7 +828,7 @@ func (s *Server) renderFilterEditPage(w http.ResponseWriter, r *http.Request, na
 		if m, _ := f.Config["match"].(string); m == "regex" {
 			data.Match = "regex"
 		}
-	case iam.KindScriptGuard, iam.KindScriptFilter:
+	case iam.KindScriptFilter:
 		data.ScriptPath, _ = f.Config["path"].(string)
 		cmd, _ := f.Config["command"].(string)
 		data.Language = languageForCommand(cmd)
@@ -945,7 +954,13 @@ type builderFormState struct {
 	Connections   []string          `json:"connections"`
 	ScopeKey      string            `json:"scope_key"`
 	ScopeFields   map[string]string `json:"scope_fields"`
-	Conditions    []builderCond     `json:"conditions"`
+	// ConditionMode is "" / "declarative" (use Conditions) or "script" (use the
+	// ConditionScript* fields) — the rule's condition is authored one way or the
+	// other (spec §5.4).
+	ConditionMode           string        `json:"condition_mode,omitempty"`
+	ConditionScriptLanguage string        `json:"condition_script_language,omitempty"`
+	ConditionScriptPath     string        `json:"condition_script_path,omitempty"`
+	Conditions              []builderCond `json:"conditions"`
 	// ExemptConditions are guardrail-only exemptions (the `unless` clause).
 	ExemptConditions []builderCond `json:"exempt_conditions,omitempty"`
 	Filters          []string      `json:"filters"`
@@ -1036,12 +1051,26 @@ func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string
 		}
 	}
 
-	// Grant conditions (cond_*) REFINE what a rule covers — only on permit
-	// effects, because Cedar skips a condition-erroring policy: on a permit that
-	// fails closed (skipped → default deny); on a forbid it would fail OPEN, so
-	// we never attach conditions to deny rules. Express a cap as "allow when
-	// amount <= N", not "deny when > N".
-	if spec.Effect != "deny" {
+	// A rule's CONDITION (its gate) is authored EITHER declaratively (cond_*) OR as
+	// a script (spec §5.4) — never both. Both only apply to permit effects (Cedar
+	// skips a condition-erroring policy: on a permit it fails closed → default deny;
+	// on a forbid it would fail OPEN), so deny rules carry neither.
+	if spec.Effect != "deny" && r.FormValue("condition_mode") == "script" {
+		path := strings.TrimSpace(r.FormValue("condition_script_path"))
+		if err := iampolicies.ValidateScriptPath(path); err != nil {
+			return spec, "", "", &parseError{msg: "script condition path rejected: " + err.Error(), code: http.StatusBadRequest}
+		}
+		language := r.FormValue("condition_script_language")
+		command := iampolicies.ScriptCommandFor(language)
+		if err := iampolicies.ValidateScriptCommand(command); err != nil {
+			return spec, "", "", &parseError{msg: "script condition runtime rejected: " + err.Error(), code: http.StatusBadRequest}
+		}
+		spec.ConditionMode = "script"
+		spec.ConditionScript = iampolicies.ScriptCondSpec{Command: command, Path: path}
+		state.ConditionMode = "script"
+		state.ConditionScriptLanguage = language
+		state.ConditionScriptPath = path
+	} else if spec.Effect != "deny" {
 		conds, st, perr := s.parseConditionSet(r, meta.RuleConditions, "cond")
 		if perr != nil {
 			return spec, "", "", perr

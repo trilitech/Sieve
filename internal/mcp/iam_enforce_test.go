@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/trilitech/Sieve/internal/iam"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/mcp"
 	"github.com/trilitech/Sieve/internal/policy"
@@ -20,11 +19,11 @@ b = ((req.get("params") or {}).get("body")) or ""
 print(json.dumps({"action": "deny", "reason": "blocked"} if "secret" in b.lower() else {"action": "allow"}))
 `
 
-// TestMCP_ScriptGuardEnforced proves the SECOND agent surface (MCP) enforces an
-// operator-authored script guard identically to REST: a tool call whose body
-// contains "secret" returns a tool error; a clean one succeeds. Without this,
+// TestMCP_ScriptConditionEnforced proves the SECOND agent surface (MCP) enforces a
+// rule's script-mode CONDITION (spec §5.4) identically to REST: a tool call whose
+// body contains "secret" returns a tool error; a clean one succeeds. Without this,
 // "the gateway provably enforces" would be proven for only one surface.
-func TestMCP_ScriptGuardEnforced(t *testing.T) {
+func TestMCP_ScriptConditionEnforced(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 not available")
@@ -45,26 +44,18 @@ func TestMCP_ScriptGuardEnforced(t *testing.T) {
 	tok := env.CreateToken(t, role.ID)
 	env.Mock.SetResponse("send_email", map[string]any{"id": "1"})
 
-	if _, err := env.IAM.CreateFilter("block-secret", "", iam.KindScriptGuard, 0,
-		map[string]any{"command": py, "path": scriptPath}); err != nil {
-		t.Fatal(err)
-	}
-	spec := iampolicies.RuleSpec{
+	// The send rule's CONDITION is a script (spec §5.4). The seed role grant is
+	// read-only, so this rule is the sole authorizer of the write → the script gates it.
+	grant, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
 		RoleID: role.ID, Effect: "allow", ConnectorType: "mock", OpScope: "write",
-		ConnectionIDs: []string{"test-conn"}, Filters: []string{"block-secret"},
-	}
-	grant, err := iampolicies.BuildRuleCedar(spec, nil)
+		ConnectionIDs:   []string{"test-conn"},
+		ConditionMode:   "script",
+		ConditionScript: iampolicies.ScriptCondSpec{Command: py, Path: scriptPath},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.IAM.CreatePolicy("send-guarded", "", grant, true); err != nil {
-		t.Fatal(err)
-	}
-	guard, err := iampolicies.BuildGuardrailCedar(spec, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := env.IAM.CreateGuardrail("send-guarded-g", "", guard, true); err != nil {
+	if _, err := env.IAM.CreatePolicy("send-scripted", "", grant, true); err != nil {
 		t.Fatal(err)
 	}
 

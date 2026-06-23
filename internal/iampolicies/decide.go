@@ -2,6 +2,7 @@ package iampolicies
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/trilitech/Sieve/internal/connector"
@@ -85,12 +86,13 @@ func taxonomyOp(reg *connector.Registry, connType, op string) connector.Operatio
 	return connector.OperationDef{Name: op, ReadOnly: false}
 }
 
-// resolveDecision turns an engine Decision into a PolicyDecision, EXECUTING any
-// pre-execution guard obligations (e.g. a custom script that inspects the
-// outgoing request and allows/denies it — "what can or cannot be sent"). A guard
-// that denies (or its execution failing) short-circuits to deny: fail-closed,
-// but now because the guard actually ran and said so, not because execution is
-// stubbed. Post-execution filters are bridged to the response-filter applier.
+// resolveDecision turns an engine Decision into a PolicyDecision, running any
+// PER-GRANT script conditions (spec §5.4: a script that returns allow/deny/
+// approval is the "script mode" of a rule's condition). A script that denies (or
+// errors) vetoes ONLY ITS grant — not the whole request — so the request is
+// allowed as long as some grant survives (a plain grant, or a script grant whose
+// script allowed). Obligations are collected from the SURVIVING grants plus the
+// always-on unconditional set. Post-execution filters bridge to the applier.
 func (s *Service) resolveDecision(ctx context.Context, d iam.Decision, req *policy.PolicyRequest) *policy.PolicyDecision {
 	if !d.Allow {
 		reason := d.Reason
@@ -99,56 +101,87 @@ func (s *Service) resolveDecision(ctx context.Context, d iam.Decision, req *poli
 		}
 		return &policy.PolicyDecision{Action: "deny", Reason: reason}
 	}
+	// Legacy backstop: a pre-execution guard FILTER is no longer a thing (decision
+	// scripts are rule conditions now). If one lingers in stored data, fail closed
+	// loudly rather than silently allow past an unenforced guard.
+	if len(d.Obligations.Guards) > 0 {
+		return &policy.PolicyDecision{Action: "deny", Reason: "unsupported guard filter — express it as a rule's script condition (spec §5.4)"}
+	}
 
-	for _, g := range d.Obligations.Guards {
-		switch g.Kind {
-		case iam.KindScriptGuard:
-			gd := runScriptGuard(ctx, g, req)
-			if gd.Action != "allow" {
-				return gd // deny / approval_required from the guard propagates
-			}
-		default:
-			// e.g. rate_limit — not executable in this build. Fail closed
-			// LOUDLY rather than silently allowing past an unenforced guard.
-			// (The UI must not offer guard kinds that aren't executed.)
-			return &policy.PolicyDecision{Action: "deny", Reason: "guard kind " + string(g.Kind) + " is not supported in this build"}
+	// Unconditional obligations (plain grants + guardrails) always apply.
+	post := append([]iam.Filter(nil), d.Obligations.Post...)
+	approval := d.Obligations.Approval
+	allowStands := d.HasPlainGrant
+
+	// Per-grant script conditions: each gates only its own grant.
+	for _, c := range d.ScriptGrants {
+		v := runScriptCondition(ctx, c.Script, req)
+		switch v.Action {
+		case "allow":
+			allowStands = true
+			post = append(post, c.Post...)
+			approval = approval || c.Approval
+		case "approval_required":
+			allowStands = true
+			post = append(post, c.Post...)
+			approval = true
+		default: // deny / error → veto THIS grant only
+			continue
 		}
 	}
 
-	pd := &policy.PolicyDecision{Action: "allow", Filters: obligationsToFilters(d.Obligations.Post)}
-	if d.Obligations.Approval {
+	if !allowStands {
+		// Every matching grant was vetoed by its script condition → default deny.
+		return &policy.PolicyDecision{Action: "deny", Reason: "denied by policy"}
+	}
+
+	pd := &policy.PolicyDecision{Action: "allow", Filters: obligationsToFilters(mergePost(post))}
+	if approval {
 		pd.Action = "approval_required"
 		pd.Reason = "approval required"
 	}
 	return pd
 }
 
-// runScriptGuard executes a script_guard obligation: it materializes the inline
-// script to a temp file and runs it through the sandboxed ScriptEvaluator (stdin
-// = the request JSON, stdout = {action: allow|deny|approval_required}). The
-// command is allowlist-validated by NewScriptEvaluator.
-func runScriptGuard(ctx context.Context, g iam.Filter, req *policy.PolicyRequest) *policy.PolicyDecision {
-	path, _ := g.Config["path"].(string)
-	command, _ := g.Config["command"].(string)
-	if path == "" || command == "" {
-		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "' is misconfigured"}
+// mergePost dedups the surviving grants' + unconditional post filters by name and
+// orders them by (Order, Name) — the canonical pipeline order (spec §7.1).
+func mergePost(in []iam.Filter) []iam.Filter {
+	seen := make(map[string]bool, len(in))
+	out := make([]iam.Filter, 0, len(in))
+	for _, f := range in {
+		if seen[f.Name] {
+			continue
+		}
+		seen[f.Name] = true
+		out = append(out, f)
 	}
-	// Defense in depth: re-validate the script path at execution time (it was
-	// also checked at save), so a path that left the allowlist since (or a
-	// tampered config) can't reach the interpreter.
-	if err := policy.ValidateScriptPath(path); err != nil {
-		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "': " + err.Error()}
-	}
-
-	ev, err := policy.NewScriptEvaluator(map[string]any{
-		"command": command, "script": path, "timeout": g.Config["timeout"],
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Order != out[j].Order {
+			return out[i].Order < out[j].Order
+		}
+		return out[i].Name < out[j].Name
 	})
+	return out
+}
+
+// runScriptCondition runs a grant's script-mode condition: the script reads the
+// request on stdin and returns {action: allow|deny|approval_required}. A deny (or
+// any execution failure) vetoes the grant — fail-closed. The path + command are
+// re-validated here (defense in depth) on top of the save-time check.
+func runScriptCondition(ctx context.Context, sc iam.ScriptCond, req *policy.PolicyRequest) *policy.PolicyDecision {
+	if sc.Path == "" || sc.Command == "" {
+		return &policy.PolicyDecision{Action: "deny", Reason: "script condition is misconfigured"}
+	}
+	if err := policy.ValidateScriptPath(sc.Path); err != nil {
+		return &policy.PolicyDecision{Action: "deny", Reason: "script condition: " + err.Error()}
+	}
+	ev, err := policy.NewScriptEvaluator(map[string]any{"command": sc.Command, "script": sc.Path})
 	if err != nil {
-		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "': " + err.Error()}
+		return &policy.PolicyDecision{Action: "deny", Reason: "script condition: " + err.Error()}
 	}
 	pd, err := ev.Evaluate(ctx, req)
 	if err != nil {
-		return &policy.PolicyDecision{Action: "deny", Reason: "script guard '" + g.Name + "' error: " + err.Error()}
+		return &policy.PolicyDecision{Action: "deny", Reason: "script condition error: " + err.Error()}
 	}
 	return pd
 }

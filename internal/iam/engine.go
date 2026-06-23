@@ -118,18 +118,44 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 		return out, nil
 	}
 
-	// Obligations bind the OUTCOME and are the UNION of two sources (spec §7.3):
-	//   - the matching GRANT permits (grant-scoped: "this rule carries this
-	//     filter/approval"). Reasons only — a condition-erroring permit is skipped
-	//     (no grant ⇒ no obligation), the fail-closed polarity.
-	//   - EVERY matching-or-errored GUARDRAIL (global, role-agnostic invariants).
-	//     Reasons∪Errors — an errored guardrail still imposes its obligation, the
-	//     fail-safe polarity (spec §7.6).
-	// Because they UNION, composition can only ADD an obligation, never strip one
-	// (the monotonicity invariant): a sibling grant that authorizes the same action
-	// without the filter does not remove the filtered grant's obligation.
-	perPermit := annotationMapsByID(e.grants, reasonIDs(diag.Reasons))
-	perPermit = append(perPermit, e.matchedGuardrails(entities, req)...)
+	// Split the matching grant permits (spec §5.4/§7.3):
+	//   - SCRIPT-CONDITION grants carry a per-grant decision script; surface each
+	//     as a candidate so the PEP runs it (deny ⇒ that grant is vetoed, not the
+	//     request). Its obligations apply only if it survives, so they are kept on
+	//     the candidate, not folded into the unconditional set.
+	//   - PLAIN grants (no script) are unconditional; their obligations always
+	//     apply. Reasons only — a condition-erroring permit is skipped by Cedar (no
+	//     grant ⇒ no obligation), the fail-closed polarity.
+	// The UNCONDITIONAL obligations are the union of the plain grants and EVERY
+	// matching-or-errored GUARDRAIL (global, role-agnostic; Reasons∪Errors, the
+	// fail-safe polarity, spec §7.6). Because obligations UNION, composition can
+	// only ADD one, never strip it (the monotonicity invariant).
+	var plain []map[string]string
+	seenPID := make(map[types.PolicyID]bool)
+	for _, pid := range reasonIDs(diag.Reasons) {
+		if seenPID[pid] {
+			continue
+		}
+		seenPID[pid] = true
+		p := e.grants.Get(pid)
+		if p == nil {
+			continue
+		}
+		anns := annotationsToMap(p.Annotations())
+		if sc := scriptCondFromAnns(anns); sc != nil {
+			cobl, err := collectObligations([]map[string]string{anns}, e.lib)
+			if err != nil {
+				return Decision{Allow: false, Reason: err.Error(), Determining: out.Determining, EvalErrors: out.EvalErrors}, nil
+			}
+			out.ScriptGrants = append(out.ScriptGrants, GrantCandidate{
+				PolicyID: string(pid), Script: *sc, Post: cobl.Post, Approval: cobl.Approval,
+			})
+		} else {
+			plain = append(plain, anns)
+			out.HasPlainGrant = true
+		}
+	}
+	perPermit := append(plain, e.matchedGuardrails(entities, req)...)
 	obl, err := collectObligations(perPermit, e.lib)
 	if err != nil {
 		// Fail closed: an unresolvable obligation denies rather than allowing

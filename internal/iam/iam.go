@@ -50,11 +50,45 @@ type Decision struct {
 	Allow       bool
 	Reason      string
 	Determining []string
+	// Obligations are the UNCONDITIONAL obligations on an allow: those of the
+	// matching plain grants (no script condition) plus every matching guardrail.
+	// They apply regardless of how the script-condition grants resolve.
 	Obligations Obligations
+	// ScriptGrants are matching grant permits whose condition is a SCRIPT — the
+	// "script mode" of a rule's condition (spec §5.4). The PEP runs each per-grant
+	// (it can do I/O; the engine stays pure): a non-allow result vetoes THAT grant
+	// only, never the whole request. A candidate's Post/Approval apply iff it
+	// survives, so they are NOT in Obligations.
+	ScriptGrants []GrantCandidate
+	// HasPlainGrant is true when at least one matching grant permit had no script
+	// condition — an unconditional grant, so the allow stands no matter how the
+	// script grants resolve. If false, the allow stands only if some script grant
+	// survives (else every matching grant was vetoed by its condition → deny).
+	HasPlainGrant bool
 	// EvalErrors holds per-policy evaluation errors (Cedar skips errored
 	// policies — spec §6). They never change the outcome; they are logged so a
 	// policy that silently fails closed is visible.
 	EvalErrors []EvalError
+}
+
+// GrantCandidate is a matching grant permit whose condition is a decision script
+// (spec §5.4). The PEP runs Script: allow ⇒ the grant stands (its Post/Approval
+// apply); approval ⇒ stands + requires approval; deny/error ⇒ this grant is
+// vetoed (dropped), not the whole request. Post/Approval are this grant's own
+// obligations, applied only if it survives.
+type GrantCandidate struct {
+	PolicyID string
+	Script   ScriptCond
+	Post     []Filter
+	Approval bool
+}
+
+// ScriptCond is the script form of a rule's condition: a program that reads the
+// request and returns allow/deny/approval. It gates ITS grant per-grant. The
+// engine surfaces it on the Decision; the PEP runs it (the engine does no I/O).
+type ScriptCond struct {
+	Command string
+	Path    string
 }
 
 // EvalError is a single policy that errored during evaluation (and was skipped).

@@ -177,20 +177,27 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))
 	_, err = iamSvc.CreatePolicy("seed-read", "", grantCedar, true)
 	mustErr(err, "create seed grant")
 
-	// Seed sample script-based filters so the library shows BOTH a post-execution
-	// transform (script_filter) and a pre-execution decision (script_guard) —
-	// only when a Python runtime is present to actually run them.
+	// Seed sample scripts — only when a Python runtime is present to run them.
+	// A response TRANSFORM lives in the filter library (script_filter); a DECISION
+	// script (allow/deny/approval) is a RULE's CONDITION, not a library entry
+	// (spec §5.4), so it's seeded as a write rule whose condition is a script.
 	if pyCmd != "" {
 		_, err = iamSvc.CreateFilter("scrub-pii-script",
 			"Script filter (Python): blanks ssn/secret/token fields in the response",
 			iam.KindScriptFilter, 0,
 			map[string]any{"command": pyCmd, "path": filepath.Join(scriptDir, "scrub_pii.py")})
 		mustErr(err, "seed script_filter")
-		_, err = iamSvc.CreateFilter("block-secret-guard",
-			"Script guard (Python): denies a send whose body contains 'secret'",
-			iam.KindScriptGuard, 0,
-			map[string]any{"command": pyCmd, "path": filepath.Join(scriptDir, "block_secret.py")})
-		mustErr(err, "seed script_guard")
+
+		writeCedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+			RoleID: role.ID, Effect: "allow", ConnectorType: "mock",
+			OpScope: "write", ConnectionIDs: []string{"test-conn"},
+			ConditionMode:   "script",
+			ConditionScript: iampolicies.ScriptCondSpec{Command: pyCmd, Path: filepath.Join(scriptDir, "block_secret.py")},
+		}, nil)
+		mustErr(err, "build seed script-condition grant")
+		_, err = iamSvc.CreatePolicy("seed-send-if-not-secret",
+			"Allow sends unless a script condition denies (body contains 'secret')", writeCedar, true)
+		mustErr(err, "create seed script-condition grant")
 	}
 
 	tokResult, err := tokenSvc.Create(&tokens.CreateRequest{

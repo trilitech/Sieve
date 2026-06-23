@@ -252,10 +252,12 @@ Obligation  { role | global, object-scope, rank        } → approval | transfor
 ```
 
 - A **Grant** is a **decision**. It names **exactly one role** as its principal:
-  "for tokens in role R, on `<object-scope>` [when `<condition>`] → allow/deny." A
-  *decision-script* (allow / deny / ask) is a Grant whose verdict is computed by
-  code — it lives in the **decision layer, with Grants, not in the transform
-  library**.
+  "for tokens in role R, on `<object-scope>` [when `<condition>`] → allow/deny." Its
+  `<condition>` is authored **either declaratively or as a script** — a program that
+  reads the request and returns allow/deny/approval is the **script mode** of the
+  condition (§5.4), an alternative to the declarative builder, not a separate kind and
+  not a library filter. A script condition gates its grant **per-grant** (deny ⇒ that
+  grant drops, not the whole request).
 - An **Obligation** rides on an *allow* and **stacks**. It names **a role, or
   `global`**, and is either **approval** (a pre-execution gate — this is "ask") or a
   **transform** (post-execution response modification: redact / exclude / rewrite).
@@ -299,8 +301,9 @@ transform pipeline over the response (§7.4).
   Obligation.
 - A **Guardrail** is an Obligation with `role: global` (or a named role) authored
   standalone — the floor that isn't tied to one grant.
-- The **filter library** holds reusable **Transform** definitions (each with a
-  rank); decision-scripts are not library entries (they are Grants).
+- The **filter library** holds reusable **Transform** definitions only (redact /
+  exclude_items / script_filter, each with a rank). A decision-script is **not** a
+  library entry — it is a rule's condition (its script mode, §5.4).
 
 **Worked example (`read_everything` / `read_with_pii_removed`).**
 ```
@@ -741,14 +744,18 @@ A **filter** is a stored definition in the PAP-managed library; **rules and
 guardrails** reference filters by name (a transform like "redact card numbers" is
 identical everywhere — the genuine reuse unit for obligations).
 
+The library holds **transforms only** — a script that DECIDES allow/deny/approval is
+not a filter, it is a rule's script-mode **condition** (§3.2/§5.4), authored on the
+rule, not here.
+
 ```
 Filter {
   id, name, description
-  kind:    "redact" | "exclude_items" | "script_filter" | "script_guard" | "rate_limit"
-  phase:   "pre" (guard / rate_limit) | "post" (response transform)   // implied by kind
+  kind:    "redact" | "exclude_items" | "script_filter" | "rate_limit"
+  phase:   "post" (response transform) | "pre" (rate_limit, deferred)   // implied by kind
   order:   int      // GLOBAL transform rank — application order across ALL kinds (§3.2/§7.1), lower first
   config:  { patterns: [...], match: "contains"|"regex", fields?: [...] }  // redact/exclude
-        |  { command, path, timeout_ms }                              // script_* (command = python3 | node)
+        |  { command, path, timeout_ms }                              // script_filter (command = python3 | node)
         |  { limit, window_seconds, key: "token"|"token+resource"|"token+action"|"token+action_group" } // rate_limit (deferred §15)
 }
 ```
@@ -758,8 +765,11 @@ Filter {
 | `redact` | post | mask pattern matches in the response (within content fields) | no | yes |
 | `exclude_items` | post | drop list items whose content fields match a pattern | no | yes |
 | `script_filter` | post | run a script over the response JSON; stdout replaces it | no¹ | yes |
-| `script_guard` | pre | run a script over the request before Execute; `{"action":"deny",…}` ⇒ deny | **yes** | no |
 | `rate_limit` | pre | count calls keyed per `key`; over `limit`/`window_seconds` ⇒ deny | **yes** | no |
+
+A script that returns `{"action":"deny"|"allow"|"approval_required"}` over the request
+is **not** a library filter — it is a rule's **script-mode condition** (§5.4), run
+per-grant (deny ⇒ that grant drops).
 
 ¹ A `script_filter` that errors fails closed (the un-transformed result is
 withheld) — it can effectively block, but it cannot *grant* or alter the
@@ -775,13 +785,14 @@ these obligations **compose by union** (§7.3) and **stack in a deterministic,
 operator-visible rank order** (below): they shape output, they don't gate access, so
 collecting more of them can only remove more content, never grant any back.
 
-**Decisions vs transforms (canonical placement, §3.2).** The pre-phase guards
-(`script_guard`, `rate_limit`) are **decisions** — they return allow/deny/ask — and
-canonically belong to the **grant/decision layer**, not the transform library;
-`redact` / `exclude_items` / `script_filter` are the **transforms**. *Today* a
-`script_guard` is authored as a library filter referenced by a guardrail; re-homing
-decision-scripts onto grants is part of the §3.2 realignment (§15) and changes no
-behaviour — a guard still runs pre-execution and a deny still denies.
+**Decisions vs transforms (canonical placement, §3.2).** A script that returns
+allow/deny/approval is a **decision**, not a transform — so it is authored as the
+**script mode of a rule's condition** (§5.4), not as a library filter. It compiles
+to `@condition_script_command` / `@condition_script_path` on the grant permit and the
+PEP runs it **per-grant**: a deny vetoes only that grant (union of grants, §7.3),
+never the whole request. The filter library holds **transforms only** —
+`redact` / `exclude_items` / `script_filter`. (`rate_limit` remains a deferred
+pre-phase guard, §15.)
 
 **Field-aware matching (redact / exclude).** A filter is a connector-**agnostic**
 transform — `patterns` + a `match` mode: `"contains"` (case-insensitive literal
@@ -1797,6 +1808,14 @@ approval queue, the response-filter applier, the two-port topology, the connecto
   it in the create + edit forms and the library list (§7.1). Operator-visibility in the
   decision explorer / token "what it can do" is the remaining nicety. Order *matters* for
   the real (script) transforms; the design makes it explicit rather than pretending it away.
+- **§3.2 realignment 3 — decision-scripts are a rule's condition, not a filter (DONE).**
+  A script that returns allow/deny/approval is the **script mode** of a rule's CONDITION
+  (§5.4) — an either/or with the declarative builder, *not* a library entry. It is authored
+  on the rule (compiled to `@condition_script_command` / `@condition_script_path` on the
+  permit) and run by the PEP **per-grant**: a deny vetoes only *that* grant (union of
+  grants, §7.3), never the whole request — so a co-matching plain rule still allows. The
+  `script_guard` filter kind is **removed from the filter library**; the library is content
+  transforms only (redact / exclude_items / script_filter).
 - **`ask` composition (resolution: any-ask ⇒ ask).** When matching grants disagree —
   one allows plainly, another allows-with-approval — the **approval still applies**:
   approval is an obligation and composes by union like every other (§3.2 core law), so a

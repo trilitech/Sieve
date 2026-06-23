@@ -28,6 +28,15 @@ type ScopeRef struct {
 	ID         string // e.g. "<conn>/<owner>/<repo>"
 }
 
+// ScriptCondSpec is a rule's script-mode condition: an allowlisted interpreter
+// (Command) and a script path (under the allowlisted scripts dir). When set
+// (ConditionMode == "script") it compiles to @condition_script_* annotations on
+// the permit; the PEP runs it per-grant (deny ⇒ that grant is vetoed).
+type ScriptCondSpec struct {
+	Command string
+	Path    string
+}
+
 // ConditionInput is a resolved condition: Kind+CtxPath+Ops come from the
 // connector's RuleCondition declaration, Op+Value from the operator's input.
 type ConditionInput struct {
@@ -50,8 +59,16 @@ type RuleSpec struct {
 	Operations    []string // op NAMES when OpScope == "specific"
 	ConnectionIDs []string // empty ⇒ any connection of ConnectorType (ignored if Scopes set)
 	Scopes        []ScopeRef
-	Conditions    []ConditionInput
-	Filters       []string // filter-library names → @filters annotation
+	// ConditionMode selects how the rule's CONDITION (its gate) is authored:
+	// "" / "declarative" ⇒ the Conditions list below; "script" ⇒ ConditionScript,
+	// a program that reads the request and returns allow/deny/approval. The two are
+	// mutually exclusive — a script IS the condition, an alternative to building
+	// declarative ones (spec §5.4). A script condition only gates a permit
+	// (allow / require_approval), never a deny.
+	ConditionMode   string
+	ConditionScript ScriptCondSpec
+	Conditions      []ConditionInput
+	Filters         []string // filter-library names → @filters annotation
 	// ExemptConditions are GUARDRAIL-only: the obligation applies to every
 	// matching request EXCEPT those that satisfy these, compiled into a
 	// has-guarded `unless { … }` so a missing attribute keeps the obligation in
@@ -107,28 +124,63 @@ func BuildRuleCedar(spec RuleSpec, ops []connector.OperationDef) (string, error)
 		return "", fmt.Errorf("unknown effect %q", spec.Effect)
 	}
 
+	scriptMode := strings.EqualFold(spec.ConditionMode, "script")
+	if scriptMode && head != "permit" {
+		return "", fmt.Errorf("a script condition can only gate an allow rule, not a deny")
+	}
+
 	principal := principalClause(spec.RoleID)
 	action, err := actionClause(spec, ops)
 	if err != nil {
 		return "", err
 	}
-	when, err := whenClause(spec)
+	// In script mode the script IS the condition (run by the PEP), so the Cedar
+	// when-clause carries only the resource scope — never the declarative
+	// conditions (they're an alternative authoring of the same slot).
+	wspec := spec
+	if scriptMode {
+		wspec.Conditions = nil
+	}
+	when, err := whenClause(wspec)
 	if err != nil {
 		return "", err
 	}
 
-	// Obligations ride the grant permit; a forbid carries none.
+	// A permit carries its obligations (@approval/@filters) and, in script mode,
+	// its condition script (@condition_script_*). A forbid carries none.
 	var prefix string
 	if head == "permit" {
+		var anns []string
 		ann, err := obligationAnnotations(spec)
 		if err != nil {
 			return "", err
 		}
 		if ann != "" {
-			prefix = ann + "\n"
+			anns = append(anns, ann)
+		}
+		if scriptMode {
+			sc, err := scriptConditionAnnotations(spec.ConditionScript)
+			if err != nil {
+				return "", err
+			}
+			anns = append(anns, sc)
+		}
+		if len(anns) > 0 {
+			prefix = strings.Join(anns, "\n") + "\n"
 		}
 	}
 	return fmt.Sprintf("%s%s(\n  %s,\n  %s,\n  resource\n)%s;", prefix, head, principal, action, when), nil
+}
+
+// scriptConditionAnnotations renders the @condition_script_command /
+// @condition_script_path lines that carry a rule's script-mode condition to the
+// engine. The engine surfaces them per-grant; the PEP runs the script.
+func scriptConditionAnnotations(sc ScriptCondSpec) (string, error) {
+	if sc.Command == "" || sc.Path == "" {
+		return "", fmt.Errorf("a script condition needs an interpreter and a script path")
+	}
+	return fmt.Sprintf("@condition_script_command(%s)\n@condition_script_path(%s)",
+		cedarString(sc.Command), cedarString(sc.Path)), nil
 }
 
 // obligationAnnotations renders the @approval / @filters lines a permit carries
@@ -447,8 +499,12 @@ func HumanSummary(spec RuleSpec, roleName string, connLabels []string) string {
 		b.WriteString(" (any connection)")
 	}
 
-	for _, c := range spec.Conditions {
-		b.WriteString(" where " + c.CtxPath + " " + c.Op + " " + c.Value)
+	if strings.EqualFold(spec.ConditionMode, "script") {
+		b.WriteString(" where a script decides")
+	} else {
+		for _, c := range spec.Conditions {
+			b.WriteString(" where " + c.CtxPath + " " + c.Op + " " + c.Value)
+		}
 	}
 	if len(spec.Filters) > 0 {
 		b.WriteString(" + filters[" + strings.Join(spec.Filters, ", ") + "]")

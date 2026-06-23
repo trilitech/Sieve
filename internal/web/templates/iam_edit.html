@@ -120,10 +120,26 @@
             </div>
           </div>
 
-          <!-- Conditions (connector-tailored, JS-populated) -->
+          <!-- Condition: declarative builder OR a decision script (spec §5.4) — one. -->
           <div id="rb-conds-wrap" class="mt-5 hidden">
-            <label class="block text-sm font-medium text-slate-400 mb-2">Conditions <span class="text-slate-600">(optional)</span></label>
+            <label class="block text-sm font-medium text-slate-400 mb-2">Condition <span class="text-slate-600">(optional)</span></label>
+            <div class="flex gap-4 mb-3 text-sm text-slate-200">
+              <label class="flex items-center gap-1.5"><input type="radio" name="condition_mode" value="declarative" checked class="border-slate-600 bg-slate-800 text-indigo-500"> Build conditions</label>
+              <label class="flex items-center gap-1.5"><input type="radio" name="condition_mode" value="script" class="border-slate-600 bg-slate-800 text-indigo-500"> Use a script</label>
+            </div>
             <div id="rb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+            <div id="rb-cond-script" class="hidden space-y-2 rounded-lg bg-slate-900 border border-slate-700 p-3">
+              <p class="text-xs text-slate-400">A program that reads the request on stdin and returns <code class="text-slate-300">{"action":"allow|deny|approval_required"}</code>. It decides this grant only.</p>
+              <div class="flex gap-3 flex-wrap items-center">
+                <select name="condition_script_language" class="rounded bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">
+                  <option value="python">Python</option>
+                  <option value="javascript">JavaScript</option>
+                </select>
+                <input type="text" name="condition_script_path" placeholder="/opt/sieve-py/guards/my_check.py"
+                       class="flex-1 min-w-[16rem] rounded bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500">
+              </div>
+              <p class="text-xs text-slate-500">Path must be under the allowlisted scripts directory.</p>
+            </div>
           </div>
 
           <!-- Obligations: filters + approval this grant carries (allow only). -->
@@ -241,13 +257,22 @@
         }
 
         function rbCondVisibility() {
-          const cat = IAM_CATALOG[el('rb-connector').value] || {};
-          const hasConds = (cat.conditions || []).length > 0;
           const effect = document.querySelector('#rule-form select[name="effect"]');
           const isDeny = effect && effect.value === 'deny';
-          el('rb-conds-wrap').classList.toggle('hidden', !hasConds || isDeny);
+          // The script-mode option is always available, so show the wrap whenever
+          // the effect isn't a deny (even if the connector declares no conditions).
+          el('rb-conds-wrap').classList.toggle('hidden', isDeny);
           const obl = el('rb-obligations');
           if (obl) obl.classList.toggle('hidden', isDeny);
+          rbSyncCondMode();
+        }
+        // rbSyncCondMode shows either the declarative builder or the script pane.
+        function rbSyncCondMode() {
+          const sel = document.querySelector('#rule-form input[name="condition_mode"]:checked');
+          const script = sel && sel.value === 'script';
+          const decl = el('rb-conds'), sc = el('rb-cond-script');
+          if (decl) decl.classList.toggle('hidden', !!script);
+          if (sc) sc.classList.toggle('hidden', !script);
         }
 
         function rbScopeFields() {
@@ -335,6 +360,7 @@
         // (delegated — checkboxes are rebuilt dynamically).
         el('rb-conns-list').addEventListener('change', rbScopeVis);
         document.querySelector('#rule-form select[name="effect"]').addEventListener('change', rbCondVisibility);
+        document.querySelectorAll('#rule-form input[name="condition_mode"]').forEach(r => r.addEventListener('change', rbSyncCondMode));
 
         // --- Prefill from the stored form-state ---
         // The spec is read from a data-attribute via JSON.parse (XSS-safe: no
@@ -397,6 +423,17 @@
               if (inp) inp.value = sf[k];
             }
           }
+
+          // Condition mode: a stored script condition restores the Script pane +
+          // its language/path; otherwise the declarative rows below are filled.
+          if (spec.condition_mode === 'script') {
+            const r = document.querySelector('#rule-form input[name="condition_mode"][value="script"]');
+            if (r) r.checked = true;
+            setSelect('condition_script_language', spec.condition_script_language || 'python');
+            const pathInp = document.querySelector('#rule-form input[name="condition_script_path"]');
+            if (pathInp && spec.condition_script_path) pathInp.value = spec.condition_script_path;
+          }
+          rbSyncCondMode();
 
           // Conditions: check the box, set op + value for each stored condition.
           for (const c of (spec.conditions || [])) {

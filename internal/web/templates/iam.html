@@ -91,7 +91,6 @@
                 <option value="redact">Redact (mask matching text in the response)</option>
                 <option value="exclude_items">Exclude items (drop list items containing text)</option>
                 <option value="script_filter">Script filter (Python or JS; transforms the response after it runs)</option>
-                <option value="script_guard">Script guard (Python or JS; may deny before execution)</option>
               </select>
             </div>
           </div>
@@ -303,10 +302,28 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             </div>
           </div>
 
-          <!-- Conditions (connector-tailored, JS-populated) -->
+          <!-- Condition (connector-tailored). Authored EITHER declaratively OR as a
+               script (spec §5.4) — pick one. A script IS the condition; it gates
+               THIS grant only (deny just drops this rule). Hidden on a deny effect. -->
           <div id="rb-conds-wrap" class="mt-5 hidden">
-            <label class="block text-sm font-medium text-slate-400 mb-2">Conditions <span class="text-slate-600">(optional)</span></label>
+            <label class="block text-sm font-medium text-slate-400 mb-2">Condition <span class="text-slate-600">(optional)</span></label>
+            <div class="flex gap-4 mb-3 text-sm text-slate-200">
+              <label class="flex items-center gap-1.5"><input type="radio" name="condition_mode" value="declarative" checked class="border-slate-600 bg-slate-800 text-indigo-500"> Build conditions</label>
+              <label class="flex items-center gap-1.5"><input type="radio" name="condition_mode" value="script" class="border-slate-600 bg-slate-800 text-indigo-500"> Use a script</label>
+            </div>
             <div id="rb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+            <div id="rb-cond-script" class="hidden space-y-2 rounded-lg bg-slate-900 border border-slate-700 p-3">
+              <p class="text-xs text-slate-400">A program that reads the request on stdin and returns <code class="text-slate-300">{"action":"allow|deny|approval_required"}</code>. It decides this grant — a deny just drops this rule, it does not block grants from other rules.</p>
+              <div class="flex gap-3 flex-wrap items-center">
+                <select name="condition_script_language" class="rounded bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">
+                  <option value="python">Python</option>
+                  <option value="javascript">JavaScript</option>
+                </select>
+                <input type="text" name="condition_script_path" placeholder="/opt/sieve-py/guards/my_check.py"
+                       class="flex-1 min-w-[16rem] rounded bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500">
+              </div>
+              <p class="text-xs text-slate-500">Path must be under the allowlisted scripts directory.</p>
+            </div>
           </div>
 
           <!-- Obligations: filters + approval THIS grant carries. Grant-scoped —
@@ -833,7 +850,10 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             const conds = get('conds');
             conds.textContent = '';
             for (const c of list) conds.appendChild(condRow(c, opts.condPrefix));
-            get('conds-wrap').classList.toggle('hidden', isDeny || list.length === 0);
+            // Rule form (condMode): the script-mode option is always available, so
+            // show the wrap even when the connector declares no declarative
+            // conditions. Guardrail form: hide when there are no exemptions.
+            get('conds-wrap').classList.toggle('hidden', isDeny || (!opts.condMode && list.length === 0));
             // Obligations (rule form only) apply to allows; a deny carries none.
             const obl = get('obligations');
             if (obl) obl.classList.toggle('hidden', isDeny);
@@ -865,6 +885,17 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             }
             scopeVis();
             renderConds();
+            syncCondMode();
+          }
+          // Condition mode toggle (rule form only): the declarative builder vs a
+          // decision script — the two ways to author this rule's condition (§5.4).
+          function syncCondMode() {
+            if (!opts.condMode) return;
+            const sel = document.querySelector('input[name="condition_mode"]:checked');
+            const script = sel && sel.value === 'script';
+            const decl = get('conds'), sc = get('cond-script');
+            if (decl) decl.classList.toggle('hidden', !!script);
+            if (sc) sc.classList.toggle('hidden', !script);
           }
           function toggleOps() { get('ops').classList.toggle('hidden', get('opscope').value !== 'specific'); renderConds(); }
           function toggleConns() { get('conns').classList.toggle('hidden', get('connscope').value !== 'specific'); scopeVis(); }
@@ -884,9 +915,12 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             const e = document.querySelector(opts.effectSel);
             if (e) e.addEventListener('change', renderConds);
           }
+          if (opts.condMode) {
+            document.querySelectorAll('input[name="condition_mode"]').forEach(r => r.addEventListener('change', syncCondMode));
+          }
           refresh(); toggleOps(); toggleConns();
         }
-        setupBuilder('rb', { withConds: true, effectSel: '#rule-form select[name="effect"]' });
+        setupBuilder('rb', { withConds: true, condMode: true, effectSel: '#rule-form select[name="effect"]' });
         setupBuilder('gb', { withConds: true, condPrefix: 'exempt' });
 
         // --- Filter library: show only the selected kind's config block. ---

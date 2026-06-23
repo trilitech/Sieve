@@ -24,12 +24,11 @@ body = ((req.get("params") or {}).get("body")) or ""
 print(json.dumps({"action": "deny", "reason": "blocked"} if "secret" in body.lower() else {"action": "allow"}))
 `
 
-// TestIAMEnforce_ScriptGuardOverGateway proves authored ⇒ enforced THROUGH THE
-// REAL HTTP GATEWAY: an operator-authored script_guard attached to a send rule
-// causes the agent API to return 403 for a forbidden send and 200 for an allowed
-// one. This is the end-to-end dogfood for "custom logic that decides what can be
-// sent" — not a decision-layer unit test, an actual request through api.Router.
-func TestIAMEnforce_ScriptGuardOverGateway(t *testing.T) {
+// TestIAMEnforce_ScriptConditionOverGateway proves a rule's script-mode CONDITION
+// (spec §5.4) enforces THROUGH THE REAL HTTP GATEWAY: a send rule whose condition
+// is a script returns 403 for a body the script denies and 200 for one it allows.
+// The script gates the grant per-grant — no filter, no guardrail involved.
+func TestIAMEnforce_ScriptConditionOverGateway(t *testing.T) {
 	py, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 not available")
@@ -45,40 +44,47 @@ func TestIAMEnforce_ScriptGuardOverGateway(t *testing.T) {
 	policy.SetScriptDirs([]string{dir})
 	defer policy.SetScriptDirs(nil)
 
-	env := setupIAMRouter(t)
-	if err := env.settingsSet("iam_enabled", "true"); err != nil {
+	// Self-contained env so the SCRIPT-CONDITION grant is the sole authorizer of the
+	// send (the shared setupIAMRouter seeds a broad plain allow that would survive
+	// the veto — that's correct per-grant behavior, but not what we're testing here).
+	env := testenv.New(t)
+	env.Mock.SetResponse("send_email", map[string]any{"id": "1"})
+	if err := env.Connections.Add("mc", "mock", "Mock", map[string]any{}); err != nil {
 		t.Fatal(err)
 	}
-
-	if _, err := env.iam.CreateFilter("block-secret", "block sends containing 'secret'",
-		iam.KindScriptGuard, 0, map[string]any{"command": py, "path": scriptPath}); err != nil {
-		t.Fatal(err)
-	}
-	spec := iampolicies.RuleSpec{
-		RoleID: env.roleID, Effect: "allow", ConnectorType: "mock", OpScope: "write",
-		ConnectionIDs: []string{"mock-conn"}, Filters: []string{"block-secret"},
-	}
-	grant, err := iampolicies.BuildRuleCedar(spec, nil)
+	role, err := env.Roles.Create("scripted", []roles.Binding{{ConnectionID: "mc"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.iam.CreatePolicy("send-guarded", "", grant, true); err != nil {
-		t.Fatal(err)
-	}
-	guard, err := iampolicies.BuildGuardrailCedar(spec, nil)
+	tok, err := env.Tokens.Create(&tokens.CreateRequest{Name: "t", RoleID: role.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.iam.CreateGuardrail("send-guarded-g", "", guard, true); err != nil {
+	grant, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: role.ID, Effect: "allow", ConnectorType: "mock", OpScope: "write",
+		ConnectionIDs:   []string{"mc"},
+		ConditionMode:   "script",
+		ConditionScript: iampolicies.ScriptCondSpec{Command: py, Path: scriptPath},
+	}, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	url := env.url + "/api/v1/connections/mock-conn/ops/send_email"
-	if status, _ := apiPost(t, url, env.tok, `{"to":"a@b.com","subject":"s","body":"weekly status"}`); status != 200 {
-		t.Errorf("clean send should be allowed by the guard, got %d", status)
+	if _, err := env.IAM.CreatePolicy("send-scripted", "", grant, true); err != nil {
+		t.Fatal(err)
 	}
-	if status, body := apiPost(t, url, env.tok, `{"to":"a@b.com","subject":"s","body":"the secret plan"}`); status != 403 {
-		t.Errorf("send with 'secret' should be blocked by the guard, got %d (%v)", status, body)
+	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
+	router := api.NewRouter(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit)
+	srv := httptest.NewServer(router.Handler())
+	t.Cleanup(srv.Close)
+
+	url := srv.URL + "/api/v1/connections/mc/ops/send_email"
+	if status, _ := apiPost(t, url, tok.PlaintextToken, `{"to":"a@b.com","subject":"s","body":"weekly status"}`); status != 200 {
+		t.Errorf("clean send should be allowed, got %d", status)
+	}
+	if status, body := apiPost(t, url, tok.PlaintextToken, `{"to":"a@b.com","subject":"s","body":"the secret plan"}`); status != 403 {
+		t.Errorf("send with 'secret' should be denied by the script condition, got %d (%v)", status, body)
 	}
 }
 
