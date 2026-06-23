@@ -4,6 +4,12 @@ Companion to [`01-spec.md`](01-spec.md) and [`02-implementation-plan.md`](02-imp
 How we move every existing policy/role/binding to Cedar **without touching
 credentials and without a flag day**.
 
+> **Superseded on one point (see [`01-spec.md`](01-spec.md) §3.2/§5.4).** Rows below that
+> migrate `action: script` to a `script_guard` **library entry** are stale: a script
+> returning allow/deny/approval is now the **script mode of a rule's condition**, not a
+> filter-library entry (the owner confirmed no production scripts exist, so the migrated
+> count is 0 regardless). Kept as migration history.
+
 ---
 
 ## 1. Current-state inventory (verified from source)

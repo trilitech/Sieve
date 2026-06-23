@@ -5,6 +5,14 @@ package layout, the connector-taxonomy wiring, the PEP refactor, schema
 generation/validation, testing, feature-flagging, and the PR sequence with
 acceptance criteria.
 
+> **Superseded on one point (see [`01-spec.md`](01-spec.md) §3.2/§5.4).** Where this
+> plan calls `script_guard` a *filter-library kind* or a *pre-phase guard obligation*,
+> the current model differs: a script returning allow/deny/approval is the **script mode
+> of a rule's condition** (authored on the rule, run **per-grant** — a deny vetoes only
+> that grant), **not** a filter. The filter library holds content transforms only
+> (redact / exclude_items / script_filter). The lines below predate that and are kept as
+> build history.
+
 ---
 
 ## 0. Implementation status (built + validated)

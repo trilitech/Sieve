@@ -73,10 +73,11 @@
   simpler mechanism wins). Presets are just **shipped example roles**, not a
   seeded second artifact. Reuse never reintroduces the binding footgun (§9.4).
 - Replacing the LLM-as-policy *evaluator*. There are no production policy scripts
-  to migrate; going forward, script logic lives in the **filter library** (guards
-  + response filters, §7), not as a whole-policy evaluator type. LLM-as-decision
-  is out; Cedar `when`/`unless` + connector-enriched context + script guards
-  cover the cases.
+  to migrate; going forward, script logic lives either as a **rule's script-mode
+  condition** (decisions, §5.4) or as a **`script_filter`** in the filter library
+  (response transforms, §7), not as a whole-policy evaluator type. LLM-as-decision
+  is out; Cedar `when`/`unless` + connector-enriched context + script-mode
+  conditions cover the cases.
 
 ### Constraints (invariants)
 
@@ -584,8 +585,8 @@ schema-valid for `gitlab_list_issues` (which has a `state` param) and a
 *validation error* for an op that has no such param — typo protection for free.
 
 Cedar can't express calendar logic (hour-of-day, weekday) on `now` — only
-ordering. **Business-hours and similar belong in a `script_guard`** (§7.1), as the
-§13.6 example does; `context.now` is for "before/after this instant" only.
+ordering. **Business-hours and similar belong in a script-mode condition** (§5.4),
+as the §13.6 example does; `context.now` is for "before/after this instant" only.
 
 **Condition attributes are advertised, not hardcoded (review Compl-S6).** The
 structured condition editor (§9.5) is not a fixed menu; each connector declares
@@ -638,8 +639,9 @@ condition can see the request (params, recipients, cost estimate, method, ip,
 time) but **never the response body**. The legacy `RuleMatch` response-content
 predicates (`From`/`To`/`Subject`/`ContentContains`/`Labels` matched against the
 *returned* message) therefore cannot be decision conditions. They move to the
-**post** phase: an `exclude_items`/`script_filter` that inspects the response, or a
-`script_guard` when the decision genuinely needs request-derived content. A
+**post** phase: an `exclude_items`/`script_filter` that inspects the response — or,
+when the logic is genuinely a request-time decision, a **script-mode condition** on
+the rule (§5.4, which still can't see the response). A
 condition that references response data is a save-time error (the attribute is not
 in `ConditionAttributes`). The full legacy-`RuleMatch`→new-home mapping is the
 capability-parity map (§13.8).
@@ -693,8 +695,8 @@ Collecting from every matching permit (not one) is the load-bearing correction i
 
 ## 7. Guardrails and the filter library
 
-The grants layer (§5–§6) decides **allow/deny**. Everything that happens
-*because* of an allow — human approval, a pre-execution script guard, response
+The grants layer (§5–§6) decides **allow/deny** (a grant's condition may itself be a
+script, §5.4). Everything that happens *because* of an allow — human approval, response
 redaction/exclusion, a script transform, a rate limit — is an **obligation**.
 Obligations may be carried by a **grant** (they apply when that grant is used) or
 by a **guardrail** (they apply to every allowed request in scope, role-agnostically).
@@ -779,8 +781,9 @@ allow decision.
 are **response modifications on an allowed operation**, not access decisions: the
 operation still executes and returns, but the agent receives a transformed
 result. "Don't return every email" is an *allow of the list operation with a
-filtered result*, not a deny — only the pre-phase guards (`script_guard` /
-`rate_limit`) and a rule's `deny` actually block execution. This is precisely why
+filtered result*, not a deny — only a rule's `deny`, a **script-mode condition**
+denying its grant (§5.4), or the deferred pre-phase `rate_limit` actually block
+execution. This is precisely why
 these obligations **compose by union** (§7.3) and **stack in a deterministic,
 operator-visible rank order** (below): they shape output, they don't gate access, so
 collecting more of them can only remove more content, never grant any back.
@@ -823,8 +826,8 @@ legacy buckets ("100 reads/hr AND 10 sends/day"), `key` includes
 **`token+action_group`** (aggregates across all ops in a group, e.g. all reads),
 not only single actions. **v1 status:** `rate_limit` execution is **deferred**; a
 guardrail that references a `rate_limit` filter is rejected at save until the
-counter is wired (no silent no-op — see §15). `script_guard`, `redact`,
-`exclude_items`, `script_filter` execute in v1.
+counter is wired (no silent no-op — see §15). `redact`, `exclude_items`, and
+`script_filter` execute in v1, as do **script-mode conditions** on rules (§5.4).
 
 **Ordering — a deterministic global rank (canonical); order *matters*.** Stacked
 transforms run in a deterministic order given by a **global rank carried on each
@@ -961,7 +964,8 @@ The obligations collected in pass 2 (§7.3) are applied around `Execute`:
 
 ```
 Grants Allow → collect guardrail obligations (§7.3)
-  → run pre guards: script_guard (rate_limit deferred, §7.1); any deny ⇒ DENY   [pre, fail-closed]
+  → (per-grant script conditions already ran in the grant decision, §5.4)
+  → run pre guards: rate_limit (deferred, §7.1); any deny ⇒ DENY                [pre, fail-closed]
   → if approval required: submit + block(REST)/ticket(MCP)                       [pre]
   → conn.Execute(...)
   → run transform pipeline: every matching transform, deduped, applied             [post]
@@ -969,9 +973,9 @@ Grants Allow → collect guardrail obligations (§7.3)
   → return
 ```
 
-When `rate_limit` ships (§15) it runs **before** `script_guard` and **before**
-approval — cheap quota checks first, so an over-limit request neither spawns a
-guard process nor pages a human.
+When `rate_limit` ships (§15) it runs **before** approval (and before any per-grant
+script condition) — cheap quota checks first, so an over-limit request neither spawns
+a script process nor pages a human.
 
 Post-filters run through the existing `policy.ApplyResponseFilters`
 (`RedactPatterns`, `ExcludeContaining`, and `ScriptCommand`/`ScriptPath` — all
@@ -981,7 +985,8 @@ already supported by that applier), so the enforcement code is reused; only the
 
 ### 7.5 Fail-closed
 
-A `script_guard` that errors ⇒ **deny**. Any post-transform that errors ⇒ the
+A **script-mode condition** that errors ⇒ its grant is **vetoed** (fail-closed; if no
+other grant survives, the request is denied). Any post-transform that errors ⇒ the
 PEP returns an error and the un-transformed result is **never** sent to the agent
 (today's behavior in `router.go`/`server.go`). Approval timeout/rejection denies.
 A script can therefore fail safe in exactly one direction: toward less access.
@@ -1021,21 +1026,21 @@ signals "empty" by **omitting** the attribute (caught by `has` → fail-closed),
 never by emitting `[]`. The real footgun is `containsAll([])`, which is **vacuously
 true** — an emitted empty set would satisfy an all-internal check and fail *open*.
 So the enricher contract ("emit only when non-empty"; §13.3) is the guard, not an
-operator. Count-based logic still belongs in a `script_guard`.
+operator. Count-based logic still belongs in a **script-mode condition** (§5.4).
 
-### 7.7 Guard contract and audit attribution
+### 7.7 Script-condition contract and audit attribution
 
-- **Guards must be side-effect-free** (review L2). `script_guard`/`rate_limit` run
-  *pre-execution* and may be followed by approval or denial; the request may never
-  execute. A guard that mutates external state would do so for requests that are
-  then blocked. Guards read the request, return allow/deny; nothing else.
-- **Audit distinguishes guard/rate denials** (review L3). A guard runs because a
-  **guardrail** named it via `@filters`, so `determining_rules` would point at the
-  *grant rule* that allowed (the guardrail itself only adds the obligation) —
-  confusing on a denial. The audit therefore records a distinct decision value:
-  `guard_deny` / `rate_limited` (alongside `deny`, `approval_*`), with the denying
-  filter's id and the matched guardrail's id, so "grants denied" vs "an obligation
-  denied" is never ambiguous.
+- **Script conditions must be side-effect-free** (review L2). A script-mode condition
+  (§5.4) — and the deferred `rate_limit` — runs *pre-execution* and may be followed by
+  a grant veto, approval, or denial; the grant may never execute. A condition that
+  mutates external state would do so for requests that are then blocked. It reads the
+  request and returns allow/deny/approval; nothing else.
+- **Audit distinguishes condition/rate denials** (review L3). A script condition is
+  carried by the **grant** itself (`@condition_script_*`, §5.4), so when it vetoes its
+  grant `determining_rules` points straight at that rule. The audit records a distinct
+  decision value (`script_deny` / `rate_limited`, alongside `deny`, `approval_*`) with
+  the denying rule's id, so "grant denied outright" vs "a script condition vetoed it"
+  is never ambiguous.
 
 ---
 
@@ -1325,13 +1330,13 @@ expressiveness rather than a hardcoded menu.
   granted (the thing a grant-author can't omit). Authored as a global overlay, not
   inside a role (§7.2); the editor enforces permit-only + obligation-only
   annotations and defaults the condition to the fail-safe `unless` form.
-- **Filter library editor.** Named, reusable **redact / exclude / script_filter /
-  script_guard** definitions (§7.1), referenced by **rules or guardrails** by name.
-  redact/exclude take patterns + a match mode and are field-aware (§7.1); a
-  `script_*` filter takes a script **path** + interpreter (`python3`/`node`), checked
-  against the allowlist at save. (`script_guard` is a **decision**, not a transform —
-  canonically a grant, §3.2/§15 — though today it is authored here. `rate_limit` is
-  specified but **not offered** in the UI — deferred, §15.)
+- **Filter library editor.** Named, reusable **redact / exclude / script_filter**
+  definitions (§7.1), referenced by **rules or guardrails** by name. redact/exclude
+  take patterns + a match mode and are field-aware (§7.1); a `script_filter` takes a
+  script **path** + interpreter (`python3`/`node`), checked against the allowlist at
+  save. Decision-scripts are **not** library entries — a script that returns
+  allow/deny/approval is authored as the **script mode of a rule's condition** (§5.4).
+  (`rate_limit` is specified but **not offered** in the UI — deferred, §15.)
 - **Full lifecycle — every artifact is editable in place.** Roles, rules,
   guardrails, filters, and a token's role set are all editable from the admin UI
   (not delete-and-recreate); rules, guardrails, and roles are deletable. A token edit
@@ -1385,7 +1390,8 @@ agent → PEP (api/mcp)
        Deny  → 403 with reason (forbid @deny_message / "no permit"); audit
        Allow → obligations := collectGuardrails(request)  (§7.3: 2nd Authorize over the
                  guardrail set; union obligations from every matched guardrail)
-                 run rate_limit (deferred, §15) then script_guard; any deny ⇒ 403  [pre, fail-closed]
+                 run rate_limit (deferred, §15); any deny ⇒ 403  [pre, fail-closed]
+                 (per-grant script conditions already ran in step 4's grant decision, §5.4)
                  if obligations.approval:
                     REST: submit + WaitForResolution(5m) + re-validate token
                     MCP:  submit + return ticket (non-blocking)   (unchanged shapes)
@@ -1647,27 +1653,25 @@ old intersection model was effectively impossible.
 
 ### 13.6 Reusable filters: a script-based PII scrub + a pre-execution guard
 
-First, two library filters (PAP objects, defined once, referenced anywhere):
+First, one library filter (a PAP object, defined once, referenced anywhere):
 
 ```jsonc
-// filter "scrub-pii"   — post-execution script transform
+// filter "scrub-pii"   — post-execution script transform (response redaction)
 // command MUST be allowlist-resolved absolute path (§7.1): /opt/sieve-py/bin/python3
 { "name": "scrub-pii", "kind": "script_filter",
   "config": { "command": "/opt/sieve-py/bin/python3", "path": "/opt/sieve-py/filters/scrub_pii.py", "timeout_ms": 5000 } }
-
-// filter "biz-hours"   — pre-execution script guard (denies outside business hours)
-{ "name": "biz-hours", "kind": "script_guard",
-  "config": { "command": "/opt/sieve-py/bin/python3", "path": "/opt/sieve-py/guards/biz_hours.py", "timeout_ms": 2000 } }
 ```
 
-Then a **rule** grants the access and a **guardrail** attaches the filters (here a
-guardrail, so the scrub binds support_bot's Linear reads regardless of which rule
-granted them; the same filters could instead ride on the grant rule when you want
-them scoped to that grant — both are composition-safe, §7.0):
+Then a **rule** grants the access — gated by a **script-mode condition** for business
+hours — and a **guardrail** attaches the scrub (a guardrail, so the scrub binds
+support_bot's Linear reads regardless of which rule granted them; it could instead ride
+on the grant rule when you want it scoped to that grant — both are composition-safe, §7.0):
 
 ```cedar
-// GRANT (rule): allow the read
+// GRANT (rule): allow the read, gated by a script-mode condition (business hours)
 @id("support.read_tickets")
+@condition_script_command("/opt/sieve-py/bin/python3")
+@condition_script_path("/opt/sieve-py/conditions/biz_hours.py")
 permit(
   principal in Sieve::Role::"support_bot",
   action in Sieve::Action::"linear/read",
@@ -1676,9 +1680,9 @@ permit(
 ```
 
 ```cedar
-// GUARDRAIL set: scrub + business-hours on support_bot's Linear reads
+// GUARDRAIL set: scrub PII on support_bot's Linear reads
 @id("guard.support_linear_reads")
-@filters("scrub-pii biz-hours")
+@filters("scrub-pii")
 permit(
   principal in Sieve::Role::"support_bot",
   action in Sieve::Action::"linear/read",
@@ -1686,14 +1690,15 @@ permit(
 );
 ```
 
-`biz-hours` runs before Execute and can deny; `scrub-pii` runs over the response.
-Both are reused verbatim by any other guardrail that names them — editing
-`scrub_pii.py` once updates every guardrail. Neither can grant access; the rule is
-the only thing that allows, and the script invariant (§7) guarantees the
-guard/filter can only subtract. The guardrail binds whenever support_bot's Linear
-read is allowed, no matter which role granted it (§7.0). This is the granular +
-script-based control from the design review, with reuse living where it's actually
-well-defined.
+The `biz_hours.py` **condition** runs before Execute and gates *this grant*: outside
+business hours the grant doesn't apply (per-grant, §5.4), so support_bot has no other
+path and the read is denied. `scrub-pii` then runs over the response. The scrub is
+reused verbatim by any guardrail that names it — editing `scrub_pii.py` once updates
+them all. Neither the condition nor the filter can grant access; the rule is the only
+thing that allows, and the script invariant (§7) guarantees a condition or filter can
+only subtract. The guardrail binds whenever support_bot's Linear read is allowed, no
+matter which role granted it (§7.0). This is the granular + script-based control from
+the design review, with reuse living where it's actually well-defined.
 
 ### 13.7 Reuse a complex Gmail role across accounts (§9.1)
 
@@ -1750,14 +1755,14 @@ explicit home in the new model:
 | Legacy `RuleMatch` capability | New home |
 |---|---|
 | `Operations` (op-name match) | **Rules** — `action` scope (a leaf op, or an action group, §5.3) |
-| Response content: `From`/`To`/`Subject`/`ContentContains`/`Labels` (matched on the *returned* message) | **Post-phase** `exclude_items` / `script_filter` (or, when the decision needs request-derived content, a **pre-phase** `script_guard`) — never a decision condition (the response is not in `context`, §5.4) |
-| Glob/list matches: `From []string`, `Model []string` with `*` | Cedar `like` for simple globs; an **enricher**-derived `context` field + condition, or a `script_guard`, for list/regex semantics |
+| Response content: `From`/`To`/`Subject`/`ContentContains`/`Labels` (matched on the *returned* message) | **Post-phase** `exclude_items` / `script_filter` (or, when the logic is genuinely a request-time decision, a **script-mode condition** on the rule, §5.4) — never a condition that reads the response (it is not in `context`, §5.4) |
+| Glob/list matches: `From []string`, `Model []string` with `*` | Cedar `like` for simple globs; an **enricher**-derived `context` field + condition, or a **script-mode condition** (§5.4), for list/regex semantics |
 | Float caps: `MaxCost`, `MaxTemperature` | **`decimal`** context conditions (`context.estimated_cost`, `context.param.temperature`; §4.5, §5.4) |
-| Network: CIDR-negation, `Ports` | `context.source_ip` (`ipaddr`/CIDR) condition; port logic in a `script_guard` |
+| Network: CIDR-negation, `Ports` | `context.source_ip` (`ipaddr`/CIDR) condition; port logic in a **script-mode condition** (§5.4) |
 | `RequireApproval` | **Guardrail** `@approval("required")` (§7.2) |
 | `Filters` (redact / exclude) | **Guardrail** `@filters("…")` → filter library (§7.1) |
 | Rate limits (`builtin` evaluator) | **`rate_limit` filter** (§7.1) — execution **deferred** (§15) |
-| Whole-policy `script` / `llm` evaluators | **Filter library** scripts (`script_guard` pre / `script_filter` post) under the command allowlist (§7.1); LLM-as-decision dropped (§1) |
+| Whole-policy `script` / `llm` evaluators | a rule's **script-mode condition** (decision, §5.4) and/or a **`script_filter`** in the filter library (response transform, §7.1), under the command allowlist; LLM-as-decision dropped (§1) |
 
 **Migration safety — a dropped `deny` is a hard `--apply` blocker.** Omitting a
 legacy `deny`/forbid during migration *widens* access (it removes a restriction) —
@@ -1780,7 +1785,7 @@ reported, not blocked.)
 | "empty policy_ids = DENY ALL" special case | Default deny (no special case) |
 | `default_action: allow|deny` per policy | `permit`/`forbid` statements; default is always deny |
 | Reuse by multi-attach (the footgun) | **RBAC composition**: reuse a role across tokens, compose roles per token (§3.1, §13.1); **set-valued `resource` scopes** for connection reuse within a rule (§9.1); **filter library** for obligations. No role-groups, no templates/links. |
-| `script` policy type / `action:script` rules | `script_guard` (pre) + `script_filter` (post) in the filter library |
+| `script` policy type / `action:script` rules | a rule's **script-mode condition** (pre, decision, §5.4) + `script_filter` (post, filter library) |
 | `decision.Filters` from the evaluator | Obligations: `@approval` + `@filters("…")` on **guardrails** (separate set), collected in the guardrail pass and resolved from the library (§7.3) |
 | `"Policy denied: default policy"` | Determining-**rule** ids (+ matched guardrails) in audit + decision explorer |
 | Two guards (`connectionAllowed` + empty-policies) | One decision (no permit ⇒ deny) |
@@ -1826,7 +1831,8 @@ approval queue, the response-filter applier, the two-port topology, the connecto
   (§7.1) but **not executed in v1** and **not offered in the filter-library UI**: a
   rule or guardrail that references a `rate_limit` filter is **rejected at save**
   until the counter (`internal/ratelimit`) is wired — no silent no-op.
-  `script_guard`/`redact`/`exclude_items`/`script_filter` execute in v1.
+  `redact`/`exclude_items`/`script_filter` execute in v1, as do script-mode
+  conditions on rules (§5.4).
 - **MCP per-tool resource scoping (deferred).** v1 scopes `mcp_proxy/call` at
   **connection grain** (§5.2/§5.3); the `Sieve::Mcp::Tool` resource type is reserved
   in the schema but extractors emit the connection, so a token granted MCP on a

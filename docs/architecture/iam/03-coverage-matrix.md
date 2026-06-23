@@ -24,11 +24,11 @@ Legend: ✅ authored+enforced+gateway-verified · 🟡 partial · ❌ missing.
 | 7 | Require human approval | builder effect | ✅ | PDP test + shared api flow | ✅ |
 | 8 | Redact fields from responses | filter lib UI | ✅ | **gateway** (SSN masked) | ✅ |
 | 9 | Exclude items from responses | filter lib UI | ✅ | post machinery (= redact path) | ✅ |
-| 10 | **Custom pre-send script guard** | filter lib UI | ✅ **executed** | **gateway + UI dogfood** | ✅ |
+| 10 | **Custom pre-send script condition** (on a rule) | rule builder (Script mode) | ✅ **executed** | **gateway + UI dogfood** | ✅ |
 | 14 | Enable/disable a rule (no delete) | per-rule toggle | ✅ | web test | ✅ |
 | 17 | Issue token for a role | /tokens page | ✅ | e2e (legacy) | ✅ |
 | 18 | Audit of decisions | /audit page | ✅ | audit log | ✅ |
-| 11 | Custom post-response script filter | — | ✅ (engine) | — | ⛔ not offered (no stub) |
+| 11 | Custom post-response script filter | filter lib UI | ✅ **executed** | gateway (ScriptFilterRewritesResponse) | ✅ |
 | 12 | Rate limit (N/min) | — | ❌ | — | ⛔ not offered (no stub) |
 | 13 | Role groups (inherit shared rules) | — | ✅ (engine) | — | ⛔ additive, not parity |
 | 15 | Edit a rule in place | edit page (prefilled) | ✅ | e2e (edit→update) | ✅ |
@@ -38,12 +38,12 @@ Legend: ✅ authored+enforced+gateway-verified · 🟡 partial · ❌ missing.
 
 ## State
 Every legacy-parity capability + the open-ended "arbitrary operator logic"
-(custom pre-send script guard) is **authored in the UI and enforced**, proven
+(custom pre-send script condition) is **authored in the UI and enforced**, proven
 through the real gateway on **both agent surfaces**:
-- REST: script guard blocks a send (200/403), amount cap (allow-when-≤N) denies
-  over/absent/non-integral with no bypass, response redaction masks an SSN,
-  benign decimal params don't error.
-- MCP: the same script guard blocks a tool call (TestMCP_ScriptGuardEnforced).
+- REST: a script condition blocks a send (200/403; TestIAMEnforce_ScriptConditionOverGateway),
+  amount cap (allow-when-≤N) denies over/absent/non-integral with no bypass,
+  response redaction masks an SSN, benign decimal params don't error.
+- MCP: the same script condition blocks a tool call (TestMCP_ScriptConditionEnforced).
 
 Safety hardening from adversarial review: numeric conditions compile only onto
 permit effects (fail-closed on skip); non-representable numbers are omitted from
