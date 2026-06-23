@@ -104,31 +104,34 @@ func TestApplyResponseFilters_FieldAware(t *testing.T) {
 	}
 }
 
-// TestApplyResponseFilters_OverlappingRedactionOrderFree is the regression test
-// for the order-dependence bug: with OVERLAPPING patterns, applying redact
-// filters sequentially (replace one filter at a time) is NOT commutative — in
-// "x12345y", filter A="123" then B="345" yields "x[REDACTED]45y", but B then A
-// yields "x12[REDACTED]y". Span-union (compute every match on the ORIGINAL,
-// merge overlapping/adjacent spans, mask in place) makes the output identical
-// regardless of order: the merged span 1..6 collapses to a single [REDACTED].
-func TestApplyResponseFilters_OverlappingRedactionOrderFree(t *testing.T) {
+// TestApplyResponseFilters_OverlappingRedactionOrderRespected proves transforms
+// run SEQUENTIALLY in the order given (the engine hands them in operator-set rank
+// order), so overlapping redactions are order-DEPENDENT and deterministic. In
+// "x12345y": [a="123", b="345"] → a masks "123" leaving "...45...", so b's "345"
+// no longer matches → "x[REDACTED]45y"; the reverse order → "x12[REDACTED]y".
+// (The old span-union collapsed both to one merged "[REDACTED]" — this test would
+// fail on it; it passes now that order is honored.)
+func TestApplyResponseFilters_OverlappingRedactionOrderRespected(t *testing.T) {
 	body := []byte(`{"body":"x12345y"}`)
 	a := ResponseFilter{RedactPatterns: []string{"123"}, Match: "contains"}
 	b := ResponseFilter{RedactPatterns: []string{"345"}, Match: "contains"}
 
-	var outs []string
-	for _, order := range [][]ResponseFilter{{a, b}, {b, a}} {
-		out, _, err := ApplyResponseFilters(body, order, []string{"body"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		outs = append(outs, string(out))
+	ab, _, err := ApplyResponseFilters(body, []ResponseFilter{a, b}, []string{"body"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if outs[0] != outs[1] {
-		t.Fatalf("redaction must be order-independent:\n [a,b]=%s\n [b,a]=%s", outs[0], outs[1])
+	ba, _, err := ApplyResponseFilters(body, []ResponseFilter{b, a}, []string{"body"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(outs[0], `"x[REDACTED]y"`) {
-		t.Errorf("overlapping spans should merge into a single [REDACTED]: %s", outs[0])
+	if !strings.Contains(string(ab), `"x[REDACTED]45y"`) {
+		t.Errorf("[a,b] should mask 123 first: want x[REDACTED]45y, got %s", ab)
+	}
+	if !strings.Contains(string(ba), `"x12[REDACTED]y"`) {
+		t.Errorf("[b,a] should mask 345 first: want x12[REDACTED]y, got %s", ba)
+	}
+	if string(ab) == string(ba) {
+		t.Errorf("overlapping redactions must now depend on order, got identical: %s", ab)
 	}
 }
 
@@ -152,29 +155,35 @@ func TestApplyResponseFilters_TwoRedactionsCompose(t *testing.T) {
 	}
 }
 
-// TestApplyResponseFilters_ExcludeRedactOrderFree proves exclude + redact give
-// the same result regardless of order: exclusions always run first (union of
-// drops), then redaction masks only the survivors.
-func TestApplyResponseFilters_ExcludeRedactOrderFree(t *testing.T) {
-	body := []byte(`{"emails":[{"from":"a@vendor.com","body":"ssn 123-45-6789"},{"from":"b@ok.com","body":"ssn 999-88-7777"}],"total":2}`)
-	drop := ResponseFilter{ExcludePatterns: []string{"vendor.com"}, Match: "contains"}
-	red := ResponseFilter{RedactPatterns: []string{`\d{3}-\d{2}-\d{4}`}, Match: "regex"}
+// TestApplyResponseFilters_ExcludeRedactOrderMatters proves exclude vs redact is
+// order-DEPENDENT and operator-controllable: a redaction ranked BEFORE an
+// exclusion can mask the very text the exclusion keys on, so the item survives
+// (masked) instead of being dropped. Reverse the order and the item is dropped.
+func TestApplyResponseFilters_ExcludeRedactOrderMatters(t *testing.T) {
+	body := []byte(`{"emails":[{"id":"1","from":"x@vendor.com"}],"total":1}`)
+	redact := ResponseFilter{RedactPatterns: []string{"vendor.com"}, Match: "contains"}
+	exclude := ResponseFilter{ExcludePatterns: []string{"vendor.com"}, Match: "contains"}
+	cf := []string{"from"}
 
-	var outs []string
-	for _, order := range [][]ResponseFilter{{drop, red}, {red, drop}} {
-		out, _, err := ApplyResponseFilters(body, order, []string{"from", "body"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		outs = append(outs, string(out))
+	// exclude THEN redact: the item is dropped before redaction sees it.
+	dropFirst, _, err := ApplyResponseFilters(body, []ResponseFilter{exclude, redact}, cf)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if outs[0] != outs[1] {
-		t.Fatalf("exclude+redact must be order-independent:\n %s\n %s", outs[0], outs[1])
+	if strings.Contains(string(dropFirst), "vendor") || strings.Contains(string(dropFirst), "[REDACTED]") {
+		t.Errorf("exclude-then-redact should drop the item entirely: %s", dropFirst)
 	}
-	if strings.Contains(outs[0], "vendor.com") {
-		t.Errorf("vendor item should be excluded: %s", outs[0])
+
+	// redact THEN exclude: redaction masks the text the exclude keys on, so the
+	// item survives (masked). Order is honored, not erased.
+	redactFirst, _, err := ApplyResponseFilters(body, []ResponseFilter{redact, exclude}, cf)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(outs[0], "999-88-7777") {
-		t.Errorf("surviving item's SSN should be redacted: %s", outs[0])
+	if !strings.Contains(string(redactFirst), "[REDACTED]") {
+		t.Errorf("redact-then-exclude should keep the item with `from` masked: %s", redactFirst)
+	}
+	if string(dropFirst) == string(redactFirst) {
+		t.Errorf("exclude/redact order must matter now (not order-free): %s", dropFirst)
 	}
 }

@@ -101,8 +101,9 @@ type iamConnectorOption struct {
 // "response filters & guards" checkbox group. Used only in the Go template
 // (server-side {{range}}), so no json tags are needed.
 type iamFilterView struct {
-	Name string
-	Kind string
+	Name  string
+	Kind  string
+	Order int
 }
 
 // iamContentFieldView is one selectable content field in the redact/exclude
@@ -560,7 +561,7 @@ func (s *Server) populateBuilderData(data *iamBuilderData) {
 	if fs, err := s.iam.ListFilters(); err == nil {
 		filters := make([]iamFilterView, 0, len(fs))
 		for _, f := range fs {
-			filters = append(filters, iamFilterView{Name: f.Name, Kind: string(f.Kind)})
+			filters = append(filters, iamFilterView{Name: f.Name, Kind: string(f.Kind), Order: f.Order})
 		}
 		data.Filters = filters
 		catalog["_filters"] = map[string]any{"filters": filters}
@@ -660,7 +661,7 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.iam.CreateFilter(name, r.FormValue("description"), kind, 0, config); err != nil {
+	if _, err := s.iam.CreateFilter(name, r.FormValue("description"), kind, parseFilterOrder(r, kind), config); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -717,6 +718,31 @@ func (s *Server) parseFilterConfig(r *http.Request) (iam.FilterKind, map[string]
 	}
 }
 
+// defaultFilterOrder gives a sensible per-kind rank so the common pipeline works
+// without the operator setting one — exclusions run before redactions before
+// scripts (lower runs first).
+func defaultFilterOrder(kind iam.FilterKind) int {
+	switch kind {
+	case iam.KindExcludeItems:
+		return 10
+	case iam.KindRedact:
+		return 20
+	default:
+		return 30
+	}
+}
+
+// parseFilterOrder reads the operator-set rank, falling back to the per-kind
+// default when the field is blank or unparseable. Shared by filter create+edit.
+func parseFilterOrder(r *http.Request, kind iam.FilterKind) int {
+	if v := strings.TrimSpace(r.FormValue("order")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return defaultFilterOrder(kind)
+}
+
 // handleIAMFilterDelete removes a filter-library entry
 // (POST /iam/filters/{name}/delete).
 func (s *Server) handleIAMFilterDelete(w http.ResponseWriter, r *http.Request) {
@@ -751,6 +777,7 @@ type iamFilterEditPageData struct {
 	Name        string
 	Description string
 	Kind        string
+	Order       int
 	// redact / exclude_items
 	Patterns string // one per line
 	Match    string // contains|regex
@@ -780,7 +807,7 @@ func (s *Server) renderFilterEditPage(w http.ResponseWriter, r *http.Request, na
 	}
 	data := &iamFilterEditPageData{
 		Active: "iam-filters", Error: errMsg,
-		Name: f.Name, Description: f.Description, Kind: string(f.Kind), Match: "contains",
+		Name: f.Name, Description: f.Description, Kind: string(f.Kind), Order: f.Order, Match: "contains",
 	}
 	switch f.Kind {
 	case iam.KindRedact, iam.KindExcludeItems:
@@ -813,7 +840,7 @@ func (s *Server) handleIAMFilterUpdate(w http.ResponseWriter, r *http.Request) {
 		s.renderFilterEditPage(w, r, name, perr.msg)
 		return
 	}
-	if err := s.iam.UpdateFilter(name, r.FormValue("description"), kind, config); err != nil {
+	if err := s.iam.UpdateFilter(name, r.FormValue("description"), kind, parseFilterOrder(r, kind), config); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

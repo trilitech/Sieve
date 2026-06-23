@@ -451,15 +451,16 @@ type FilterDetail struct {
 	Name        string
 	Description string
 	Kind        iam.FilterKind
+	Order       int
 	Config      map[string]any
 }
 
 // GetFilter returns one filter-library entry by name (for edit-in-place).
 func (s *Service) GetFilter(name string) (*FilterDetail, error) {
-	row := s.db.DB.QueryRow(`SELECT name, description, kind, config FROM iam_filters WHERE name = ?`, name)
+	row := s.db.DB.QueryRow(`SELECT name, description, kind, sort_order, config FROM iam_filters WHERE name = ?`, name)
 	var f FilterDetail
 	var kind, cfgJSON string
-	if err := row.Scan(&f.Name, &f.Description, &kind, &cfgJSON); err != nil {
+	if err := row.Scan(&f.Name, &f.Description, &kind, &f.Order, &cfgJSON); err != nil {
 		return nil, fmt.Errorf("get iam filter %q: %w", name, err)
 	}
 	f.Kind = iam.FilterKind(kind)
@@ -473,15 +474,15 @@ func (s *Service) GetFilter(name string) (*FilterDetail, error) {
 
 // UpdateFilter modifies a filter-library entry in place. The name is the stable
 // key (rules/guardrails reference a filter by name via @filters, so renaming
-// would silently detach them) — only description, kind, and config change.
-func (s *Service) UpdateFilter(name, description string, kind iam.FilterKind, config map[string]any) error {
+// would silently detach them) — description, kind, sort_order, and config change.
+func (s *Service) UpdateFilter(name, description string, kind iam.FilterKind, order int, config map[string]any) error {
 	cfgJSON, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("marshal filter config: %w", err)
 	}
 	res, err := s.db.DB.Exec(
-		`UPDATE iam_filters SET description = ?, kind = ?, config = ? WHERE name = ?`,
-		description, string(kind), string(cfgJSON), name,
+		`UPDATE iam_filters SET description = ?, kind = ?, sort_order = ?, config = ? WHERE name = ?`,
+		description, string(kind), order, string(cfgJSON), name,
 	)
 	if err != nil {
 		return fmt.Errorf("update iam filter: %w", err)

@@ -10,9 +10,9 @@
 > **no privilege-override** ("raw" is a role-composition outcome, not an exemption);
 > a transform's application **order is a global rank on the transform, not the role**.
 > "Rule", "guardrail", and "filter library" are *views* over these primitives, not
-> separate kinds. Two engine realignments are pending (§3.2, §15): obligations become
-> one role-anchored concept (today: grant-annotations + a separate guardrail set), and
-> ordering becomes the explicit global rank (today: the to-be-removed span-union, §7.1).
+> separate kinds. Ordering is now the explicit operator-set global rank (§7.1). One
+> engine realignment remains (§3.2, §15): obligations become one role-anchored concept
+> (today: grant-annotations + a separate guardrail set).
 >
 > **Rev 2 (RBAC).** The model is now explicit RBAC on the subject side: a **token
 > is assigned a set of roles**, a **role is a reusable bundle of rules**,
@@ -316,18 +316,16 @@ and the Obligation matches (the token *is in* `read_with_pii_removed`) → **rea
 redacted**. Drop `read_with_pii_removed` → the Obligation's role isn't held →
 **raw**. Privilege/raw is a *role-composition outcome*, never an override.
 
-**Implementation deltas (honest — the model is canonical; the engine is catching up).**
+**Implementation delta (honest — the model is canonical; the engine is catching up).**
 1. **One obligation concept.** Canonically an Obligation is a single role-anchored,
    object-scoped statement, and "on a rule" merely copies the rule's scope. *Today*
    the engine has **two** attachment forms (§7): grant-obligations are Cedar
    **annotations on the grant permit**, and guardrails are a **separate role/global
    permit set**. Behaviour already matches the model (both are collected by union,
    §7.0/§7.3); the unification to one role-anchored concept is pending.
-2. **Explicit global-rank ordering.** Canonically order is the global rank above.
-   *Today* the post-filter applier makes regex redaction **order-free by span-union**
-   (§7.1) — a workaround that only covers regex redaction and misses that the real
-   transforms are opaque scripts. It is to be **replaced** by the explicit,
-   operator-visible global-rank pipeline (§15).
+
+*Ordering is no longer a delta:* the applier runs transforms sequentially in the
+operator-set global rank ((Order, Name); §7.1) — the span-union workaround is gone.
 
 ---
 
@@ -834,20 +832,21 @@ pretend it away:
   sensible per-kind starting defaults (exclusions → redactions → rewrites) so the
   common case needs no fiddling.
 - **Exclusions** drop an item if **any** exclude matches it (a union of drops, itself
-  order-free) and run first, so later stages only touch survivors.
+  order-free). By default they rank earliest (so later stages only touch survivors),
+  but **the rank decides** — a redaction ranked ahead of an exclusion can mask the
+  text the exclusion would otherwise key on, which is now an intended, controllable
+  outcome.
 - **Scripts** (LLM PII-strip, custom rewrite) are first-class stages in the same
   ranked pipeline — they are exactly *why* the order has to be explicit.
 
-> **Implementation delta (§3.2, §15).** *Today* the applier instead makes regex
-> redaction **order-free by span-union** — mask the union of match spans on the
-> *original* (overlapping/adjacent merged, replaced in place), so a naïve
-> replace-one-at-a-time pipeline's non-commutativity and the `abc`/`123`
-> deletion-splice hazard don't arise — and runs `script_filter`s last in `(order, id)`
-> sequence (the built-in `AuthValueScrubFilter` is a whole-response redaction that
-> composes with the rest). That was an over-correction: it only covers regex redaction
-> and misses that the real transforms are opaque scripts. The canonical model above
-> (one explicit global rank across all transform kinds) **replaces** it; realignment
-> pending. Pre-phase guards remain unordered (any deny denies).
+> **Status — implemented.** The applier (`internal/policy/policy.go`) runs transforms
+> **sequentially in the engine-supplied (Order, Name) rank** (`internal/iam/obligations.go`
+> sorts; the filter library persists `sort_order`, default per kind: exclude 10,
+> redact 20, script 30). The earlier **span-union** workaround (which forced regex
+> redaction to be order-independent) is **removed** — it only covered regex redaction
+> and missed that the real transforms are opaque scripts. The built-in
+> `AuthValueScrubFilter` is a whole-response redaction that composes in the same
+> pipeline. Pre-phase guards remain unordered (any deny denies).
 
 Scripts reuse the existing policy-script runtime (`/opt/sieve-py`, stdin→stdout
 JSON; Python *or* JavaScript; `docs/policy-scripts.md`). The library is the home for
@@ -937,9 +936,9 @@ filters = dedupeByID(resolve(filters, library))
   the `unless`-exemption authoring form (§7.2), neither an absent attribute nor an
   evaluation error can bypass a guardrail.
 - **Approval** = OR over matched guardrails **and** matching grant permits (§7.0);
-  **filters** = union, deduped by id, applied in **global rank** order (§3.2/§7.1),
-  exclusions first. (Today's applier orders regex redaction by span-union — the
-  to-be-replaced delta, §7.1.) Obligations are computed **only when pass 1 allowed**.
+  **filters** = union, deduped by id, applied sequentially in **global rank**
+  ((Order, Name)) order (§3.2/§7.1; exclusions rank earliest by default, but the rank
+  decides). Obligations are computed **only when pass 1 allowed**.
 - `@approval` + post-`@filters` on the same matched guardrail **both** apply: the
   post-filters run on the response *after* approval resolves (fixes the rev-1
   "approval drops filters" gap — review item; the approval branch must run
@@ -954,9 +953,8 @@ Grants Allow → collect guardrail obligations (§7.3)
   → run pre guards: script_guard (rate_limit deferred, §7.1); any deny ⇒ DENY   [pre, fail-closed]
   → if approval required: submit + block(REST)/ticket(MCP)                       [pre]
   → conn.Execute(...)
-  → run transform pipeline: every matching transform, deduped, in GLOBAL RANK      [post]
-       order (§3.2/§7.1) — exclusions first, then the rest by rank
-       (today's applier: exclude → span-union redact → script_filter (order,id) — §7.1 delta)
+  → run transform pipeline: every matching transform, deduped, applied             [post]
+       sequentially in GLOBAL RANK ((Order, Name)) order (§3.2/§7.1)
   → return
 ```
 
@@ -1791,10 +1789,13 @@ approval queue, the response-filter applier, the two-port topology, the connecto
   single **role-anchored, object-scoped Obligation**; "on a rule" becomes scope-inheriting
   authoring (§3.2). Behaviour is already the model's (union, §7.0/§7.3); this is an
   internal-representation + authoring unification, not a semantic change.
-- **§3.2 realignment 2 — explicit global-rank ordering (planned).** Replace the
-  span-union order-free applier (§7.1) with a single **global rank** over all transform
-  kinds (redact / exclude / rewrite-script), deterministic and **operator-visible** in the
-  role view, the token's "what it can do", and the decision explorer. Order *matters* for
+- **§3.2 realignment 2 — explicit global-rank ordering (DONE).** The span-union
+  order-free applier is **replaced** by a single **global rank** over all transform kinds
+  (redact / exclude / rewrite-script): the applier (`internal/policy/policy.go`) runs
+  transforms sequentially in the engine-supplied (Order, Name) order; the filter library
+  persists `sort_order` (per-kind default exclude 10 / redact 20 / script 30) and exposes
+  it in the create + edit forms and the library list (§7.1). Operator-visibility in the
+  decision explorer / token "what it can do" is the remaining nicety. Order *matters* for
   the real (script) transforms; the design makes it explicit rather than pretending it away.
 - **`ask` composition (resolution: any-ask ⇒ ask).** When matching grants disagree —
   one allows plainly, another allows-with-approval — the **approval still applies**:

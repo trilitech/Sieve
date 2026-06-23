@@ -101,6 +101,13 @@
                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
           </div>
 
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Order / rank <span class="text-slate-600">(optional)</span></label>
+            <input type="number" name="order" placeholder="e.g. 20"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-xs text-slate-500 mt-1">When several transforms apply to one response they run in ascending order — <strong>lower runs first</strong> (e.g. excludes 10, redactions 20, scripts 30). Leave blank for the per-kind default.</p>
+          </div>
+
           <!-- redact / exclude_items config — SHARED: both use the same matching
                model (a list of patterns + a match mode), so they're equally
                powerful. redact masks matches; exclude drops matching list items. -->
@@ -160,11 +167,13 @@ else:
         </form>
 
         <div class="mt-6 border-t border-slate-700 pt-5">
-          <h3 class="text-sm font-medium text-slate-300 mb-3">Library</h3>
+          <h3 class="text-sm font-medium text-slate-300 mb-1">Library</h3>
+          <p class="text-xs text-slate-500 mb-3">Shown in apply order — when several transforms apply to one response they run by rank, lower first.</p>
           {{if .Filters}}
           <div class="flex flex-wrap gap-2">
             {{range .Filters}}
             <span class="inline-flex items-center gap-2 rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-sm">
+              <span class="text-xs font-mono text-slate-500" title="apply rank (lower runs first)">#{{.Order}}</span>
               <span class="font-medium text-white">{{.Name}}</span>
               <code class="text-xs text-slate-500">{{.Kind}}</code>
               <a href="/iam/filters/{{.Name}}/edit" class="text-xs text-indigo-400 hover:text-indigo-300 font-medium">Edit</a>

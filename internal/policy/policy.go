@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -80,111 +79,41 @@ func (f ResponseFilter) fieldSet(contentFields []string) map[string]bool {
 	return set
 }
 
-// --- order-independent redaction (span union) ---
+// --- field-aware redaction ---
 //
-// Sequentially replacing matches one filter at a time is NOT commutative:
-// overlapping patterns give different output by order ("aXb" with redactors
-// "aXb" and "X" yields "[REDACTED]" one way, "a[REDACTED]b" the other), and a
-// replacement can even manufacture or destroy a downstream match. So redaction
-// must be order-independent BY CONSTRUCTION: compute every match span from every
-// applicable redaction filter against the ORIGINAL string, merge overlapping AND
-// adjacent spans, and mask each merged span in place with a single "[REDACTED]".
-// Same inputs ⇒ same output regardless of filter collection order.
-
-// cRedact is a redaction (or exclusion) filter compiled for one
-// ApplyResponseFilters call. fields == nil means the whole-response target (the
-// connector-agnostic auth-value scrub / back-compat path).
-type cRedact struct {
-	f       ResponseFilter
-	res     []*regexp.Regexp
-	fields  map[string]bool
-	matched bool // set when this filter contributed ≥1 span (for label attribution)
-}
-
-// redactSpans returns the [start,end) byte ranges in s matched by any of res.
-func redactSpans(s string, res []*regexp.Regexp) [][2]int {
-	var spans [][2]int
-	for _, re := range res {
-		for _, m := range re.FindAllStringIndex(s, -1) {
-			spans = append(spans, [2]int{m[0], m[1]})
-		}
-	}
-	return spans
-}
-
-// mergeSpans sorts and coalesces overlapping AND adjacent (touching) ranges.
-func mergeSpans(spans [][2]int) [][2]int {
-	if len(spans) == 0 {
-		return nil
-	}
-	sort.Slice(spans, func(i, j int) bool {
-		if spans[i][0] != spans[j][0] {
-			return spans[i][0] < spans[j][0]
-		}
-		return spans[i][1] < spans[j][1]
-	})
-	merged := [][2]int{spans[0]}
-	for _, sp := range spans[1:] {
-		last := &merged[len(merged)-1]
-		if sp[0] <= last[1] { // overlapping or adjacent
-			if sp[1] > last[1] {
-				last[1] = sp[1]
-			}
-		} else {
-			merged = append(merged, sp)
-		}
-	}
-	return merged
-}
-
-// maskSpans replaces each merged span in s with a single "[REDACTED]". Spans are
-// computed on the original s; replacement runs right-to-left so earlier byte
-// offsets stay valid. Returns the masked string and whether anything changed.
-func maskSpans(s string, spans [][2]int) (string, bool) {
-	merged := mergeSpans(spans)
-	if len(merged) == 0 {
-		return s, false
-	}
-	out := s
-	for i := len(merged) - 1; i >= 0; i-- {
-		out = out[:merged[i][0]] + "[REDACTED]" + out[merged[i][1]:]
-	}
-	return out, true
-}
-
-// redactFieldsSpanUnion walks decoded JSON and masks, in each content-field
-// string value, the UNION of spans from every filter whose field set includes
-// that key — computed on the original value, so order-independent. Non-content
-// fields (ids, base64 attachment data, metadata) are never touched.
-func redactFieldsSpanUnion(v any, filters []*cRedact) bool {
+// Transforms apply SEQUENTIALLY in the order the engine hands them. Post
+// obligations are sorted by (Order, Name) in internal/iam/obligations.go, so the
+// slice ApplyResponseFilters receives is already in operator-set rank order.
+// Order is therefore meaningful and deterministic — a redaction ranked before an
+// exclusion can mask the very text the exclusion keys on. redactInFields masks,
+// in place, every match of a single filter's patterns within the connector's
+// content-field string values; non-content fields (ids, base64 attachment data,
+// metadata) are never touched.
+func redactInFields(v any, fields map[string]bool, res []*regexp.Regexp) bool {
 	changed := false
 	switch x := v.(type) {
 	case map[string]any:
 		for k, val := range x {
 			if s, ok := val.(string); ok {
-				var spans [][2]int
-				for _, cf := range filters {
-					if cf.fields == nil || !cf.fields[k] {
-						continue
+				if fields[k] {
+					ns := s
+					for _, re := range res {
+						ns = re.ReplaceAllString(ns, "[REDACTED]")
 					}
-					if sp := redactSpans(s, cf.res); len(sp) > 0 {
-						cf.matched = true
-						spans = append(spans, sp...)
+					if ns != s {
+						x[k] = ns
+						changed = true
 					}
-				}
-				if masked, ok := maskSpans(s, spans); ok {
-					x[k] = masked
-					changed = true
 				}
 				continue
 			}
-			if redactFieldsSpanUnion(val, filters) {
+			if redactInFields(val, fields, res) {
 				changed = true
 			}
 		}
 	case []any:
 		for _, e := range x {
-			if redactFieldsSpanUnion(e, filters) {
+			if redactInFields(e, fields, res) {
 				changed = true
 			}
 		}
@@ -315,13 +244,17 @@ func (e *ResponseFilterError) Error() string {
 
 func (e *ResponseFilterError) Unwrap() error { return e.Err }
 
-// ApplyResponseFilters applies a list of response filters to a JSON response.
-// Returns the (potentially modified) response and a summary of what was done.
-// On a script-filter construction or evaluation failure, returns the original
-// response unchanged and a non-nil *ResponseFilterError so the caller can
-// fail closed (e.g. surface a deny decision) rather than leak un-redacted
-// content. Non-script filter errors (a regex that fails to compile is
-// already best-effort skipped) do NOT raise this error.
+// ApplyResponseFilters applies response filters to a JSON response IN THE ORDER
+// GIVEN. The slice is already in operator-set rank order — the engine sorts post
+// obligations by (Order, Name) (internal/iam/obligations.go) before handing them
+// here. Each filter operates on the running result, so order is meaningful and
+// deterministic: a redaction ranked before an exclusion masks the text the
+// exclusion would otherwise key on. Returns the (possibly modified) response and
+// a summary of what was done. On a script-filter construction or evaluation
+// failure, returns the ORIGINAL response unchanged and a non-nil
+// *ResponseFilterError so the caller can fail closed rather than leak un-redacted
+// content. (A regex that fails to compile is best-effort skipped and does NOT
+// raise this error.)
 func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter, contentFields []string) ([]byte, string, error) {
 	if len(filters) == 0 {
 		return responseJSON, "", nil
@@ -330,69 +263,49 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter, content
 	result := string(responseJSON)
 	var actions []string
 
-	// Phase 1 — EXCLUSIONS: drop an item if ANY exclude filter matches it (union
-	// of drops ⇒ order-free). Done before redaction so masking only touches the
-	// items that survive.
-	result, exActions := applyExclusionsUnion(result, filters, contentFields)
-	actions = append(actions, exActions...)
-
-	// Phase 2 — REDACTIONS: mask the UNION of match spans computed on the
-	// original string (overlap/adjacency-merged, masked in place) ⇒ order-free.
-	result, rActions := applyRedactionsSpanUnion(result, filters, contentFields)
-	actions = append(actions, rActions...)
-
-	// Phase 3 — SCRIPTS: opaque post-filter rewrites. This is the ONE
-	// order-dependent step (a script sees whatever ran before it); they run in
-	// filter order. A construct/run failure MUST fail closed — returning the
-	// un-redacted response would leak content the caller relies on us to scrub.
 	for _, f := range filters {
-		if f.ScriptPath == "" {
-			continue
+		if len(f.ExcludePatterns) > 0 {
+			r, act := applyExclusion(result, f, contentFields)
+			result = r
+			actions = append(actions, act...)
 		}
-		eval, err := NewScriptEvaluator(map[string]any{"command": f.ScriptCommand, "script": f.ScriptPath})
-		if err != nil {
-			return responseJSON, strings.Join(actions, "; "), &ResponseFilterError{Filter: f, Err: err}
+		if len(f.RedactPatterns) > 0 {
+			r, act := applyRedaction(result, f, contentFields)
+			result = r
+			actions = append(actions, act...)
 		}
-		scriptReq := &PolicyRequest{
-			Phase:    "post",
-			Metadata: map[string]any{"phase": "post", "response": result},
-		}
-		scriptDec, err := eval.Evaluate(context.Background(), scriptReq)
-		if err != nil {
-			return responseJSON, strings.Join(actions, "; "), &ResponseFilterError{Filter: f, Err: err}
-		}
-		if scriptDec.Rewrite != "" {
-			result = scriptDec.Rewrite
-			actions = append(actions, "script-filtered")
+		if f.ScriptPath != "" {
+			// Opaque post-filter rewrite — a construct/run failure MUST fail
+			// closed: return the ORIGINAL response, not the partially transformed
+			// one, so a broken scrub can never leak content.
+			r, act, err := applyScript(result, f)
+			if err != nil {
+				return responseJSON, strings.Join(actions, "; "), err
+			}
+			result = r
+			actions = append(actions, act...)
 		}
 	}
 
 	return []byte(result), strings.Join(actions, "; "), nil
 }
 
-// applyExclusionsUnion drops a list item when ANY exclude filter matches it
-// (each filter under its own match mode + effective field set). Because it's a
-// union of drops, the result is independent of filter order. Returns the
-// (possibly rewritten) response and per-key action summaries.
-func applyExclusionsUnion(result string, filters []ResponseFilter, contentFields []string) (string, []string) {
-	var exs []*cRedact
-	for _, f := range filters {
-		if len(f.ExcludePatterns) == 0 {
-			continue
-		}
-		exs = append(exs, &cRedact{f: f, res: compileFilters(f.ExcludePatterns, f.Match), fields: f.fieldSet(contentFields)})
-	}
-	if len(exs) == 0 {
+// applyExclusion drops list items matching this filter's patterns (within its
+// effective field set), handling the standard list shapes. Field-aware filters
+// match only within content fields (a hit inside base64/metadata never drops the
+// item); a whole-response filter matches the item's serialized JSON.
+func applyExclusion(result string, f ResponseFilter, contentFields []string) (string, []string) {
+	res := compileFilters(f.ExcludePatterns, f.Match)
+	if len(res) == 0 {
 		return result, nil
 	}
+	fields := f.fieldSet(contentFields)
 
 	var data map[string]any
 	if err := json.Unmarshal([]byte(result), &data); err != nil {
 		// Not a JSON object — only a whole-response exclude can match it.
-		for _, e := range exs {
-			if e.fields == nil && anyMatch(e.res, result) {
-				return "", []string{"response filtered: matched exclude pattern"}
-			}
+		if fields == nil && anyMatch(res, result) {
+			return "", []string{"response filtered: matched exclude pattern"}
 		}
 		return result, nil
 	}
@@ -408,7 +321,7 @@ func applyExclusionsUnion(result string, filters []ResponseFilter, contentFields
 		var filtered []any
 		removed := 0
 		for _, item := range items {
-			if excludedByAny(item, exs) {
+			if itemExcluded(item, res, fields) {
 				removed++
 			} else {
 				filtered = append(filtered, item)
@@ -434,55 +347,46 @@ func applyExclusionsUnion(result string, filters []ResponseFilter, contentFields
 	return string(rewritten), actions
 }
 
-// excludedByAny reports whether item matches any exclude filter (union of drops).
-// Field-aware filters match only within content fields (so a hit inside
-// base64/metadata never drops the item); whole-response filters match the
-// item's serialized JSON.
-func excludedByAny(item any, exs []*cRedact) bool {
-	for _, e := range exs {
-		if e.fields == nil {
-			itemJSON, _ := json.Marshal(item)
-			if anyMatch(e.res, string(itemJSON)) {
-				return true
-			}
-		} else if matchInFields(item, e.fields, e.res) {
-			return true
-		}
+// itemExcluded reports whether item matches the exclude filter. Field-aware
+// filters match only within content fields (so a hit inside base64/metadata never
+// drops the item); a whole-response filter matches the item's serialized JSON.
+func itemExcluded(item any, res []*regexp.Regexp, fields map[string]bool) bool {
+	if fields == nil {
+		itemJSON, _ := json.Marshal(item)
+		return anyMatch(res, string(itemJSON))
 	}
-	return false
+	return matchInFields(item, fields, res)
 }
 
-// applyRedactionsSpanUnion masks the union of every redaction filter's match
-// spans, computed on the ORIGINAL string and merged in place — so the result is
-// independent of filter order. Field-aware filters (those with a content-field
-// set) run first against the decoded JSON's content-field values; whole-response
-// filters (auth-scrub / back-compat, fields == nil) then run against the whole
-// serialized string. Within each group, span-union makes order irrelevant; the
-// two groups apply in a fixed order. A filter that contributes ≥1 span is
-// recorded by its label (preserving audit attribution, e.g. auth_value_scrubbed).
-func applyRedactionsSpanUnion(result string, filters []ResponseFilter, contentFields []string) (string, []string) {
-	var fieldAware, wholeResp []*cRedact
-	for _, f := range filters {
-		if len(f.RedactPatterns) == 0 {
-			continue
-		}
-		cf := &cRedact{f: f, res: compileFilters(f.RedactPatterns, f.Match), fields: f.fieldSet(contentFields)}
-		if cf.fields == nil {
-			wholeResp = append(wholeResp, cf)
-		} else {
-			fieldAware = append(fieldAware, cf)
-		}
-	}
-	if len(fieldAware) == 0 && len(wholeResp) == 0 {
+// applyRedaction masks every match of this filter's patterns with "[REDACTED]"
+// on the running result. Field-aware (only within the connector's content-field
+// string values) when the filter has an effective field set; whole-response
+// otherwise (the connector-agnostic auth-value scrub / back-compat path). A
+// filter that masks ≥1 match is recorded by its label (audit attribution, e.g.
+// auth_value_scrubbed).
+func applyRedaction(result string, f ResponseFilter, contentFields []string) (string, []string) {
+	res := compileFilters(f.RedactPatterns, f.Match)
+	if len(res) == 0 {
 		return result, nil
 	}
+	fields := f.fieldSet(contentFields)
+	matched := false
 
-	// Field-aware: decode once, span-union per content-field value, re-marshal
-	// only if anything changed (preserve original bytes otherwise).
-	if len(fieldAware) > 0 {
+	if fields == nil {
+		out := result
+		for _, re := range res {
+			nr := re.ReplaceAllString(out, "[REDACTED]")
+			if nr != out {
+				out = nr
+				matched = true
+			}
+		}
+		result = out
+	} else {
 		var data any
 		if err := json.Unmarshal([]byte(result), &data); err == nil {
-			if redactFieldsSpanUnion(data, fieldAware) {
+			if redactInFields(data, fields, res) {
+				matched = true
 				if rewritten, mErr := json.Marshal(data); mErr == nil {
 					result = string(rewritten)
 				}
@@ -490,30 +394,30 @@ func applyRedactionsSpanUnion(result string, filters []ResponseFilter, contentFi
 		}
 	}
 
-	// Whole-response: span-union over the entire (already field-redacted) string.
-	if len(wholeResp) > 0 {
-		var spans [][2]int
-		for _, cf := range wholeResp {
-			if sp := redactSpans(result, cf.res); len(sp) > 0 {
-				cf.matched = true
-				spans = append(spans, sp...)
-			}
-		}
-		if masked, ok := maskSpans(result, spans); ok {
-			result = masked
-		}
+	if matched {
+		return result, []string{redactLabel(f)}
 	}
+	return result, nil
+}
 
-	var actions []string
-	for _, cf := range fieldAware {
-		if cf.matched {
-			actions = append(actions, redactLabel(cf.f))
-		}
+// applyScript runs an opaque post-filter rewrite on the running result. A
+// construct/run failure returns a *ResponseFilterError so the caller can fail
+// closed (never leak the un-rewritten content).
+func applyScript(result string, f ResponseFilter) (string, []string, error) {
+	eval, err := NewScriptEvaluator(map[string]any{"command": f.ScriptCommand, "script": f.ScriptPath})
+	if err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
 	}
-	for _, cf := range wholeResp {
-		if cf.matched {
-			actions = append(actions, redactLabel(cf.f))
-		}
+	scriptReq := &PolicyRequest{
+		Phase:    "post",
+		Metadata: map[string]any{"phase": "post", "response": result},
 	}
-	return result, actions
+	scriptDec, err := eval.Evaluate(context.Background(), scriptReq)
+	if err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
+	}
+	if scriptDec.Rewrite != "" {
+		return scriptDec.Rewrite, []string{"script-filtered"}, nil
+	}
+	return result, nil, nil
 }
