@@ -1,6 +1,6 @@
 # Sieve IAM — Specification
 
-**Status:** Implemented (rev 2 — RBAC composition + grant/guardrail obligations); **rev 3 model canonical (§3.2), engine realignment pending** · **Date:** 2026-06-22
+**Status:** Implemented (rev 3 — ontology canonical, §3.2; engine matches the model) · **Date:** 2026-06-24
 **Shipped on `feat/iam-rbac-impl`; the legacy `internal/policy` composition engine is removed (cutover, §1).**
 
 > **Rev 3 (ontology + ordering).** §3.2 makes the model explicit and canonical:
@@ -10,9 +10,11 @@
 > **no privilege-override** ("raw" is a role-composition outcome, not an exemption);
 > a transform's application **order is a global rank on the transform, not the role**.
 > "Rule", "guardrail", and "filter library" are *views* over these primitives, not
-> separate kinds. Ordering is now the explicit operator-set global rank (§7.1). One
-> engine realignment remains (§3.2, §15): obligations become one role-anchored concept
-> (today: grant-annotations + a separate guardrail set).
+> separate kinds. Ordering is the explicit operator-set global rank (§7.1), and
+> decision-scripts are a rule's condition (§5.4). The engine matches the model:
+> grant-bound obligations (conditional on their grant, incl. a script condition) and
+> role/global guardrails (unconditional) are the binding distinction (§3.2), not a gap
+> to unify.
 >
 > **Rev 2 (RBAC).** The model is now explicit RBAC on the subject side: a **token
 > is assigned a set of roles**, a **role is a reusable bundle of rules**,
@@ -296,12 +298,15 @@ transform pipeline over the response (§7.4).
 
 **The authoring words are *views* over these primitives**, not separate kinds:
 - A **Rule** is a Grant authored inside a Role; its principal-scope *is* that role.
-  Authoring a filter "on a rule" creates an **Obligation that inherits the rule's
-  role and object-scope** — a *sibling* statement sharing the anchor and scope, **not
-  a child of the grant**. Per-grant precision is just a tighter object-scope on the
-  Obligation.
+  A filter "on a rule" is an **Obligation bound to that grant**: it applies exactly
+  when the grant does, inheriting the rule's role, object-scope, **and gating**. For a
+  *declarative*-condition rule it behaves like a role-anchored obligation — composing a
+  sibling grant can't strip it (§7.0). For a **script**-condition rule it is **gated
+  with the grant**: if the script vetoes that grant, the obligation doesn't apply — so
+  it rides with the grant, not as a free-floating sibling. Per-grant precision is just
+  a tighter object-scope on the Obligation.
 - A **Guardrail** is an Obligation with `role: global` (or a named role) authored
-  standalone — the floor that isn't tied to one grant.
+  standalone — the floor, unconditional and tied to no grant.
 - The **filter library** holds reusable **Transform** definitions only (redact /
   exclude_items / script_filter, each with a rank). A decision-script is **not** a
   library entry — it is a rule's condition (its script mode, §5.4).
@@ -320,13 +325,15 @@ and the Obligation matches (the token *is in* `read_with_pii_removed`) → **rea
 redacted**. Drop `read_with_pii_removed` → the Obligation's role isn't held →
 **raw**. Privilege/raw is a *role-composition outcome*, never an override.
 
-**Implementation delta (honest — the model is canonical; the engine is catching up).**
-1. **One obligation concept.** Canonically an Obligation is a single role-anchored,
-   object-scoped statement, and "on a rule" merely copies the rule's scope. *Today*
-   the engine has **two** attachment forms (§7): grant-obligations are Cedar
-   **annotations on the grant permit**, and guardrails are a **separate role/global
-   permit set**. Behaviour already matches the model (both are collected by union,
-   §7.0/§7.3); the unification to one role-anchored concept is pending.
+**Implementation note (engine vs storage).** The engine already collects the
+*unconditional* obligations — those of plain (non-script) grants **and** guardrails —
+as one set (`Obligations.Post`); a **script-gated** grant's obligations stay with that
+grant and apply only if it survives (`ScriptGrants[].Post`, §7.4). That
+conditional-vs-unconditional split *is* the real distinction, and it is correct — a
+script-vetoed grant must not leak its redaction onto a sibling grant's read. The two
+*storage* forms (grant-permit annotations vs a separate guardrail permit set, §7)
+merely persist the two bindings; merging them into one representation is optional
+internal tidiness, **not** a model gap — there is no pending "unify obligations" work.
 
 *Ordering is no longer a delta:* the applier runs transforms sequentially in the
 operator-set global rank ((Order, Name); §7.1) — the span-union workaround is gone.
@@ -1800,11 +1807,16 @@ approval queue, the response-filter applier, the two-port topology, the connecto
 
 ## 15. Open questions / future work
 
-- **§3.2 realignment 1 — one obligation concept (planned).** Collapse the two current
-  attachment forms (grant-annotations + a separate guardrail permit set, §7) into a
-  single **role-anchored, object-scoped Obligation**; "on a rule" becomes scope-inheriting
-  authoring (§3.2). Behaviour is already the model's (union, §7.0/§7.3); this is an
-  internal-representation + authoring unification, not a semantic change.
+- **§3.2 realignment 1 — one obligation concept (resolved: not needed).** Originally
+  planned to collapse the two attachment forms (grant-annotations + a separate guardrail
+  permit set, §7) into one role-anchored Obligation. After realignment 3 this would be
+  **wrong**: a grant-bound obligation on a *script*-conditioned rule is conditional on
+  its grant surviving (§7.4), whereas a guardrail is unconditional — flattening both into
+  role-anchored siblings would leak a script-vetoed grant's redaction onto a sibling
+  read. The engine already collects the *unconditional* obligations (plain grants +
+  guardrails) as one set; the script-gated ones correctly stay with their grant. The two
+  storage forms persist that **binding** distinction (grant-bound vs role/global);
+  merging the representations is optional internal tidiness, not a model change.
 - **§3.2 realignment 2 — explicit global-rank ordering (DONE).** The span-union
   order-free applier is **replaced** by a single **global rank** over all transform kinds
   (redact / exclude / rewrite-script): the applier (`internal/policy/policy.go`) runs
