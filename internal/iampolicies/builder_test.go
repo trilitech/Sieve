@@ -299,28 +299,37 @@ func TestBuildRuleCedar_DomainAllowlist(t *testing.T) {
 	}
 }
 
-func TestBuildRuleCedar_Filters(t *testing.T) {
+// TestTransformsAreGuardrailOnly proves a rule is a pure decision: even given a
+// spec with Filters, the grant emits NO @filters (transforms are guardrail-only,
+// spec §7) — while the SAME spec compiled as a guardrail carries the transform,
+// which the engine surfaces in the post obligations.
+func TestTransformsAreGuardrailOnly(t *testing.T) {
 	spec := RuleSpec{
 		RoleID: "R", Effect: "allow", ConnectorType: "google", OpScope: "read",
 		Filters: []string{"redact-ssn"},
 	}
-	// The grant carries @filters directly (grant-scoped) — composition-safe via
-	// the engine's obligation-union, so no companion guardrail is needed.
 	grant, err := BuildRuleCedar(spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(grant, `@filters("redact-ssn")`) {
-		t.Fatalf("grant must carry @filters:\n%s", grant)
+	if strings.Contains(grant, "@filters") {
+		t.Fatalf("a rule must NOT carry @filters (transforms are guardrail-only):\n%s", grant)
+	}
+	guard, err := BuildGuardrailCedar(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(guard, `@filters("redact-ssn")`) {
+		t.Fatalf("guardrail must carry @filters:\n%s", guard)
 	}
 	lib := iam.MapFilterLibrary{"redact-ssn": iam.Filter{Name: "redact-ssn", Kind: iam.KindRedact}}
-	eng, err := iam.NewEngine([]iam.Policy{{ID: "g", Cedar: grant}}, nil, lib)
+	eng, err := iam.NewEngine([]iam.Policy{{ID: "g", Cedar: grant}}, []iam.Policy{{ID: "gr", Cedar: guard}}, lib)
 	if err != nil {
-		t.Fatalf("compile with filter lib: %v", err)
+		t.Fatalf("compile: %v", err)
 	}
 	d, _ := eng.Decide(reqFor("R", "google", "work", "list_emails", true))
 	if !d.Allow {
-		t.Fatalf("filtered read should be allowed")
+		t.Fatalf("read should be allowed")
 	}
 	found := false
 	for _, f := range d.Obligations.Post {
@@ -329,19 +338,17 @@ func TestBuildRuleCedar_Filters(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected redact-ssn in post obligations, got %+v", d.Obligations.Post)
+		t.Errorf("expected redact-ssn from the guardrail in post obligations, got %+v", d.Obligations.Post)
 	}
 }
 
-// TestObligationUnionUnderComposition is the safety proof for grant-level
-// obligations: an obligation on role A's grant (approval + redact) is NOT stripped
-// by composing role B that grants the SAME action without it. The engine unions
-// obligations across all matching permits, so composition can only ADD, never
-// remove — the monotonicity invariant that makes filters/approval on a rule safe.
-func TestObligationUnionUnderComposition(t *testing.T) {
+// TestGuardrailSurvivesComposition is the safety proof for guardrail obligations:
+// a role-bound guardrail on role A (approval + redact) is NOT stripped by composing
+// role B that grants the SAME action without it. A guardrail is unconditional for
+// any token in its role, so composition can only ADD — the monotonicity invariant.
+func TestGuardrailSurvivesComposition(t *testing.T) {
 	grantA, err := BuildRuleCedar(RuleSpec{
-		RoleID: "A", Effect: "require_approval", ConnectorType: "google", OpScope: "read",
-		Filters: []string{"redact-ssn"},
+		RoleID: "A", Effect: "allow", ConnectorType: "google", OpScope: "read",
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -352,12 +359,22 @@ func TestObligationUnionUnderComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lib := iam.MapFilterLibrary{"redact-ssn": iam.Filter{Name: "redact-ssn", Kind: iam.KindRedact}}
-	eng, err := iam.NewEngine([]iam.Policy{{ID: "a", Cedar: grantA}, {ID: "b", Cedar: grantB}}, nil, lib)
+	// roleA's obligation lives on a role-bound GUARDRAIL (approval + redact).
+	guardA, err := BuildGuardrailCedar(RuleSpec{
+		RoleID: "A", Effect: "require_approval", ConnectorType: "google", OpScope: "read",
+		Filters: []string{"redact-ssn"},
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A token in BOTH roles reads — both permits match.
+	lib := iam.MapFilterLibrary{"redact-ssn": iam.Filter{Name: "redact-ssn", Kind: iam.KindRedact}}
+	eng, err := iam.NewEngine(
+		[]iam.Policy{{ID: "a", Cedar: grantA}, {ID: "b", Cedar: grantB}},
+		[]iam.Policy{{ID: "ga", Cedar: guardA}}, lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A token in BOTH roles reads — both grants match; the role-A guardrail applies.
 	req := iam.BuildRequest("tok", []string{"A", "B"}, "google", "work", "active",
 		connector.OperationDef{Name: "list_emails", ReadOnly: true}, nil)
 	d, _ := eng.Decide(req)
@@ -365,7 +382,7 @@ func TestObligationUnionUnderComposition(t *testing.T) {
 		t.Fatalf("read should be allowed")
 	}
 	if !d.Obligations.Approval {
-		t.Errorf("approval from role A must survive composition with role B (no bypass)")
+		t.Errorf("approval from role A's guardrail must survive composition with role B (no bypass)")
 	}
 	found := false
 	for _, f := range d.Obligations.Post {
@@ -374,7 +391,7 @@ func TestObligationUnionUnderComposition(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("redact from role A must survive composition with role B: %+v", d.Obligations.Post)
+		t.Errorf("redact from role A's guardrail must survive composition with role B: %+v", d.Obligations.Post)
 	}
 }
 

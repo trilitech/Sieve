@@ -118,18 +118,19 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 		return out, nil
 	}
 
-	// Split the matching grant permits (spec §5.4/§7.3):
+	// Split the matching grant permits (spec §5.4/§7.3). Grants carry NO
+	// transforms — those are guardrail-only — so a grant contributes only to the
+	// DECISION (and its @approval):
 	//   - SCRIPT-CONDITION grants carry a per-grant decision script; surface each
 	//     as a candidate so the PEP runs it (deny ⇒ that grant is vetoed, not the
-	//     request). Its obligations apply only if it survives, so they are kept on
-	//     the candidate, not folded into the unconditional set.
-	//   - PLAIN grants (no script) are unconditional; their obligations always
-	//     apply. Reasons only — a condition-erroring permit is skipped by Cedar (no
-	//     grant ⇒ no obligation), the fail-closed polarity.
-	// The UNCONDITIONAL obligations are the union of the plain grants and EVERY
-	// matching-or-errored GUARDRAIL (global, role-agnostic; Reasons∪Errors, the
-	// fail-safe polarity, spec §7.6). Because obligations UNION, composition can
-	// only ADD one, never strip it (the monotonicity invariant).
+	//     request).
+	//   - PLAIN grants (no script) are unconditional; their @approval (if any)
+	//     folds into the obligation set. Reasons only — a condition-erroring permit
+	//     is skipped by Cedar (no grant), the fail-closed polarity.
+	// TRANSFORM obligations come solely from EVERY matching-or-errored GUARDRAIL
+	// (global, role-agnostic; Reasons∪Errors, the fail-safe polarity, spec §7.6).
+	// Because guardrail obligations UNION over the outcome, composition can only
+	// ADD one, never strip it (the monotonicity invariant).
 	var plain []map[string]string
 	seenPID := make(map[types.PolicyID]bool)
 	for _, pid := range reasonIDs(diag.Reasons) {
@@ -143,13 +144,10 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 		}
 		anns := annotationsToMap(p.Annotations())
 		if sc := scriptCondFromAnns(anns); sc != nil {
-			cobl, err := collectObligations([]map[string]string{anns}, e.lib)
-			if err != nil {
-				return Decision{Allow: false, Reason: err.Error(), Determining: out.Determining, EvalErrors: out.EvalErrors}, nil
-			}
-			out.ScriptGrants = append(out.ScriptGrants, GrantCandidate{
-				PolicyID: string(pid), Script: *sc, Post: cobl.Post, Approval: cobl.Approval,
-			})
+			// A script-condition grant carries no transforms; the script's return
+			// (allow/deny/approval) is the decision, run per-grant by the PEP. A
+			// plain grant may still carry its decision's @approval (collected below).
+			out.ScriptGrants = append(out.ScriptGrants, GrantCandidate{PolicyID: string(pid), Script: *sc})
 		} else {
 			plain = append(plain, anns)
 			out.HasPlainGrant = true

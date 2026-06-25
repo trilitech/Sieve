@@ -103,7 +103,7 @@
               <span>Require human approval before the operation runs</span>
             </label>
             {{if .Filters}}
-            <p class="text-xs text-slate-500 mb-2">Apply response filters / guards from the library:</p>
+            <p class="text-xs text-slate-500 mb-2">Apply response transforms from the library:</p>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
               {{range .Filters}}
               <label class="flex items-center gap-2 text-sm text-slate-200">
@@ -113,7 +113,7 @@
               {{end}}
             </div>
             {{else}}
-            <p class="text-xs text-slate-500">No filters in the library yet.</p>
+            <p class="text-xs text-slate-500">No transforms in the library yet.</p>
             {{end}}
           </div>
 

@@ -72,15 +72,13 @@ type Decision struct {
 }
 
 // GrantCandidate is a matching grant permit whose condition is a decision script
-// (spec §5.4). The PEP runs Script: allow ⇒ the grant stands (its Post/Approval
-// apply); approval ⇒ stands + requires approval; deny/error ⇒ this grant is
-// vetoed (dropped), not the whole request. Post/Approval are this grant's own
-// obligations, applied only if it survives.
+// (spec §5.4). The PEP runs Script: allow ⇒ the grant stands; approval ⇒ stands +
+// requires approval (the script's return is the decision); deny/error ⇒ this grant
+// is vetoed (dropped), not the whole request. A grant carries no transforms
+// (those are guardrail-only, spec §7), so the candidate carries only its script.
 type GrantCandidate struct {
 	PolicyID string
 	Script   ScriptCond
-	Post     []Filter
-	Approval bool
 }
 
 // ScriptCond is the script form of a rule's condition: a program that reads the

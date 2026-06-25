@@ -198,10 +198,10 @@ func TestIAMEnforce_RedactOverGateway(t *testing.T) {
 	}
 }
 
-// TestIAMEnforce_RuleLevelFilterOverGateway proves a filter attached directly to a
-// RULE — with NO companion guardrail — masks the response end to end. This is the
-// restored grant-scoped obligation (the regression fix).
-func TestIAMEnforce_RuleLevelFilterOverGateway(t *testing.T) {
+// TestIAMEnforce_GuardrailRedactOverGateway proves a redact transform carried by
+// a guardrail masks the response end to end. Transforms are guardrail-only — a
+// rule is a pure decision and carries none.
+func TestIAMEnforce_GuardrailRedactOverGateway(t *testing.T) {
 	env := testenv.New(t)
 	env.Mock.SetResponse("list_emails", map[string]any{
 		"emails": []any{map[string]any{"id": "1", "body": "ssn 123-45-6789 on file"}},
@@ -221,15 +221,26 @@ func TestIAMEnforce_RuleLevelFilterOverGateway(t *testing.T) {
 		map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}, "match": "regex"}); err != nil {
 		t.Fatal(err)
 	}
-	// The filter rides the RULE — no guardrail created.
+	// Transforms are guardrail-only: the rule grants the read, a (role-bound)
+	// guardrail carries the redact transform.
 	grant, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
 		RoleID: role.ID, Effect: "allow", ConnectorType: "mock", OpScope: "read",
+		ConnectionIDs: []string{"mc"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.IAM.CreatePolicy("read", "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := iampolicies.BuildGuardrailCedar(iampolicies.RuleSpec{
+		RoleID: role.ID, ConnectorType: "mock", OpScope: "read",
 		ConnectionIDs: []string{"mc"}, Filters: []string{"redact-ssn"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.IAM.CreatePolicy("read-redact", "", grant, true); err != nil {
+	if _, err := env.IAM.CreateGuardrail("read-redact-g", "", guard, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
@@ -244,15 +255,15 @@ func TestIAMEnforce_RuleLevelFilterOverGateway(t *testing.T) {
 		t.Fatalf("read should be allowed, got %d", status)
 	}
 	if strings.Contains(body, "123-45-6789") {
-		t.Errorf("rule-level redact filter did not mask the SSN: %s", body)
+		t.Errorf("guardrail redact transform did not mask the SSN: %s", body)
 	}
 }
 
-// TestIAMEnforce_FilterUnionUnderComposition proves a rule-level filter cannot be
-// bypassed by composing a second role that grants the same read WITHOUT the
-// filter. Obligations union across matching rules, so the redact still applies —
-// the security property that makes rule-level filters safe.
-func TestIAMEnforce_FilterUnionUnderComposition(t *testing.T) {
+// TestIAMEnforce_GuardrailSurvivesComposition proves a role-bound guardrail's
+// redact cannot be bypassed by composing a second role that grants the same read
+// without it. The guardrail is unconditional for any token in its role, so the
+// redact still applies — read_with_pii_removed composed with read_everything.
+func TestIAMEnforce_GuardrailSurvivesComposition(t *testing.T) {
 	env := testenv.New(t)
 	env.Mock.SetResponse("list_emails", map[string]any{
 		"emails": []any{map[string]any{"id": "1", "body": "ssn 123-45-6789"}},
@@ -279,15 +290,27 @@ func TestIAMEnforce_FilterUnionUnderComposition(t *testing.T) {
 	}
 	grantA, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
 		RoleID: roleA.ID, Effect: "allow", ConnectorType: "mock", OpScope: "read",
+		ConnectionIDs: []string{"mc"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.IAM.CreatePolicy("a-read", "", grantA, true); err != nil {
+		t.Fatal(err)
+	}
+	// roleA's redact is a role-bound GUARDRAIL — unconditional for any token in
+	// roleA, so a sibling plain grant can't route around it.
+	guardA, err := iampolicies.BuildGuardrailCedar(iampolicies.RuleSpec{
+		RoleID: roleA.ID, ConnectorType: "mock", OpScope: "read",
 		ConnectionIDs: []string{"mc"}, Filters: []string{"redact-ssn"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.IAM.CreatePolicy("a-redact", "", grantA, true); err != nil {
+	if _, err := env.IAM.CreateGuardrail("a-redact-g", "", guardA, true); err != nil {
 		t.Fatal(err)
 	}
-	// Role B grants the same read with NO filter — the bypass attempt.
+	// Role B grants the same read with NO transform — the bypass attempt.
 	grantB, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
 		RoleID: roleB.ID, Effect: "allow", ConnectorType: "mock", OpScope: "read",
 		ConnectionIDs: []string{"mc"},

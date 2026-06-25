@@ -62,7 +62,7 @@
                 <option value="require_approval">Require approval</option>
                 <option value="deny">Deny</option>
               </select>
-              <p class="text-xs text-slate-500 mt-1">Allow grants; Require approval grants but needs human sign-off; Deny blocks (deny wins). Filters attach below.</p>
+              <p class="text-xs text-slate-500 mt-1">Allow grants; Require approval grants but needs human sign-off; Deny blocks (deny wins). Response transforms live on guardrails, not rules.</p>
             </div>
 
             <!-- Connector -->
@@ -145,24 +145,7 @@
             </div>
           </div>
 
-          <!-- Obligations: response filters this grant carries (non-deny only).
-               Approval is a decision (Effect = Require approval), not an obligation. -->
-          <div id="rb-obligations" class="mt-5 rounded-lg bg-slate-900 border border-slate-700 p-4">
-            <label class="block text-sm font-medium text-slate-300 mb-2">Response filters &amp; guards <span class="text-slate-600">(optional)</span></label>
-            {{if .Filters}}
-            <p class="text-xs text-slate-500 mb-2">Apply filters/guards from the library — they run on every request this rule allows:</p>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {{range .Filters}}
-              <label class="flex items-center gap-2 text-sm text-slate-200">
-                <input type="checkbox" name="filters" value="{{.Name}}" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
-                <span>{{.Name}} <span class="text-slate-500">({{.Kind}})</span></span>
-              </label>
-              {{end}}
-            </div>
-            {{else}}
-            <p class="text-xs text-slate-500">No filters in the library yet — author one under <a href="/iam?section=filters" class="text-indigo-400 hover:underline">Filters</a> to attach it here.</p>
-            {{end}}
-          </div>
+          <!-- A rule is a pure DECISION. Transforms are guardrail-only (spec §7). -->
 
           <div class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>

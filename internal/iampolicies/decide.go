@@ -113,17 +113,16 @@ func (s *Service) resolveDecision(ctx context.Context, d iam.Decision, req *poli
 	approval := d.Obligations.Approval
 	allowStands := d.HasPlainGrant
 
-	// Per-grant script conditions: each gates only its own grant.
+	// Per-grant script conditions: each gates only its own grant. The script's
+	// return IS the decision (allow/deny/approval); a grant carries no transforms
+	// (those are guardrail-only and already in `post`).
 	for _, c := range d.ScriptGrants {
 		v := runScriptCondition(ctx, c.Script, req)
 		switch v.Action {
 		case "allow":
 			allowStands = true
-			post = append(post, c.Post...)
-			approval = approval || c.Approval
 		case "approval_required":
 			allowStands = true
-			post = append(post, c.Post...)
 			approval = true
 		default: // deny / error → veto THIS grant only
 			continue

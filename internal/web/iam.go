@@ -232,7 +232,7 @@ type iamEditPageData struct {
 
 // iamSections are the /iam subsections shown one-at-a-time via ?section= (the
 // sidebar sub-nav). Default is roles — the main authoring surface.
-var iamSections = map[string]bool{"roles": true, "guardrails": true, "filters": true, "explore": true}
+var iamSections = map[string]bool{"roles": true, "guardrails": true, "explore": true}
 
 func iamSection(r *http.Request) string {
 	if s := r.URL.Query().Get("section"); iamSections[s] {
@@ -676,7 +676,7 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.create", name,
 		map[string]any{"kind": string(kind)}, "success")
-	http.Redirect(w, r, "/iam?section=filters", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
 }
 
 // parseFilterConfig reads the filter form's kind + per-kind config, shared by
@@ -778,7 +778,7 @@ func (s *Server) handleIAMFilterDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.delete", name, nil, "success")
-	http.Redirect(w, r, "/iam?section=filters", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
 }
 
 // iamFilterEditPageData is the view-model for iam_filter_edit.html. The name is
@@ -819,7 +819,7 @@ func (s *Server) renderFilterEditPage(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 	data := &iamFilterEditPageData{
-		Active: "iam-filters", Error: errMsg,
+		Active: "iam-guardrails", Error: errMsg,
 		Name: f.Name, Description: f.Description, Kind: string(f.Kind), Order: f.Order, Match: "contains",
 	}
 	switch f.Kind {
@@ -859,7 +859,7 @@ func (s *Server) handleIAMFilterUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.update", name,
 		map[string]any{"kind": string(kind)}, "success")
-	http.Redirect(w, r, "/iam?section=filters", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
 }
 
 // handleIAMRoleRename renames a role in place (POST /iam/roles/{id}/rename). The

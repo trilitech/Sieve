@@ -9,12 +9,13 @@
 > Composition is purely **additive** — a `deny` is the only subtractor, and there is
 > **no privilege-override** ("raw" is a role-composition outcome, not an exemption);
 > a transform's application **order is a global rank on the transform, not the role**.
-> "Rule", "guardrail", and "filter library" are *views* over these primitives, not
+> "Rule", "guardrail", and "transform library" are *views* over these primitives, not
 > separate kinds. Ordering is the explicit operator-set global rank (§7.1), and
-> decision-scripts are a rule's condition (§5.4). The engine matches the model:
-> grant-bound obligations (conditional on their grant, incl. a script condition) and
-> role/global guardrails (unconditional) are the binding distinction (§3.2), not a gap
-> to unify.
+> decision-scripts are a rule's condition (§5.4). **Transforms are guardrail-only**: a
+> rule is a pure decision and carries no transforms; every redact / exclude /
+> script-transform is carried by a guardrail, global or role-bound (§3.2/§7). "filter"
+> is retired in favor of "transform"; a decision-script is a "script-rule" (a rule's
+> script condition).
 >
 > **Rev 2 (RBAC).** The model is now explicit RBAC on the subject side: a **token
 > is assigned a set of roles**, a **role is a reusable bundle of rules**,
@@ -76,7 +77,7 @@
   seeded second artifact. Reuse never reintroduces the binding footgun (§9.4).
 - Replacing the LLM-as-policy *evaluator*. There are no production policy scripts
   to migrate; going forward, script logic lives either as a **rule's script-mode
-  condition** (decisions, §5.4) or as a **`script_filter`** in the filter library
+  condition** (decisions, §5.4) or as a **`script_filter`** in the transform library
   (response transforms, §7), not as a whole-policy evaluator type. LLM-as-decision
   is out; Cedar `when`/`unless` + connector-enriched context + script-mode
   conditions cover the cases.
@@ -187,7 +188,7 @@ nouns consistently in the editor, storage, audit log, and this spec.
 | Concept | What it is |
 |---|---|
 | **Guardrail** | A **global constraint** — role-agnostic. For any request the grants layer *allows* that matches the guardrail's scope (operations/resources) + condition, it **requires approval and/or applies named filters**, **regardless of which rule granted the request**. A guardrail never grants. It is also **how global approval is expressed**: a guardrail requiring approval contributes `1` to the decision `min` for its scope (§3.2), the role-agnostic counterpart of a rule with Effect = require approval. Use it for an invariant a grant-author must not be able to omit. |
-| **Filter** | A named, reusable **transform/guard definition** (redact / exclude / script) that rules and guardrails reference by name. The reuse unit for obligations. |
+| **Transform** | A named, reusable response transform (redact / exclude / script-transform) that **guardrails** reference by name. The reuse unit; it never decides — it only changes the response. |
 
 **Why two layers.** RBAC governs *who gets which bundles* (token↔role, role↔rule —
 both many-to-many); Cedar governs *what each rule says* (deny, scope, attribute
@@ -305,18 +306,17 @@ transform pipeline over the response (§7.4).
 
 **The authoring words are *views* over these primitives**, not separate kinds:
 - A **Rule** is a Grant authored inside a Role; its principal-scope *is* that role.
-  A filter "on a rule" is an **Obligation bound to that grant**: it applies exactly
-  when the grant does, inheriting the rule's role, object-scope, **and gating**. For a
-  *declarative*-condition rule it behaves like a role-anchored obligation — composing a
-  sibling grant can't strip it (§7.0). For a **script**-condition rule it is **gated
-  with the grant**: if the script vetoes that grant, the obligation doesn't apply — so
-  it rides with the grant, not as a free-floating sibling. Per-grant precision is just
-  a tighter object-scope on the Obligation.
-- A **Guardrail** is an Obligation with `role: global` (or a named role) authored
-  standalone — the floor, unconditional and tied to no grant.
-- The **filter library** holds reusable **Transform** definitions only (redact /
-  exclude_items / script_filter, each with a rank). A decision-script is **not** a
-  library entry — it is a rule's condition (its script mode, §5.4).
+  A rule is a **pure decision** (condition + Effect) — it carries **no transforms**.
+- A **Guardrail** is an Obligation, authored standalone, that carries the transforms
+  (and approval). It names **a role, or `global`**: a *global* guardrail applies to
+  every matching allowed request; a *role-bound* guardrail applies to every token in
+  that role (the `read_with_pii_removed` pattern). Either way it is **unconditional** —
+  composing a sibling grant can't strip it (§7.0), which is why transforms live here,
+  not on rules.
+- The **transform library** holds reusable **transform** definitions only (redact /
+  exclude_items / **script-transform**, each with a rank), referenced by guardrails.
+  A decision-script is **not** a transform — it is a rule's condition (its script mode,
+  §5.4).
 
 **Worked example (`read_everything` / `read_with_pii_removed`).**
 ```
@@ -707,7 +707,7 @@ Collecting from every matching permit (not one) is the load-bearing correction i
 
 ---
 
-## 7. Guardrails and the filter library
+## 7. Guardrails and the transform library
 
 The grants layer (§5–§6) decides the three-valued **allow / require_approval / deny**
 (§3.2; a grant's condition may itself be a script, §5.4). **Approval is part of that
@@ -759,7 +759,7 @@ obligations and guardrails are the *same mechanism* — annotated permits, union
 differing only in reach: a guardrail is the role-agnostic one no grant-author can
 omit.
 
-### 7.1 The filter library (named, reusable, script-capable transform/guard defs)
+### 7.1 The transform library (named, reusable, script-capable transform/guard defs)
 
 A **filter** is a stored definition in the PAP-managed library; **rules and
 guardrails** reference filters by name (a transform like "redact card numbers" is
@@ -812,7 +812,7 @@ allow/deny/approval is a **decision**, not a transform — so it is authored as 
 **script mode of a rule's condition** (§5.4), not as a library filter. It compiles
 to `@condition_script_command` / `@condition_script_path` on the grant permit and the
 PEP runs it **per-grant**: a deny vetoes only that grant (union of grants, §7.3),
-never the whole request. The filter library holds **transforms only** —
+never the whole request. The transform library holds **transforms only** —
 `redact` / `exclude_items` / `script_filter`. (`rate_limit` remains a deferred
 pre-phase guard, §15.)
 
@@ -874,7 +874,7 @@ pretend it away:
 
 > **Status — implemented.** The applier (`internal/policy/policy.go`) runs transforms
 > **sequentially in the engine-supplied (Order, Name) rank** (`internal/iam/obligations.go`
-> sorts; the filter library persists `sort_order`, default per kind: exclude 10,
+> sorts; the transform library persists `sort_order`, default per kind: exclude 10,
 > redact 20, script 30). The earlier **span-union** workaround (which forced regex
 > redaction to be order-independent) is **removed** — it only covered regex redaction
 > and missed that the real transforms are opaque scripts. The built-in
@@ -1168,7 +1168,7 @@ group membership matches the `ReadOnly` flag — drift becomes a build failure (
 ## 9. Rule/role storage and runtime assembly
 
 The authoring artifacts are the **role** (a named bundle of **rules**), the
-**guardrail** set, and the **filter library** (§7); a **token** references roles by
+**guardrail** set, and the **transform library** (§7); a **token** references roles by
 assignment. No templates, no links, no binding table — reuse falls out of RBAC
 (roles across tokens) and Cedar's set-valued scopes (connections within a rule).
 
@@ -1253,7 +1253,7 @@ when { resource in [ Sieve::Connection::"gmail-A",      // ← reuse: add accoun
 - `iam_guardrails`: `id, name, description, cedar_text, spec_json, enabled,
   created_at` — the guardrail overlay set (§7.2), assembled into a **separate**
   policy set from the rules.
-- `iam_filters`: the filter library (§9.2).
+- `iam_filters`: the transform library (§9.2).
 - **token→role-set assignment** is a `role_ids` JSON column on the existing `tokens`
   table (a legacy single `role_id` is kept consistent for rollback), **not** a
   separate join table — the many-to-many composition primitive (§5.1) stored inline
@@ -1264,7 +1264,7 @@ round-trips into the Cedar `in [...]` scope (built via the typed cedar-go API /
 generated scope text — never arbitrary user text in the scope, so "apply to
 connection" can't corrupt a rule).
 
-### 9.2 Filter library (reusable obligations)
+### 9.2 Transform library (reusable obligations)
 
 Unchanged (§7): named redact/exclude/script obligations referenced by **rules and
 guardrails** via `@filters("…")`. The reusable *transform* layer. (Filters are the one thing
@@ -1350,7 +1350,7 @@ expressiveness rather than a hardcoded menu.
   granted (the thing a grant-author can't omit). Authored as a global overlay, not
   inside a role (§7.2); the editor enforces permit-only + obligation-only
   annotations and defaults the condition to the fail-safe `unless` form.
-- **Filter library editor.** Named, reusable **redact / exclude / script_filter**
+- **Transform library editor.** Named, reusable **redact / exclude / script_filter**
   definitions (§7.1), referenced by **rules or guardrails** by name. redact/exclude
   take patterns + a match mode and are field-aware (§7.1); a `script_filter` takes a
   script **path** + interpreter (`python3`/`node`), checked against the allowlist at
@@ -1423,7 +1423,7 @@ agent → PEP (api/mcp)
 
 Reused from today's PEP: steps 1–2, approval, the response-filter applier, and the
 429/ticket shapes. **New:** steps 3–4 (build request + two-pass Cedar decision),
-the obligation *source* (the guardrail pass → filter library, §7.3), and the
+the obligation *source* (the guardrail pass → transform library, §7.3), and the
 pre-phase script-guard step. That step reuses the existing script runtime (and
 `internal/ratelimit` once `rate_limit` ships, §15), so the net new surface is the
 engine and the obligation wiring — small and reviewable.
@@ -1780,9 +1780,9 @@ explicit home in the new model:
 | Float caps: `MaxCost`, `MaxTemperature` | **`decimal`** context conditions (`context.estimated_cost`, `context.param.temperature`; §4.5, §5.4) |
 | Network: CIDR-negation, `Ports` | `context.source_ip` (`ipaddr`/CIDR) condition; port logic in a **script-mode condition** (§5.4) |
 | `RequireApproval` | **Guardrail** `@approval("required")` (§7.2) |
-| `Filters` (redact / exclude) | **Guardrail** `@filters("…")` → filter library (§7.1) |
+| `Filters` (redact / exclude) | **Guardrail** `@filters("…")` → transform library (§7.1) |
 | Rate limits (`builtin` evaluator) | **`rate_limit` filter** (§7.1) — execution **deferred** (§15) |
-| Whole-policy `script` / `llm` evaluators | a rule's **script-mode condition** (decision, §5.4) and/or a **`script_filter`** in the filter library (response transform, §7.1), under the command allowlist; LLM-as-decision dropped (§1) |
+| Whole-policy `script` / `llm` evaluators | a rule's **script-mode condition** (decision, §5.4) and/or a **`script_filter`** in the transform library (response transform, §7.1), under the command allowlist; LLM-as-decision dropped (§1) |
 
 **Migration safety — a dropped `deny` is a hard `--apply` blocker.** Omitting a
 legacy `deny`/forbid during migration *widens* access (it removes a restriction) —
@@ -1804,8 +1804,8 @@ reported, not blocked.)
 | Token → **one** role | Token → **a set of roles** (composition; union of capabilities, §3.1) |
 | "empty policy_ids = DENY ALL" special case | Default deny (no special case) |
 | `default_action: allow|deny` per policy | `permit`/`forbid` statements; default is always deny |
-| Reuse by multi-attach (the footgun) | **RBAC composition**: reuse a role across tokens, compose roles per token (§3.1, §13.1); **set-valued `resource` scopes** for connection reuse within a rule (§9.1); **filter library** for obligations. No role-groups, no templates/links. |
-| `script` policy type / `action:script` rules | a rule's **script-mode condition** (pre, decision, §5.4) + `script_filter` (post, filter library) |
+| Reuse by multi-attach (the footgun) | **RBAC composition**: reuse a role across tokens, compose roles per token (§3.1, §13.1); **set-valued `resource` scopes** for connection reuse within a rule (§9.1); **transform library** for obligations. No role-groups, no templates/links. |
+| `script` policy type / `action:script` rules | a rule's **script-mode condition** (pre, decision, §5.4) + `script_filter` (post, transform library) |
 | `decision.Filters` from the evaluator | Obligations: `@approval` + `@filters("…")` on **guardrails** (separate set), collected in the guardrail pass and resolved from the library (§7.3) |
 | `"Policy denied: default policy"` | Determining-**rule** ids (+ matched guardrails) in audit + decision explorer |
 | Two guards (`connectionAllowed` + empty-policies) | One decision (no permit ⇒ deny) |
@@ -1820,20 +1820,19 @@ approval queue, the response-filter applier, the two-port topology, the connecto
 
 ## 15. Open questions / future work
 
-- **§3.2 realignment 1 — one obligation concept (resolved: not needed).** Originally
-  planned to collapse the two attachment forms (grant-annotations + a separate guardrail
-  permit set, §7) into one role-anchored Obligation. After realignment 3 this would be
-  **wrong**: a grant-bound obligation on a *script*-conditioned rule is conditional on
-  its grant surviving (§7.4), whereas a guardrail is unconditional — flattening both into
-  role-anchored siblings would leak a script-vetoed grant's redaction onto a sibling
-  read. The engine already collects the *unconditional* obligations (plain grants +
-  guardrails) as one set; the script-gated ones correctly stay with their grant. The two
-  storage forms persist that **binding** distinction (grant-bound vs role/global);
-  merging the representations is optional internal tidiness, not a model change.
+- **§3.2 realignment 1 — transforms are guardrail-only (DONE).** Originally rules could
+  carry transforms (grant-bound obligations) alongside guardrails. That is removed: a
+  **rule is a pure decision** (condition + Effect) and emits no `@filters`; every redact /
+  exclude / script-transform is carried by a **guardrail**, global or role-bound.
+  `read_with_pii_removed` is a role-bound guardrail. This collapses the two attachment
+  forms into one (guardrails are the sole transform carrier) and simplifies the engine
+  (transform obligations come only from the matching guardrails; grants contribute only
+  the decision + their `@approval`). The convenience lost — a transform tied to one
+  specific grant — is niche and intentionally dropped.
 - **§3.2 realignment 2 — explicit global-rank ordering (DONE).** The span-union
   order-free applier is **replaced** by a single **global rank** over all transform kinds
   (redact / exclude / rewrite-script): the applier (`internal/policy/policy.go`) runs
-  transforms sequentially in the engine-supplied (Order, Name) order; the filter library
+  transforms sequentially in the engine-supplied (Order, Name) order; the transform library
   persists `sort_order` (per-kind default exclude 10 / redact 20 / script 30) and exposes
   it in the create + edit forms and the library list (§7.1). Operator-visibility in the
   decision explorer / token "what it can do" is the remaining nicety. Order *matters* for
@@ -1844,7 +1843,7 @@ approval queue, the response-filter applier, the two-port topology, the connecto
   on the rule (compiled to `@condition_script_command` / `@condition_script_path` on the
   permit) and run by the PEP **per-grant**: a deny vetoes only *that* grant (union of
   grants, §7.3), never the whole request — so a co-matching plain rule still allows. The
-  `script_guard` filter kind is **removed from the filter library**; the library is content
+  `script_guard` filter kind is **removed from the transform library**; the library is content
   transforms only (redact / exclude_items / script_filter).
 - **`ask` composition (resolution: any-ask ⇒ ask).** When matching grants disagree —
   one allows plainly, another allows-with-approval — the **approval still applies**:

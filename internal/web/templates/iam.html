@@ -18,7 +18,7 @@
       <p class="text-sm text-slate-400 mb-2">Two layers, one model:</p>
       <ul class="text-sm text-slate-400 mb-6 space-y-1 list-disc list-inside">
         <li><strong class="text-slate-200">Rules</strong> are <strong>grants</strong> (allow / deny). A <strong>role</strong> is a reusable bundle of rules; a <strong>token</strong> is issued for one or more roles and can do the <strong>union</strong> of them. Deny always wins; anything not allowed is denied.</li>
-        <li><strong class="text-slate-200">Guardrails</strong> are <strong>global constraints</strong> — approval and response filters that <em>always</em> apply to a matching allowed request, no matter which rule (or role) granted it. They can't be bypassed by composing another role.</li>
+        <li><strong class="text-slate-200">Guardrails</strong> are <strong>global constraints</strong> — approval and response transforms that <em>always</em> apply to a matching allowed request, no matter which rule (or role) granted it. They can't be bypassed by composing another role.</li>
       </ul>
 
       {{if not .Configured}}
@@ -69,13 +69,13 @@
         {{end}}
       </div>
 
-      <!-- Filter & guard library -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "filters"}} hidden{{end}}">
-        <h2 class="text-lg font-semibold text-white mb-1">Filter &amp; guard library</h2>
-        <p class="text-xs text-slate-400 mb-2">Reusable, named transforms and guards. Author one here, then attach it on a <strong>rule</strong> (in the rule builder's “Response filters &amp; guards” — it applies whenever that grant is used) or on a <a href="/iam?section=guardrails" class="text-indigo-400 hover:underline font-medium">guardrail</a> (it applies to every matching request, no matter which rule granted it). Attaching on a rule is safe: obligations from all matching rules are unioned, so composing another role can never strip one.</p>
+      <!-- Transforms (defined here; attached on guardrails) -->
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "guardrails"}} hidden{{end}}">
+        <h2 class="text-lg font-semibold text-white mb-1">Transforms</h2>
+        <p class="text-xs text-slate-400 mb-2">Reusable, named response transforms. Author one here, then attach it on a <strong>guardrail</strong> below — the guardrail decides where it applies (global, or bound to a role). A transform never decides allow/deny; it only changes the response of an already-allowed request. (To decide what can be sent, use a rule's <strong>script condition</strong> instead, on the Roles page.)</p>
         <ul class="text-xs text-slate-500 mb-5 space-y-1 list-disc list-inside">
-          <li><strong class="text-slate-300">Redact</strong> and <strong class="text-slate-300">Exclude items</strong> run <em>after</em> the operation — they transform the response the agent receives.</li>
-          <li><strong class="text-slate-300">Script guard</strong> runs <em>before</em> the operation — it inspects the request and can allow, deny, or require approval. This is how you control “what can be sent”.</li>
+          <li><strong class="text-slate-300">Script transform</strong> — a Python/JS script that rewrites the response (e.g. LLM-based PII removal). The workhorse.</li>
+          <li><strong class="text-slate-300">Redact</strong> / <strong class="text-slate-300">Exclude items</strong> — quick pattern-based helpers: mask matching text, or drop matching list items.</li>
         </ul>
         <form method="POST" action="/iam/filters" id="filter-form">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -88,16 +88,16 @@
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Kind</label>
               <select name="kind" id="filter-kind"
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="redact">Redact (mask matching text in the response)</option>
-                <option value="exclude_items">Exclude items (drop list items containing text)</option>
-                <option value="script_filter">Script filter (Python or JS; transforms the response after it runs)</option>
+                <option value="script_filter">Script transform (Python or JS — rewrites the response; the workhorse)</option>
+                <option value="redact">Redact (quick: mask matching text)</option>
+                <option value="exclude_items">Exclude items (quick: drop list items containing text)</option>
               </select>
             </div>
           </div>
 
           <div class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
-            <input type="text" name="description" placeholder="what this filter does"
+            <input type="text" name="description" placeholder="what this transform does"
                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
           </div>
 
@@ -135,8 +135,8 @@
             </div>
           </div>
 
-          <!-- script_guard / script_filter config — shared inputs (one language +
-               one path); only the contract help below differs by kind. -->
+          <!-- script-transform config: one language + one path; the script
+               rewrites the response (post-execution). -->
           <div id="filter-cfg-script" class="mt-5 hidden">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Language</label>
             <select name="language" class="mb-3 rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
@@ -147,25 +147,8 @@
             <input type="text" name="script_path" placeholder="/opt/sieve-py/guards/biz_hours.py"
                    class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
 
-            <!-- guard contract (pre-execution decision) -->
-            <div id="filter-help-guard" class="text-xs text-slate-500 mt-2 space-y-2 rounded-lg bg-slate-900/60 border border-slate-700 p-3">
-              <p>Absolute path to a script file <strong>on the Sieve host</strong>, under the allowed scripts directory (<code>/opt/sieve-py</code> by default; no <code>..</code>). It runs <strong>before</strong> the operation via the sandboxed interpreter, with a 5-second timeout.</p>
-              <p><strong class="text-slate-300">Reads</strong> a JSON request on <code>stdin</code>:</p>
-              <pre class="text-slate-400 whitespace-pre-wrap">{"operation": "send_email", "connector": "google",
- "connection": "work",
- "params": {"to": ["a@x.com"], "subject": "...", "body": "..."}}</pre>
-              <p><strong class="text-slate-300">Writes</strong> a JSON decision on <code>stdout</code>: <code>{"action": "allow"}</code>, <code>{"action": "deny", "reason": "..."}</code>, or <code>{"action": "approval_required"}</code>. Anything else — bad output, an exception, or a timeout — is treated as <strong>deny</strong> (fail-closed).</p>
-              <p class="text-slate-300">Example — block sends whose body contains “secret”:</p>
-              <pre class="text-slate-400 whitespace-pre-wrap">import sys, json
-req = json.load(sys.stdin)
-body = (req.get("params") or {}).get("body", "")
-if "secret" in body.lower():
-    print(json.dumps({"action": "deny", "reason": "contains 'secret'"}))
-else:
-    print(json.dumps({"action": "allow"}))</pre>
-            </div>
 
-            <!-- filter contract (post-execution rewrite) -->
+            <!-- script-transform contract (post-execution rewrite) -->
             <div id="filter-help-filter" class="hidden text-xs text-slate-500 mt-2 space-y-2 rounded-lg bg-slate-900/60 border border-slate-700 p-3">
               <p>Absolute path to a script file <strong>on the Sieve host</strong>, under the allowed scripts directory (<code>/opt/sieve-py</code> by default; no <code>..</code>). It runs <strong>after</strong> the operation via the sandboxed interpreter (5-second timeout) and <strong>rewrites the response</strong> the agent receives.</p>
               <p><strong class="text-slate-300">Reads</strong> a JSON request on <code>stdin</code> whose <code>metadata.response</code> holds the response so far (a JSON string):</p>
@@ -187,7 +170,7 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             </div>
           </div>
 
-          <button type="submit" class="mt-6 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Add filter</button>
+          <button type="submit" class="mt-6 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Add transform</button>
         </form>
 
         <div class="mt-6 border-t border-slate-700 pt-5">
@@ -202,14 +185,14 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
               <code class="text-xs text-slate-500">{{.Kind}}</code>
               <a href="/iam/filters/{{.Name}}/edit" class="text-xs text-indigo-400 hover:text-indigo-300 font-medium">Edit</a>
               <form method="POST" action="/iam/filters/{{.Name}}/delete"
-                    onsubmit="return confirm('Delete this filter?')" class="inline">
+                    onsubmit="return confirm('Delete this transform?')" class="inline">
                 <button type="submit" class="text-xs text-red-400 hover:text-red-300 font-medium">Delete</button>
               </form>
             </span>
             {{end}}
           </div>
           {{else}}
-          <p class="text-sm text-slate-500">No filters yet — author one above, then attach it on a rule or a guardrail.</p>
+          <p class="text-sm text-slate-500">No transforms yet — author one above, then attach it on a guardrail.</p>
           {{end}}
         </div>
       </div>
@@ -244,7 +227,7 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
                 <option value="require_approval">Require approval</option>
                 <option value="deny">Deny</option>
               </select>
-              <p class="text-xs text-slate-500 mt-1">Allow grants; Require approval grants but needs human sign-off; Deny blocks. Composed most-restrictive-wins (deny &gt; require approval &gt; allow). Filters attach under “Response filters &amp; guards” below.</p>
+              <p class="text-xs text-slate-500 mt-1">Allow grants; Require approval grants but needs human sign-off; Deny blocks. Composed most-restrictive-wins (deny &gt; require approval &gt; allow). Response transforms (redact / exclude / script) live on guardrails, not rules.</p>
             </div>
 
             <!-- Connector -->
@@ -330,28 +313,9 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             </div>
           </div>
 
-          <!-- Obligations: the response filters THIS grant carries. Grant-scoped —
-               they apply whenever this rule fires (its conditions included) — and
-               safe under composition because the engine unions obligations across
-               all matching rules. Hidden on a deny effect (a deny carries none).
-               (Approval is NOT here — it's a decision, set via Effect = Require
-               approval, spec §3.2.) -->
-          <div id="rb-obligations" class="mt-5 rounded-lg bg-slate-900 border border-slate-700 p-4">
-            <label class="block text-sm font-medium text-slate-300 mb-2">Response filters &amp; guards <span class="text-slate-600">(optional)</span></label>
-            {{if .Filters}}
-            <p class="text-xs text-slate-500 mb-2">Apply filters/guards from the library — they run on every request this rule allows:</p>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {{range .Filters}}
-              <label class="flex items-center gap-2 text-sm text-slate-200">
-                <input type="checkbox" name="filters" value="{{.Name}}" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
-                <span>{{.Name}} <span class="text-slate-500">({{.Kind}})</span></span>
-              </label>
-              {{end}}
-            </div>
-            {{else}}
-            <p class="text-xs text-slate-500">No filters in the library yet — author one under <a href="/iam?section=filters" class="text-indigo-400 hover:underline">Filters</a> to attach it here.</p>
-            {{end}}
-          </div>
+          <!-- A rule is a pure DECISION (condition + Effect). Response transforms
+               (redact / exclude / script-transform) are guardrail-only (spec §7) —
+               author them on the Guardrails page, not here. -->
 
           <div class="mt-5">
             <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
@@ -434,7 +398,7 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
       <!-- Guardrail builder -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "guardrails"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Add a guardrail</h2>
-        <p class="text-xs text-slate-500 mb-5">A guardrail is a <strong>global constraint</strong> — it requires approval and/or applies response filters to every <em>allowed</em> request that matches its scope, <strong>no matter which rule granted it</strong>. (That's why an obligation lives here, not on a rule: a rule's approval could be bypassed by composing another role that grants the same thing.) Leave the role blank to cover every role.</p>
+        <p class="text-xs text-slate-500 mb-5">A guardrail is a <strong>global constraint</strong> — it requires approval and/or applies response transforms to every <em>allowed</em> request that matches its scope, <strong>no matter which rule granted it</strong>. (That's why an obligation lives here, not on a rule: a rule's approval could be bypassed by composing another role that grants the same thing.) Leave the role blank to cover every role.</p>
         <form method="POST" action="/iam/guardrails" id="guardrail-form">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
             <!-- Role (optional) -->
@@ -513,7 +477,7 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
               <span>Require human approval before the operation runs</span>
             </label>
             {{if .Filters}}
-            <p class="text-xs text-slate-500 mb-2">Apply response filters / guards from the library:</p>
+            <p class="text-xs text-slate-500 mb-2">Apply response transforms from the library:</p>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
               {{range .Filters}}
               <label class="flex items-center gap-2 text-sm text-slate-200">
@@ -523,7 +487,7 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
               {{end}}
             </div>
             {{else}}
-            <p class="text-xs text-slate-500">No filters in the library yet — add one above to attach it here, or just require approval.</p>
+            <p class="text-xs text-slate-500">No transforms in the library yet — add one above to attach it here, or just require approval.</p>
             {{end}}
           </div>
 
@@ -590,7 +554,7 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
               </td>
             </tr>
             {{else}}
-            <tr><td class="px-6 py-12 text-center text-slate-500">No guardrails yet. Add one above to require approval or apply filters globally.</td></tr>
+            <tr><td class="px-6 py-12 text-center text-slate-500">No guardrails yet. Add one above to require approval or apply transforms globally.</td></tr>
             {{end}}
           </tbody>
         </table>
@@ -942,14 +906,12 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             const v = kindSel.value;
             // redact + exclude_items share one config block (patterns + match).
             const usesPatterns = (v === 'redact' || v === 'exclude_items');
-            const usesScript = (v === 'script_guard' || v === 'script_filter');
+            const usesScript = (v === 'script_filter');
             const patterns = el('filter-cfg-patterns');
             const script = el('filter-cfg-script');
             if (patterns) patterns.classList.toggle('hidden', !usesPatterns);
             if (script) script.classList.toggle('hidden', !usesScript);
-            const hg = el('filter-help-guard');
             const hf = el('filter-help-filter');
-            if (hg) hg.classList.toggle('hidden', v !== 'script_guard');
             if (hf) hf.classList.toggle('hidden', v !== 'script_filter');
             const rh = el('filter-patterns-redact-hint');
             const eh = el('filter-patterns-exclude-hint');

@@ -177,16 +177,40 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))
 	_, err = iamSvc.CreatePolicy("seed-read", "", grantCedar, true)
 	mustErr(err, "create seed grant")
 
+	// A redact TRANSFORM, attached via a role-bound GUARDRAIL — the
+	// read_with_pii_removed pattern: tokens in seed-role read with SSNs masked.
+	// Transforms are guardrail-only (spec §7); a rule never carries one.
+	_, err = iamSvc.CreateFilter("redact-ssn",
+		"Redact: mask US SSNs in the response", iam.KindRedact, 0,
+		map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}, "match": "regex"})
+	mustErr(err, "seed redact transform")
+	redactGuard, err := iampolicies.BuildGuardrailCedar(iampolicies.RuleSpec{
+		RoleID: role.ID, ConnectorType: "mock", OpScope: "read",
+		ConnectionIDs: []string{"test-conn"}, Filters: []string{"redact-ssn"},
+	}, nil)
+	mustErr(err, "build seed redact guardrail")
+	_, err = iamSvc.CreateGuardrail("seed-redact-ssn",
+		"Redact SSNs on reads for seed-role", redactGuard, true)
+	mustErr(err, "create seed redact guardrail")
+
 	// Seed sample scripts — only when a Python runtime is present to run them.
-	// A response TRANSFORM lives in the filter library (script_filter); a DECISION
-	// script (allow/deny/approval) is a RULE's CONDITION, not a library entry
+	// A response TRANSFORM (script-transform) is attached via a guardrail; a
+	// DECISION script (allow/deny/approval) is a RULE's CONDITION, not a transform
 	// (spec §5.4), so it's seeded as a write rule whose condition is a script.
 	if pyCmd != "" {
 		_, err = iamSvc.CreateFilter("scrub-pii-script",
-			"Script filter (Python): blanks ssn/secret/token fields in the response",
+			"Script transform (Python): blanks ssn/secret/token fields in the response",
 			iam.KindScriptFilter, 0,
 			map[string]any{"command": pyCmd, "path": filepath.Join(scriptDir, "scrub_pii.py")})
-		mustErr(err, "seed script_filter")
+		mustErr(err, "seed script transform")
+		scrubGuard, err := iampolicies.BuildGuardrailCedar(iampolicies.RuleSpec{
+			RoleID: role.ID, ConnectorType: "mock", OpScope: "read",
+			ConnectionIDs: []string{"test-conn"}, Filters: []string{"scrub-pii-script"},
+		}, nil)
+		mustErr(err, "build seed scrub guardrail")
+		_, err = iamSvc.CreateGuardrail("seed-scrub-pii",
+			"Script-scrub PII on reads for seed-role", scrubGuard, true)
+		mustErr(err, "create seed scrub guardrail")
 
 		writeCedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
 			RoleID: role.ID, Effect: "allow", ConnectorType: "mock",

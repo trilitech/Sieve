@@ -100,15 +100,13 @@ func BuildScopeID(format, connID string, fields map[string]string) string {
 }
 
 // BuildRuleCedar compiles a RuleSpec into a single Cedar GRANT statement
-// (permit/forbid). An ALLOW permit carries its obligations (approval, response
-// filters) as annotations directly on the grant — they are GRANT-SCOPED, so they
-// apply exactly when this rule fires (its conditions included). This is safe
-// under composition because the engine UNIONS obligations across every matching
-// permit (spec §7): a sibling grant can only ADD an obligation, never strip one,
-// so a rule's filter/approval cannot be composed away. `require_approval` is an
-// allow permit carrying @approval. A `forbid` (deny) carries no obligations.
-// Guardrails (BuildGuardrailCedar) remain the GLOBAL, role-agnostic invariant
-// layer — use them when the obligation must hold regardless of which rule granted.
+// (permit/forbid) — a pure DECISION. A rule decides allow / require_approval /
+// deny (gated by a declarative or script condition) and carries NO transforms:
+// redact / exclude / script-transform are GUARDRAIL-ONLY now (spec §7), so a rule
+// never emits @filters. The only annotation an allow permit carries is its
+// decision's @approval (Effect == require_approval) and, in script mode, its
+// @condition_script_*. A `forbid` (deny) carries none. Transforms live on
+// guardrails (BuildGuardrailCedar), global or role-bound.
 func BuildRuleCedar(spec RuleSpec, ops []connector.OperationDef) (string, error) {
 	if spec.ConnectorType == "" {
 		return "", fmt.Errorf("connector type is required")
@@ -151,12 +149,11 @@ func BuildRuleCedar(spec RuleSpec, ops []connector.OperationDef) (string, error)
 	var prefix string
 	if head == "permit" {
 		var anns []string
-		ann, err := obligationAnnotations(spec)
-		if err != nil {
-			return "", err
-		}
-		if ann != "" {
-			anns = append(anns, ann)
+		// A grant carries only its decision's approval (Effect == require_approval
+		// ⇒ @approval). Transforms are guardrail-only — a rule never emits @filters
+		// (spec.Filters is honored solely by BuildGuardrailCedar).
+		if spec.Effect == "require_approval" {
+			anns = append(anns, `@approval("required")`)
 		}
 		if scriptMode {
 			sc, err := scriptConditionAnnotations(spec.ConditionScript)
@@ -505,9 +502,6 @@ func HumanSummary(spec RuleSpec, roleName string, connLabels []string) string {
 		for _, c := range spec.Conditions {
 			b.WriteString(" where " + c.CtxPath + " " + c.Op + " " + c.Value)
 		}
-	}
-	if len(spec.Filters) > 0 {
-		b.WriteString(" + filters[" + strings.Join(spec.Filters, ", ") + "]")
 	}
 
 	if roleName == "" {
