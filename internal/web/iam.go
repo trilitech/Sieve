@@ -990,12 +990,12 @@ func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string
 		OpScope:       r.FormValue("op_scope"),
 		Operations:    r.Form["operations"],
 	}
-	// The rule form posts a separate "require human approval" checkbox next to an
-	// allow effect; fold it into the require_approval effect (an allow permit that
-	// carries @approval). The guardrail form posts effect=require_approval directly,
-	// so this only affects the rule form.
-	if spec.Effect == "allow" && r.FormValue("require_approval") == "on" {
-		spec.Effect = "require_approval"
+	// Effect is the rule's decision (allow / require_approval / deny), read directly
+	// from the select. In script mode the script returns the decision instead, so
+	// the rule is an allow permit gated by the script — the Effect control is hidden
+	// in the UI; force allow here so a stale/hand-crafted value can't leak in.
+	if r.FormValue("condition_mode") == "script" {
+		spec.Effect = "allow"
 	}
 	connScope := r.FormValue("conn_scope")
 	if connScope == "specific" {

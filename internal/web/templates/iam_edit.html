@@ -51,15 +51,18 @@
               </select>
             </div>
 
-            <!-- Effect -->
-            <div>
+            <!-- Effect: three-valued decision (spec §3.2) — deny < require_approval
+                 < allow, most-restrictive wins. Hidden in script mode (the script
+                 returns the decision). -->
+            <div id="rb-effect-wrap">
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Effect</label>
               <select name="effect" required
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <option value="allow">Allow</option>
+                <option value="require_approval">Require approval</option>
                 <option value="deny">Deny</option>
               </select>
-              <p class="text-xs text-slate-500 mt-1">Rules grant access. Approval / filters are guardrails on the IAM page.</p>
+              <p class="text-xs text-slate-500 mt-1">Allow grants; Require approval grants but needs human sign-off; Deny blocks (deny wins). Filters attach below.</p>
             </div>
 
             <!-- Connector -->
@@ -142,13 +145,10 @@
             </div>
           </div>
 
-          <!-- Obligations: filters + approval this grant carries (allow only). -->
+          <!-- Obligations: response filters this grant carries (non-deny only).
+               Approval is a decision (Effect = Require approval), not an obligation. -->
           <div id="rb-obligations" class="mt-5 rounded-lg bg-slate-900 border border-slate-700 p-4">
             <label class="block text-sm font-medium text-slate-300 mb-2">Response filters &amp; guards <span class="text-slate-600">(optional)</span></label>
-            <label class="flex items-center gap-2 text-sm text-slate-200 mb-3">
-              <input type="checkbox" name="require_approval" value="on" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
-              <span>Require human approval before this operation runs</span>
-            </label>
             {{if .Filters}}
             <p class="text-xs text-slate-500 mb-2">Apply filters/guards from the library — they run on every request this rule allows:</p>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -273,6 +273,12 @@
           const decl = el('rb-conds'), sc = el('rb-cond-script');
           if (decl) decl.classList.toggle('hidden', !!script);
           if (sc) sc.classList.toggle('hidden', !script);
+          // A script condition returns the decision; hide Effect + force allow (the
+          // permit the script gates).
+          const eff = document.querySelector('#rule-form select[name="effect"]');
+          const ew = el('rb-effect-wrap');
+          if (script && eff) eff.value = 'allow';
+          if (ew) ew.classList.toggle('hidden', !!script);
         }
 
         function rbScopeFields() {
@@ -377,15 +383,9 @@
           }
 
           setSelect('role_id', spec.role_id);
-          // require_approval is an allow permit carrying @approval — restore it as
-          // the Allow option plus a ticked approval checkbox.
-          if (spec.effect === 'require_approval') {
-            setSelect('effect', 'allow');
-            const ap = document.querySelector('#rule-form input[name="require_approval"]');
-            if (ap) ap.checked = true;
-          } else {
-            setSelect('effect', spec.effect);
-          }
+          // Effect is the three-valued decision; restore it directly (require_approval
+          // is now its own option, not a separate checkbox).
+          setSelect('effect', spec.effect);
           setSelect('connector_type', spec.connector_type);
 
           // Render connector-dependent controls (ops list, connections list,

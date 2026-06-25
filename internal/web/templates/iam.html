@@ -232,15 +232,19 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
               </select>
             </div>
 
-            <!-- Effect -->
-            <div>
+            <!-- Effect: the rule's decision — a three-valued lattice (spec §3.2),
+                 deny(0) < require_approval(1) < allow(2), composed by MIN across the
+                 matching rules: any deny overrides, else any approval ⇒ ask, else
+                 allow. Hidden in script mode (the script returns the decision). -->
+            <div id="rb-effect-wrap">
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Effect</label>
               <select name="effect" required
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <option value="allow">Allow</option>
+                <option value="require_approval">Require approval</option>
                 <option value="deny">Deny</option>
               </select>
-              <p class="text-xs text-slate-500 mt-1">Allow grants access; Deny blocks it (deny always wins). Attach filters &amp; approval under “Response filters &amp; guards” below.</p>
+              <p class="text-xs text-slate-500 mt-1">Allow grants; Require approval grants but needs human sign-off; Deny blocks. Composed most-restrictive-wins (deny &gt; require approval &gt; allow). Filters attach under “Response filters &amp; guards” below.</p>
             </div>
 
             <!-- Connector -->
@@ -326,16 +330,14 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             </div>
           </div>
 
-          <!-- Obligations: filters + approval THIS grant carries. Grant-scoped —
+          <!-- Obligations: the response filters THIS grant carries. Grant-scoped —
                they apply whenever this rule fires (its conditions included) — and
                safe under composition because the engine unions obligations across
-               all matching rules. Hidden on a deny effect (a deny carries none). -->
+               all matching rules. Hidden on a deny effect (a deny carries none).
+               (Approval is NOT here — it's a decision, set via Effect = Require
+               approval, spec §3.2.) -->
           <div id="rb-obligations" class="mt-5 rounded-lg bg-slate-900 border border-slate-700 p-4">
             <label class="block text-sm font-medium text-slate-300 mb-2">Response filters &amp; guards <span class="text-slate-600">(optional)</span></label>
-            <label class="flex items-center gap-2 text-sm text-slate-200 mb-3">
-              <input type="checkbox" name="require_approval" value="on" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
-              <span>Require human approval before this operation runs</span>
-            </label>
             {{if .Filters}}
             <p class="text-xs text-slate-500 mb-2">Apply filters/guards from the library — they run on every request this rule allows:</p>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -896,6 +898,13 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             const decl = get('conds'), sc = get('cond-script');
             if (decl) decl.classList.toggle('hidden', !!script);
             if (sc) sc.classList.toggle('hidden', !script);
+            // A script condition returns allow/deny/approval — it IS the decision,
+            // so Effect is redundant in script mode: force allow (the permit the
+            // script gates) and hide the selector.
+            const eff = opts.effectSel ? document.querySelector(opts.effectSel) : null;
+            const ew = get('effect-wrap');
+            if (script && eff) eff.value = 'allow';
+            if (ew) ew.classList.toggle('hidden', !!script);
           }
           function toggleOps() { get('ops').classList.toggle('hidden', get('opscope').value !== 'specific'); renderConds(); }
           function toggleConns() { get('conns').classList.toggle('hidden', get('connscope').value !== 'specific'); scopeVis(); }

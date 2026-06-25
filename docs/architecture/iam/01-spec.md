@@ -178,7 +178,7 @@ nouns consistently in the editor, storage, audit log, and this spec.
 
 | Concept | What it is | RBAC analogue |
 |---|---|---|
-| **Rule** | One **grant**: `allow` or `deny`, over **operations**, scoped to **connections/objects**, with optional **conditions**, and — on an allow — optional **obligations** (approval / response filters) that apply when the grant is used. Compiles to exactly one Cedar `permit`/`forbid` carrying its obligations as annotations. | A permission (richer: deny, scope, conditions, obligations) |
+| **Rule** | One **grant** — a decision `allow` / `require_approval` / `deny` (the three-valued lattice, §3.2), over **operations**, scoped to **connections/objects**, with optional **conditions**, and — on a non-deny — optional response-filter **obligations** that apply when the grant is used. (Approval is the *decision*, not a filter obligation.) Compiles to one Cedar `permit`/`forbid`; `require_approval` is a `permit` carrying `@approval`. | A permission (richer: deny, scope, conditions, obligations) |
 | **Role** | A **reusable, named bundle of rules** — the rules that target it. Author once, reuse. | A role |
 | **Token** | The agent credential, **assigned a *set* of roles**. | A user + its role assignments |
 
@@ -186,7 +186,7 @@ nouns consistently in the editor, storage, audit log, and this spec.
 
 | Concept | What it is |
 |---|---|
-| **Guardrail** | A **global constraint** — the *role-agnostic* variant of an obligation. For any request the grants layer *allows* that matches the guardrail's scope (operations/resources) + condition, it **requires approval and/or applies named filters**, **regardless of which rule granted the request**. A guardrail never grants; it only adds an obligation. Use it for an invariant a grant-author must not be able to omit (a rule's own obligation, by contrast, applies only when *that* rule grants). |
+| **Guardrail** | A **global constraint** — role-agnostic. For any request the grants layer *allows* that matches the guardrail's scope (operations/resources) + condition, it **requires approval and/or applies named filters**, **regardless of which rule granted the request**. A guardrail never grants. It is also **how global approval is expressed**: a guardrail requiring approval contributes `1` to the decision `min` for its scope (§3.2), the role-agnostic counterpart of a rule with Effect = require approval. Use it for an invariant a grant-author must not be able to omit. |
 | **Filter** | A named, reusable **transform/guard definition** (redact / exclude / script) that rules and guardrails reference by name. The reuse unit for obligations. |
 
 **Why two layers.** RBAC governs *who gets which bundles* (token↔role, role↔rule —
@@ -249,33 +249,40 @@ each **anchored to a role** (or global) and carrying an **object-scope**.
 **Policy — two role-anchored, object-scoped statement kinds.**
 
 ```
-Grant       { role,          object-scope, condition?  } → allow | deny
-Obligation  { role | global, object-scope, rank        } → approval | transform
+Grant       { role,          object-scope, condition?  } → allow | require_approval | deny
+Obligation  { role | global, object-scope, rank        } → transform   (redact | exclude | rewrite)
             object-scope = (connector, op-or-op-class, resource?)
 ```
 
-- A **Grant** is a **decision**. It names **exactly one role** as its principal:
-  "for tokens in role R, on `<object-scope>` [when `<condition>`] → allow/deny." Its
+- A **Grant** is a **decision** — a three-valued lattice **deny(0) < require_approval(1)
+  < allow(2)**. It names **exactly one role** as its principal: "for tokens in role R,
+  on `<object-scope>` [when `<condition>`] → allow / require approval / deny." Its
   `<condition>` is authored **either declaratively or as a script** — a program that
   reads the request and returns allow/deny/approval is the **script mode** of the
   condition (§5.4), an alternative to the declarative builder, not a separate kind and
-  not a library filter. A script condition gates its grant **per-grant** (deny ⇒ that
-  grant drops, not the whole request).
-- An **Obligation** rides on an *allow* and **stacks**. It names **a role, or
-  `global`**, and is either **approval** (a pre-execution gate — this is "ask") or a
-  **transform** (post-execution response modification: redact / exclude / rewrite).
-  A transform is **connector-contextual**: it operates within the declared content
-  fields of the connector its object-scope names (§7.1).
+  not a library filter. A script condition gates its grant **per-grant** (a "deny"/false
+  ⇒ that grant is *absent*, not the whole request).
+- An **Obligation** rides on a non-deny decision and **stacks**. It names **a role, or
+  `global`**, and is a **transform** (post-execution response modification: redact /
+  exclude / rewrite). A transform is **connector-contextual**: it operates within the
+  declared content fields of the connector its object-scope names (§7.1). *Approval is
+  **not** an obligation — it is the middle value of the decision lattice above (see
+  Decide); a guardrail or a grant requiring approval simply contributes `1`.*
 
 **Composition — the algebra.**
 - **Subject:** a token is the **union** of its roles.
-- **Decide:** over all Grants whose role the token holds and whose object-scope
-  matches — **deny overrides**; else any allow allows; else **default-deny**.
-- **Obligations:** **every** matching one applies — **union, no lifting, no
-  override**. Approval fires if **any** matching statement asks (any-ask ⇒ ask).
-  Transforms **all** run, deduped by identity, in **one global rank order**.
-- **The core law — composition is *additive*.** More roles only ever *add* access,
-  *add* approvals, *add* transforms. **The one subtractor is an explicit `deny`.**
+- **Decide:** the decision is **`min`** over the matching grants on the lattice
+  {deny=0, require_approval=1, allow=2}. A **deny rule** (forbid) contributes 0 ⇒ it
+  overrides. A grant whose **condition is false** (declarative or script) is **absent**
+  — it contributes nothing (it is *not* a 0). Among the present grants, any
+  `require_approval` ⇒ ask (1), else allow (2); nothing present ⇒ **default-deny**.
+  (As implemented this is exactly: forbid ⇒ deny; else any `@approval` ⇒ ask; else
+  allow — i.e. `min`, carried by a permit annotation rather than a literal integer.)
+- **Obligations (transforms):** **every** matching one applies — **union, no lifting,
+  no override** — deduped by identity and run in **one global rank order**.
+- **The core law — composition is *additive*.** More roles only ever *add* access
+  (allows), *tighten* the decision (a `require_approval` pulls the `min` to ask), or
+  *add* transforms. **The one hard subtractor is an explicit `deny`.**
   There is **no privilege-override**: "see it raw" is expressed by **not holding a
   redacting role**, never by a flag or exemption. So a token with both
   `read_everything` and `read_with_pii_removed` reads **redacted** — both apply; to
@@ -702,11 +709,16 @@ Collecting from every matching permit (not one) is the load-bearing correction i
 
 ## 7. Guardrails and the filter library
 
-The grants layer (§5–§6) decides **allow/deny** (a grant's condition may itself be a
-script, §5.4). Everything that happens *because* of an allow — human approval, response
-redaction/exclusion, a script transform, a rate limit — is an **obligation**.
-Obligations may be carried by a **grant** (they apply when that grant is used) or
-by a **guardrail** (they apply to every allowed request in scope, role-agnostically).
+The grants layer (§5–§6) decides the three-valued **allow / require_approval / deny**
+(§3.2; a grant's condition may itself be a script, §5.4). **Approval is part of that
+decision** — the `1` between deny and allow, computed as "any matching `@approval` ⇒
+ask" (which is the lattice `min`); it is not a filter obligation. The *response
+transforms* — redaction/exclusion, a script rewrite, a rate limit — are the
+**obligations**. Both `@approval` and the transform obligations may be carried by a
+**grant** (applies when that grant is used) or by a **guardrail** (applies to every
+allowed request in scope, role-agnostically). The annotations below (`@approval`,
+`@filters`) are the *mechanism*; conceptually `@approval` sets the decision to ask and
+`@filters` attaches transforms.
 The engine collects the **union** of both (§7.3).
 
 **The invariant that makes this safe:** an obligation can only ever *narrow*
@@ -925,7 +937,7 @@ around it either (§7.6).
 ### 7.3 Evaluation — two passes (grants, then guardrails)
 
 ```go
-// pass 1 — grants: the allow/deny decision AND grant-scoped obligations
+// pass 1 — grants: the allow / require_approval / deny decision AND grant-scoped transform obligations
 dec, gdiag := grantsPDP.Authorize(req)        // grant rules only
 if dec != Allow { return Deny(reason from gdiag) }
 grantPermits := gdiag.Reasons                  // Reasons ONLY → a condition-erroring permit is fail-closed (skipped)
@@ -936,7 +948,8 @@ guardPermits := hdiag.Reasons ∪ hdiag.Errors   // ERRORED guardrail fails SAFE
 
 for _, r := range grantPermits ∪ guardPermits {  // union: every matching grant + guardrail permit
     anns := r.set.Get(r.PolicyID).Annotations()
-    approval = approval || (anns["approval"] == "required")   // OR
+    approval = approval || (anns["approval"] == "required")   // OR = the decision lattice's min (any ⇒ ask, §3.2): approval is the DECISION, not a filter
+    // ...while `filters` (below) are the response-transform obligations.
     filters  = filters ∪ split(anns["filters"])               // union
 }
 filters = dedupeByID(resolve(filters, library))
