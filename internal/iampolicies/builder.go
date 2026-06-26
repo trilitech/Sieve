@@ -1,8 +1,10 @@
 package iampolicies
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/trilitech/Sieve/internal/connector"
@@ -456,6 +458,99 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// TransformSpec is one scoped response transform composed in the Transforms form
+// (spec §7): a SCOPE (global, or a role, + connector/op/resource) and an inline
+// ACTION (redact / exclude_items / script_filter) with its config and rank. It is
+// self-contained — there is no separate filter-library entry to attach. Compiles
+// to a permit-only Cedar overlay carrying @transform_* annotations.
+type TransformSpec struct {
+	RoleID        string // "" ⇒ global (any principal)
+	ConnectorType string // required
+	OpScope       string // "all" | "read" | "write" | "specific"
+	Operations    []string
+	ConnectionIDs []string
+	Scopes        []ScopeRef
+	Kind          iam.FilterKind // redact | exclude_items | script_filter
+	Config        map[string]any // patterns/match, or command/path
+	Rank          int
+}
+
+// BuildTransformCedar compiles a TransformSpec into a permit-only Cedar overlay
+// (spec §7.2) carrying the transform INLINE as @transform_kind / @transform_config
+// (JSON) / @transform_rank. The permit matches the (principal, action, resource)
+// scope; the engine reads the annotations off every matching-or-errored statement
+// and applies the transform to the response (stacked by rank). `ops` resolves a
+// "specific" op scope.
+func BuildTransformCedar(spec TransformSpec, ops []connector.OperationDef) (string, error) {
+	if spec.ConnectorType == "" {
+		return "", fmt.Errorf("connector type is required")
+	}
+	if spec.Kind == "" {
+		return "", fmt.Errorf("transform kind is required")
+	}
+	rs := RuleSpec{
+		RoleID: spec.RoleID, ConnectorType: spec.ConnectorType, OpScope: spec.OpScope,
+		Operations: spec.Operations, ConnectionIDs: spec.ConnectionIDs, Scopes: spec.Scopes,
+	}
+	action, err := actionClause(rs, ops)
+	if err != nil {
+		return "", err
+	}
+	cfgJSON, err := json.Marshal(spec.Config)
+	if err != nil {
+		return "", fmt.Errorf("marshal transform config: %w", err)
+	}
+	anns := fmt.Sprintf("@transform_kind(%s)\n@transform_config(%s)\n@transform_rank(%s)",
+		cedarString(string(spec.Kind)), cedarString(string(cfgJSON)), cedarString(strconv.Itoa(spec.Rank)))
+	return fmt.Sprintf("%s\npermit(\n  %s,\n  %s,\n  resource\n) when { %s };",
+		anns, principalClause(spec.RoleID), action, resourceScopeTerm(rs)), nil
+}
+
+// TransformHumanSummary renders a one-line description of a scoped transform for
+// the Transforms list (plain English instead of Cedar).
+func TransformHumanSummary(spec TransformSpec, roleName string, connLabels []string) string {
+	var b strings.Builder
+	switch spec.Kind {
+	case iam.KindScriptFilter:
+		b.WriteString("Script transform")
+	case iam.KindRedact:
+		b.WriteString("Redact")
+	case iam.KindExcludeItems:
+		b.WriteString("Exclude items")
+	default:
+		b.WriteString(string(spec.Kind))
+	}
+	switch spec.OpScope {
+	case "all":
+		b.WriteString(" on all operations")
+	case "read":
+		b.WriteString(" on read-only operations")
+	case "write":
+		b.WriteString(" on write operations")
+	case "specific":
+		b.WriteString(" on [" + strings.Join(spec.Operations, ", ") + "]")
+	}
+	b.WriteString(" of " + spec.ConnectorType)
+	switch {
+	case len(spec.Scopes) > 0:
+		ids := make([]string, 0, len(spec.Scopes))
+		for _, s := range spec.Scopes {
+			ids = append(ids, s.ID)
+		}
+		b.WriteString(" [" + strings.Join(ids, ", ") + "]")
+	case len(connLabels) > 0:
+		b.WriteString(" (" + strings.Join(connLabels, ", ") + ")")
+	}
+	if spec.RoleID == "" {
+		b.WriteString(" — global (every role)")
+	} else if roleName != "" {
+		b.WriteString(" — role: " + roleName)
+	} else {
+		b.WriteString(" — a role")
+	}
+	return b.String()
 }
 
 // HumanSummary renders a one-line operator-readable description of a rule, stored

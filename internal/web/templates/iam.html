@@ -395,6 +395,186 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
         </table>
       </div>
 
+      <!-- Transforms (scoped response transforms — self-contained: scope + action,
+           no guardrail wrapper, no attach-from-library checkboxes) -->
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "transforms"}} hidden{{end}}">
+        <h2 class="text-lg font-semibold text-white mb-1">Add a transform</h2>
+        <p class="text-xs text-slate-500 mb-5">A transform changes the <em>response</em> of an already-allowed request — it never decides allow/deny. It carries its own <strong>scope</strong>: <strong>global</strong> (every role — the floor) or bound to a <strong>role</strong> (e.g. read_with_pii_removed). Several transforms on the same scope stack by rank. (To decide what's allowed, use a rule on the Roles page.)</p>
+        <form method="POST" action="/iam/transforms" id="transform-form">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <!-- Scope: role (or global) -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Applies to</label>
+              <select name="role_id"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">Global — every role (the floor)</option>
+                {{range .Roles}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+              </select>
+            </div>
+            <!-- Kind (script first — the workhorse) -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Kind</label>
+              <select name="kind" id="tf-kind"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="script_filter">Script transform (Python or JS — rewrites the response; the workhorse)</option>
+                <option value="redact">Redact (quick: mask matching text)</option>
+                <option value="exclude_items">Exclude items (quick: drop list items containing text)</option>
+              </select>
+            </div>
+            <!-- Connector -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Connector</label>
+              <select name="connector_type" id="tf-connector" required
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="" disabled selected>Select a connector…</option>
+                {{range .Connectors}}<option value="{{.Type}}">{{.Name}} ({{.Type}})</option>{{end}}
+              </select>
+            </div>
+            <!-- Operation scope -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Operations</label>
+              <select name="op_scope" id="tf-opscope"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="all">All operations</option>
+                <option value="read">All read-only operations</option>
+                <option value="write">All write operations</option>
+                <option value="specific">Specific operations…</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="tf-ops" class="mt-4 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-2">Choose operations</label>
+            <div id="tf-ops-list" class="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-56 overflow-y-auto rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+          </div>
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">On connections</label>
+            <select name="conn_scope" id="tf-connscope"
+                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="any">Any connection of this connector</option>
+              <option value="specific">Specific connections…</option>
+            </select>
+            <div id="tf-conns" class="mt-3 hidden">
+              <div id="tf-conns-list" class="grid grid-cols-2 md:grid-cols-3 gap-2 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+            </div>
+          </div>
+
+          <div id="tf-scope-wrap" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Resource scope <span class="text-slate-600">(optional)</span></label>
+            <p id="tf-scope-hint" class="text-xs text-amber-500/80 mt-1 hidden">Pick a single specific connection above to scope by org / repo.</p>
+            <div id="tf-scope-controls">
+              <select name="scope_key" id="tf-scope"
+                      class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">No resource scope (whole connection)</option>
+              </select>
+              <p id="tf-scope-help" class="text-xs text-slate-500 mt-1"></p>
+              <div id="tf-scope-fields" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3"></div>
+            </div>
+          </div>
+
+          <!-- script-transform config (default) -->
+          <div id="tf-cfg-script" class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Language</label>
+            <select name="language" class="mb-3 rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="python">Python</option>
+              <option value="javascript">JavaScript (Node)</option>
+            </select>
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Script path</label>
+            <input type="text" name="script_path" placeholder="/opt/sieve-py/transforms/scrub_pii.py"
+                   class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-xs text-slate-500 mt-2">Absolute path under the allowed scripts dir (<code>/opt/sieve-py</code> by default; no <code>..</code>). Runs after the operation, reads the response on stdin as <code>metadata.response</code>, writes <code>{"rewrite": "&lt;new response&gt;"}</code>. A real one could call a local LLM to strip PII.</p>
+          </div>
+
+          <!-- redact / exclude config -->
+          <div id="tf-cfg-patterns" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Patterns</label>
+            <textarea name="patterns" rows="3" placeholder="One per line, e.g.&#10;confidential&#10;\b\d{16}\b"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+            <div class="mt-2 flex items-center gap-3">
+              <label class="text-sm text-slate-400">Match</label>
+              <select name="match" class="rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="contains">Contains — literal text, case-insensitive</option>
+                <option value="regex">Regex — RE2 pattern</option>
+              </select>
+            </div>
+            <p class="text-xs text-slate-500 mt-2">Applies only within the <strong>content fields</strong> of the connector (subject, body, …) — never ids, metadata, or base64. Redact masks each match with <code>[REDACTED]</code>; Exclude drops matching list items.</p>
+          </div>
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Order / rank <span class="text-slate-600">(optional)</span></label>
+            <input type="number" name="order" placeholder="e.g. 30"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-xs text-slate-500 mt-1">When several transforms apply to one response they run ascending — <strong>lower first</strong> (exclude 10, redact 20, script 30). Blank = per-kind default.</p>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-5">
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Name</label>
+              <input type="text" name="name" required placeholder="e.g. scrub-pii"
+                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
+              <input type="text" name="description" placeholder="what this transform does"
+                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+          </div>
+
+          <button type="submit" class="mt-5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Add transform</button>
+        </form>
+
+        <div class="mt-6 border-t border-slate-700 pt-5">
+          <h3 class="text-sm font-medium text-slate-300 mb-1">Transforms</h3>
+          <p class="text-xs text-slate-500 mb-3">Each is scoped (global or a role). When several apply to one response they run by rank, lower first.</p>
+          {{if .Transforms}}
+          <table class="w-full">
+            <tbody class="divide-y divide-slate-700">
+              {{range .Transforms}}
+              <tr class="align-top">
+                <td class="py-3">
+                  <div class="flex items-center gap-2">
+                    {{if .Enabled}}
+                    <span class="inline-flex rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400">on</span>
+                    {{else}}
+                    <span class="inline-flex rounded-full bg-slate-700 border border-slate-600 px-2 py-0.5 text-xs font-medium text-slate-400">off</span>
+                    {{end}}
+                    <span class="text-xs font-mono text-slate-500" title="apply rank (lower runs first)">#{{.Order}}</span>
+                    <span class="text-sm font-medium text-white">{{.Name}}</span>
+                    <code class="text-xs text-slate-500">{{.Kind}}</code>
+                  </div>
+                  {{if .Summary}}<p class="text-xs text-slate-400 mt-1">{{.Summary}}</p>{{end}}
+                  {{if .Description}}<p class="text-xs text-slate-500 mt-1">{{.Description}}</p>{{end}}
+                  <details class="mt-1">
+                    <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">show Cedar</summary>
+                    <pre class="whitespace-pre-wrap break-words text-xs text-slate-400 bg-slate-900 border border-slate-700 rounded-lg p-3 mt-2 max-w-2xl">{{.Cedar}}</pre>
+                  </details>
+                </td>
+                <td class="py-3 text-right align-top whitespace-nowrap">
+                  <form method="POST" action="/iam/transforms/{{.ID}}/enabled" class="inline mr-3">
+                    {{if .Enabled}}
+                    <input type="hidden" name="enabled" value="false">
+                    <button type="submit" class="text-sm text-slate-400 hover:text-slate-200 font-medium">Disable</button>
+                    {{else}}
+                    <input type="hidden" name="enabled" value="true">
+                    <button type="submit" class="text-sm text-emerald-400 hover:text-emerald-300 font-medium">Enable</button>
+                    {{end}}
+                  </form>
+                  <form method="POST" action="/iam/transforms/{{.ID}}/delete"
+                        onsubmit="return confirm('Delete this transform?')" class="inline">
+                    <button type="submit" class="text-sm text-red-400 hover:text-red-300 font-medium">Delete</button>
+                  </form>
+                </td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+          {{else}}
+          <p class="text-sm text-slate-500">No transforms yet — add one above.</p>
+          {{end}}
+        </div>
+      </div>
+
       <!-- Guardrail builder -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "guardrails"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Add a guardrail</h2>
@@ -895,6 +1075,22 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
         }
         setupBuilder('rb', { withConds: true, condMode: true, effectSel: '#rule-form select[name="effect"]' });
         setupBuilder('gb', { withConds: true, condPrefix: 'exempt' });
+        setupBuilder('tf', {}); // scoped-transform form: scope only (no conditions)
+
+        // --- Transform form: show only the selected kind's config block. ---
+        (function () {
+          const kindSel = el('tf-kind');
+          if (!kindSel) return;
+          function sync() {
+            const v = kindSel.value;
+            const usesPatterns = (v === 'redact' || v === 'exclude_items');
+            const patterns = el('tf-cfg-patterns'), script = el('tf-cfg-script');
+            if (patterns) patterns.classList.toggle('hidden', !usesPatterns);
+            if (script) script.classList.toggle('hidden', v !== 'script_filter');
+          }
+          kindSel.addEventListener('change', sync);
+          sync();
+        })();
 
         // --- Filter library: show only the selected kind's config block. ---
         // Pure show/hide keyed off a fixed <select> value (no dynamic data,

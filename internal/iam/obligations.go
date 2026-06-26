@@ -1,8 +1,10 @@
 package iam
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -18,7 +20,37 @@ const (
 	// script (deny ⇒ that grant is vetoed). These are NOT obligations.
 	annCondScriptCmd  = "condition_script_command"
 	annCondScriptPath = "condition_script_path"
+	// A scoped TRANSFORM (spec §7) carries its action INLINE — a kind, a JSON
+	// config, and a rank — so the engine builds the Filter directly, with no
+	// filter-library lookup. The self-contained successor to @filters("name").
+	annTransformKind   = "transform_kind"
+	annTransformConfig = "transform_config"
+	annTransformRank   = "transform_rank"
 )
+
+// inlineTransform builds a Filter from a statement's inline @transform_*
+// annotations, or (Filter{}, false, nil) when it carries none. Config is a JSON
+// object; rank is an integer string. The complement of the @filters→library path.
+func inlineTransform(anns map[string]string) (Filter, bool, error) {
+	kind := strings.TrimSpace(anns[annTransformKind])
+	if kind == "" {
+		return Filter{}, false, nil
+	}
+	f := Filter{Kind: FilterKind(kind)}
+	if r := strings.TrimSpace(anns[annTransformRank]); r != "" {
+		n, err := strconv.Atoi(r)
+		if err != nil {
+			return Filter{}, false, fmt.Errorf("iam: bad transform rank %q: %w", r, err)
+		}
+		f.Order = n
+	}
+	if cfg := strings.TrimSpace(anns[annTransformConfig]); cfg != "" {
+		if err := json.Unmarshal([]byte(cfg), &f.Config); err != nil {
+			return Filter{}, false, fmt.Errorf("iam: bad transform config: %w", err)
+		}
+	}
+	return f, true, nil
+}
 
 // scriptCondFromAnns returns the per-grant script condition a permit carries, or
 // nil if it has none (a declarative / unconditional grant).
@@ -49,6 +81,7 @@ func scriptCondFromAnns(anns map[string]string) *ScriptCond {
 func collectObligations(perPermit []map[string]string, lib FilterLibrary) (Obligations, error) {
 	var obl Obligations
 	seen := map[string]Filter{} // filter name → resolved Filter (dedupe)
+	var inline []Filter         // inline scoped transforms (no library name)
 	var labels []string
 
 	for _, anns := range perPermit {
@@ -71,19 +104,35 @@ func collectObligations(perPermit []map[string]string, lib FilterLibrary) (Oblig
 			}
 			seen[name] = f
 		}
+		// A scoped transform carries its action inline — no library lookup. Each
+		// statement contributes at most one; annotationMapsByID already deduped by
+		// policy id, so the same transform statement isn't double-counted.
+		if f, ok, err := inlineTransform(anns); err != nil {
+			return Obligations{}, err
+		} else if ok {
+			inline = append(inline, f)
+		}
 	}
 
-	for _, f := range seen {
+	split := func(f Filter) {
 		if f.Kind.isPre() {
 			obl.Guards = append(obl.Guards, f)
 		} else {
 			obl.Post = append(obl.Post, f)
 		}
 	}
+	for _, f := range seen {
+		split(f)
+	}
+	for _, f := range inline {
+		split(f)
+	}
 	// Deterministic ordering. Guards are order-independent (any deny denies) but
 	// we still sort for stable output; Post ordering is semantically meaningful.
+	// SliceStable on Post so inline transforms sharing a rank (no library name to
+	// tiebreak) keep their collection order — still deterministic.
 	sort.Slice(obl.Guards, func(i, j int) bool { return obl.Guards[i].Name < obl.Guards[j].Name })
-	sort.Slice(obl.Post, func(i, j int) bool {
+	sort.SliceStable(obl.Post, func(i, j int) bool {
 		if obl.Post[i].Order != obl.Post[j].Order {
 			return obl.Post[i].Order < obl.Post[j].Order
 		}

@@ -310,6 +310,147 @@ func (s *Service) EnabledGuardrails() ([]iam.Policy, error) {
 	return out, nil
 }
 
+// --- transforms (spec §7: self-contained scoped response transforms) ---
+
+// StoredTransform is a persisted scoped transform: a permit-only Cedar overlay
+// carrying an inline @transform_* action, scoped global or to a role. Same shape
+// as StoredGuardrail (permit-only) but its own table; it needs no filter-library
+// entry to attach to.
+type StoredTransform struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Cedar       string    `json:"cedar"`
+	SpecJSON    string    `json:"spec_json"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// CreateTransform stores a new scoped transform (permit-only re-validated).
+func (s *Service) CreateTransform(name, description, cedar, specJSON string, enabled bool) (*StoredTransform, error) {
+	if err := iam.ValidateGuardrailCedar(cedar); err != nil {
+		return nil, err
+	}
+	id := generateID()
+	now := time.Now().UTC()
+	_, err := s.db.DB.Exec(
+		`INSERT INTO iam_transforms (id, name, description, cedar_text, spec_json, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, name, description, cedar, specJSON, boolToInt(enabled), now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert iam transform: %w", err)
+	}
+	s.invalidate()
+	return &StoredTransform{ID: id, Name: name, Description: description, Cedar: cedar, SpecJSON: specJSON, Enabled: enabled, CreatedAt: now}, nil
+}
+
+// UpdateTransform modifies a transform in place (permit-only re-validated).
+func (s *Service) UpdateTransform(id, name, description, cedar, specJSON string, enabled bool) error {
+	if err := iam.ValidateGuardrailCedar(cedar); err != nil {
+		return err
+	}
+	res, err := s.db.DB.Exec(
+		`UPDATE iam_transforms SET name = ?, description = ?, cedar_text = ?, spec_json = ?, enabled = ? WHERE id = ?`,
+		name, description, cedar, specJSON, boolToInt(enabled), id,
+	)
+	if err != nil {
+		return fmt.Errorf("update iam transform: %w", err)
+	}
+	s.invalidate()
+	return mustAffect(res, id)
+}
+
+// SetTransformEnabled toggles a transform's enabled flag.
+func (s *Service) SetTransformEnabled(id string, enabled bool) error {
+	res, err := s.db.DB.Exec(`UPDATE iam_transforms SET enabled = ? WHERE id = ?`, boolToInt(enabled), id)
+	if err != nil {
+		return fmt.Errorf("set transform enabled: %w", err)
+	}
+	s.invalidate()
+	return mustAffect(res, id)
+}
+
+// GetTransform returns a transform by id (for edit-in-place).
+func (s *Service) GetTransform(id string) (*StoredTransform, error) {
+	row := s.db.DB.QueryRow(
+		`SELECT id, name, description, cedar_text, spec_json, enabled, created_at FROM iam_transforms WHERE id = ?`, id)
+	var t StoredTransform
+	var enabled int
+	if err := row.Scan(&t.ID, &t.Name, &t.Description, &t.Cedar, &t.SpecJSON, &enabled, &t.CreatedAt); err != nil {
+		return nil, fmt.Errorf("get iam transform %q: %w", id, err)
+	}
+	t.Enabled = enabled != 0
+	return &t, nil
+}
+
+// ListTransforms returns all stored transforms (enabled and not).
+func (s *Service) ListTransforms() ([]StoredTransform, error) {
+	rows, err := s.db.DB.Query(
+		`SELECT id, name, description, cedar_text, spec_json, enabled, created_at FROM iam_transforms ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list iam transforms: %w", err)
+	}
+	defer rows.Close()
+	var out []StoredTransform
+	for rows.Next() {
+		var t StoredTransform
+		var enabled int
+		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &t.Cedar, &t.SpecJSON, &enabled, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan iam transform: %w", err)
+		}
+		t.Enabled = enabled != 0
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// DeleteTransform removes a transform.
+func (s *Service) DeleteTransform(id string) error {
+	res, err := s.db.DB.Exec(`DELETE FROM iam_transforms WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete iam transform: %w", err)
+	}
+	s.invalidate()
+	return mustAffect(res, id)
+}
+
+// EnabledTransforms returns the enabled transforms as iam.Policy. They join the
+// guardrail set (both are permit-only obligation overlays the engine reads in the
+// second pass).
+func (s *Service) EnabledTransforms() ([]iam.Policy, error) {
+	all, err := s.ListTransforms()
+	if err != nil {
+		return nil, err
+	}
+	var out []iam.Policy
+	for _, t := range all {
+		if t.Enabled {
+			out = append(out, iam.Policy{ID: t.ID, Cedar: t.Cedar})
+		}
+	}
+	return out, nil
+}
+
+// DeleteTransformsForRole deletes every role-scoped transform whose Cedar targets
+// roleID (part of the role-delete cascade). Global transforms are unaffected.
+func (s *Service) DeleteTransformsForRole(roleID string) (int, error) {
+	all, err := s.ListTransforms()
+	if err != nil {
+		return 0, err
+	}
+	marker := RoleMarker(roleID)
+	n := 0
+	for _, t := range all {
+		if strings.Contains(t.Cedar, marker) {
+			if err := s.DeleteTransform(t.ID); err != nil {
+				return n, err
+			}
+			n++
+		}
+	}
+	return n, nil
+}
+
 // --- role cascade (delete a role → remove its rules + guardrails) ---
 
 // RoleMarker is the Cedar substring present in any rule or guardrail that
@@ -569,6 +710,14 @@ func (s *Service) BuildEngine() (*iam.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Scoped transforms join the guardrail set: both are permit-only obligation
+	// overlays the engine reads in the second pass. A transform carries its action
+	// inline (@transform_*); a legacy guardrail references the filter library.
+	transforms, err := s.EnabledTransforms()
+	if err != nil {
+		return nil, err
+	}
+	guards = append(guards, transforms...)
 	lib, err := s.FilterLibrary()
 	if err != nil {
 		return nil, err

@@ -283,6 +283,20 @@ func (db *DB) migrate() error {
 		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	-- A scoped Transform (spec §7): a permit-only Cedar overlay carrying an INLINE
+	-- response transform (@transform_kind/@transform_config/@transform_rank), scoped
+	-- global or to a role. The self-contained successor to the guardrail+filter-
+	-- library split (a transform IS a scoped object, no attach-from-library step).
+	CREATE TABLE IF NOT EXISTS iam_transforms (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL UNIQUE,
+		description  TEXT NOT NULL DEFAULT '',
+		cedar_text   TEXT NOT NULL,
+		spec_json    TEXT NOT NULL DEFAULT '',
+		enabled      INTEGER NOT NULL DEFAULT 1,
+		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE TABLE IF NOT EXISTS iam_role_groups (
 		id           TEXT PRIMARY KEY,
 		name         TEXT NOT NULL UNIQUE,

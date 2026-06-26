@@ -147,6 +147,9 @@ type iamPageData struct {
 	// RuleGroups is the rules list grouped by the role each rule targets.
 	RuleGroups []ruleGroupView
 	Guardrails []iamGuardrailView
+	// Transforms is the scoped-transform list (the Transforms section — the
+	// self-contained successor to the guardrail+filter-library split).
+	Transforms []iamTransformView
 	CSRFToken  string
 
 	// Error is a friendly message shown as a banner when a POST fails
@@ -205,6 +208,15 @@ type iamGuardrailView struct {
 	Summary string
 }
 
+// iamTransformView is one scoped transform in the Transforms list. Kind/Order/
+// Summary are derived from spec_json so the row reads in plain English.
+type iamTransformView struct {
+	iampolicies.StoredTransform
+	Kind    string
+	Order   int
+	Summary string
+}
+
 // iamEditPageData is the view-model for iam_edit.html (edit-in-place of one
 // builder-authored rule). It carries the same builder inputs as the create
 // page plus the policy being edited and its stored form-state JSON.
@@ -232,7 +244,7 @@ type iamEditPageData struct {
 
 // iamSections are the /iam subsections shown one-at-a-time via ?section= (the
 // sidebar sub-nav). Default is roles — the main authoring surface.
-var iamSections = map[string]bool{"roles": true, "guardrails": true, "explore": true}
+var iamSections = map[string]bool{"roles": true, "transforms": true, "guardrails": true, "explore": true}
 
 func iamSection(r *http.Request) string {
 	if s := r.URL.Query().Get("section"); iamSections[s] {
@@ -290,6 +302,22 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 		})
 	}
 
+	transforms, err := s.iam.ListTransforms()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data.Transforms = make([]iamTransformView, 0, len(transforms))
+	for _, t := range transforms {
+		kind, order := transformKindRank(t.SpecJSON)
+		data.Transforms = append(data.Transforms, iamTransformView{
+			StoredTransform: t,
+			Kind:            kind,
+			Order:           order,
+			Summary:         s.transformSummaryFromSpecJSON(t.SpecJSON),
+		})
+	}
+
 	data.RoleViews = s.roleViews(rolesList, pols, guards)
 	data.RuleGroups = groupPoliciesByRole(data.Policies, rolesList)
 
@@ -326,6 +354,38 @@ func (s *Server) guardrailSummaryFromSpecJSON(specJSON string) string {
 	}
 	spec := s.specFromState(st)
 	return guardrailSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
+}
+
+// decodeTransformSpec decodes a stored transform's spec_json (a TransformSpec).
+func decodeTransformSpec(specJSON string) (iampolicies.TransformSpec, bool) {
+	if specJSON == "" {
+		return iampolicies.TransformSpec{}, false
+	}
+	var ts iampolicies.TransformSpec
+	if err := json.Unmarshal([]byte(specJSON), &ts); err != nil {
+		return iampolicies.TransformSpec{}, false
+	}
+	return ts, true
+}
+
+// transformKindRank pulls the kind + rank out of a transform's spec_json for the
+// list row.
+func transformKindRank(specJSON string) (string, int) {
+	ts, ok := decodeTransformSpec(specJSON)
+	if !ok {
+		return "", 0
+	}
+	return string(ts.Kind), ts.Rank
+}
+
+// transformSummaryFromSpecJSON recomputes a scoped transform's plain-English
+// summary from its spec_json so the Transforms list reads without Cedar.
+func (s *Server) transformSummaryFromSpecJSON(specJSON string) string {
+	ts, ok := decodeTransformSpec(specJSON)
+	if !ok {
+		return ""
+	}
+	return iampolicies.TransformHumanSummary(ts, s.roleName(ts.RoleID), s.connLabels(ts.ConnectionIDs))
 }
 
 // ruleSummariesByRole returns, per role id, the plain-English summaries of the
@@ -634,12 +694,17 @@ func (s *Server) handleIAMRoleDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "delete role guardrails: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	transformsDeleted, err := s.iam.DeleteTransformsForRole(id)
+	if err != nil {
+		http.Error(w, "delete role transforms: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := s.roles.Delete(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.role.delete", id,
-		map[string]any{"tokens_changed": tokensChanged, "rules_deleted": rulesDeleted, "guardrails_deleted": guardsDeleted}, "success")
+		map[string]any{"tokens_changed": tokensChanged, "rules_deleted": rulesDeleted, "guardrails_deleted": guardsDeleted, "transforms_deleted": transformsDeleted}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
 }
 
@@ -864,6 +929,104 @@ func (s *Server) handleIAMFilterUpdate(w http.ResponseWriter, r *http.Request) {
 
 // handleIAMRoleRename renames a role in place (POST /iam/roles/{id}/rename). The
 // id is stable, so rules/guardrails/tokens that reference the role are unaffected.
+// --- transforms (scoped response transforms; spec §7) ---
+
+// transformSpecFromForm parses the Transforms create form into a TransformSpec and
+// its spec_json. Scope (role/connector/op/connections/resource) is parsed by the
+// shared parseBuilderForm; the action (kind + config) by parseFilterConfig; the
+// rank by parseFilterOrder. RoleID "" ⇒ a global transform (the floor).
+func (s *Server) transformSpecFromForm(r *http.Request) (iampolicies.TransformSpec, string, *parseError) {
+	scope, _, _, perr := s.parseBuilderForm(r)
+	if perr != nil {
+		return iampolicies.TransformSpec{}, "", perr
+	}
+	kind, config, perr := s.parseFilterConfig(r)
+	if perr != nil {
+		return iampolicies.TransformSpec{}, "", perr
+	}
+	ts := iampolicies.TransformSpec{
+		RoleID:        scope.RoleID,
+		ConnectorType: scope.ConnectorType,
+		OpScope:       scope.OpScope,
+		Operations:    scope.Operations,
+		ConnectionIDs: scope.ConnectionIDs,
+		Scopes:        scope.Scopes,
+		Kind:          kind,
+		Config:        config,
+		Rank:          parseFilterOrder(r, kind),
+	}
+	specJSON := "{}"
+	if b, err := json.Marshal(ts); err == nil {
+		specJSON = string(b)
+	}
+	return ts, specJSON, nil
+}
+
+// handleIAMTransformCreate creates a scoped transform (POST /iam/transforms).
+func (s *Server) handleIAMTransformCreate(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		s.renderIAMError(w, r, "transform name is required")
+		return
+	}
+	ts, specJSON, perr := s.transformSpecFromForm(r)
+	if perr != nil {
+		s.renderIAMError(w, r, perr.msg)
+		return
+	}
+	meta := s.connectorMeta(ts.ConnectorType)
+	cedar, err := iampolicies.BuildTransformCedar(ts, meta.Operations)
+	if err != nil {
+		s.renderIAMError(w, r, err.Error())
+		return
+	}
+	if _, err := s.iam.CreateTransform(name, r.FormValue("description"), cedar, specJSON, true); err != nil {
+		s.renderIAMError(w, r, err.Error())
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.transform.create", name,
+		map[string]any{"kind": string(ts.Kind)}, "success")
+	http.Redirect(w, r, "/iam?section=transforms", http.StatusSeeOther)
+}
+
+// handleIAMTransformDelete removes a transform (POST /iam/transforms/{id}/delete).
+func (s *Server) handleIAMTransformDelete(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.iam.DeleteTransform(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.transform.delete", id, nil, "success")
+	http.Redirect(w, r, "/iam?section=transforms", http.StatusSeeOther)
+}
+
+// handleIAMTransformSetEnabled toggles a transform (POST /iam/transforms/{id}/enabled).
+func (s *Server) handleIAMTransformSetEnabled(w http.ResponseWriter, r *http.Request) {
+	if s.iam == nil {
+		http.Redirect(w, r, "/iam", http.StatusSeeOther)
+		return
+	}
+	id := r.PathValue("id")
+	enabled := r.FormValue("enabled") == "true"
+	if err := s.iam.SetTransformEnabled(id, enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/iam?section=transforms", http.StatusSeeOther)
+}
+
 func (s *Server) handleIAMRoleRename(w http.ResponseWriter, r *http.Request) {
 	if s.iam == nil {
 		http.Redirect(w, r, "/iam", http.StatusSeeOther)
