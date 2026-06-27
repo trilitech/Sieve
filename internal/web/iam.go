@@ -307,14 +307,15 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	lib := s.filterByName()
 	data.Transforms = make([]iamTransformView, 0, len(transforms))
 	for _, t := range transforms {
-		kind, order := transformKindRank(t.SpecJSON)
+		kind, order := attachmentKindRank(t.SpecJSON, lib)
 		data.Transforms = append(data.Transforms, iamTransformView{
 			StoredTransform: t,
 			Kind:            kind,
 			Order:           order,
-			Summary:         s.transformSummaryFromSpecJSON(t.SpecJSON),
+			Summary:         s.attachmentSummaryFromSpecJSON(t.SpecJSON, lib),
 		})
 	}
 
@@ -356,36 +357,60 @@ func (s *Server) guardrailSummaryFromSpecJSON(specJSON string) string {
 	return guardrailSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
 }
 
-// decodeTransformSpec decodes a stored transform's spec_json (a TransformSpec).
-func decodeTransformSpec(specJSON string) (iampolicies.TransformSpec, bool) {
+// decodeAttachmentSpec decodes a stored attachment's spec_json (an
+// AttachmentSpec — the binding of a reusable transform definition to a scope).
+func decodeAttachmentSpec(specJSON string) (iampolicies.AttachmentSpec, bool) {
 	if specJSON == "" {
-		return iampolicies.TransformSpec{}, false
+		return iampolicies.AttachmentSpec{}, false
 	}
-	var ts iampolicies.TransformSpec
-	if err := json.Unmarshal([]byte(specJSON), &ts); err != nil {
-		return iampolicies.TransformSpec{}, false
+	var as iampolicies.AttachmentSpec
+	if err := json.Unmarshal([]byte(specJSON), &as); err != nil {
+		return iampolicies.AttachmentSpec{}, false
 	}
-	return ts, true
+	return as, true
 }
 
-// transformKindRank pulls the kind + rank out of a transform's spec_json for the
-// list row.
-func transformKindRank(specJSON string) (string, int) {
-	ts, ok := decodeTransformSpec(specJSON)
+// filterByName indexes the transform-definition library by name (for attachment
+// rows to look up their referenced definition's kind/rank).
+func (s *Server) filterByName() map[string]iam.Filter {
+	m := map[string]iam.Filter{}
+	if s.iam == nil {
+		return m
+	}
+	if fs, err := s.iam.ListFilters(); err == nil {
+		for _, f := range fs {
+			m[f.Name] = f
+		}
+	}
+	return m
+}
+
+// attachmentKindRank resolves an attachment's kind + rank from the definition it
+// references (the def carries them; the attachment carries only scope).
+func attachmentKindRank(specJSON string, lib map[string]iam.Filter) (string, int) {
+	as, ok := decodeAttachmentSpec(specJSON)
 	if !ok {
 		return "", 0
 	}
-	return string(ts.Kind), ts.Rank
+	if def, found := lib[as.TransformName]; found {
+		return string(def.Kind), def.Order
+	}
+	return "", 0
 }
 
-// transformSummaryFromSpecJSON recomputes a scoped transform's plain-English
-// summary from its spec_json so the Transforms list reads without Cedar.
-func (s *Server) transformSummaryFromSpecJSON(specJSON string) string {
-	ts, ok := decodeTransformSpec(specJSON)
+// attachmentSummaryFromSpecJSON recomputes an attachment's plain-English summary
+// (which definition, its kind, scope) from spec_json so the list reads without
+// Cedar.
+func (s *Server) attachmentSummaryFromSpecJSON(specJSON string, lib map[string]iam.Filter) string {
+	as, ok := decodeAttachmentSpec(specJSON)
 	if !ok {
 		return ""
 	}
-	return iampolicies.TransformHumanSummary(ts, s.roleName(ts.RoleID), s.connLabels(ts.ConnectionIDs))
+	var kind iam.FilterKind
+	if def, found := lib[as.TransformName]; found {
+		kind = def.Kind
+	}
+	return iampolicies.AttachmentHumanSummary(as, kind, s.roleName(as.RoleID), s.connLabels(as.ConnectionIDs))
 }
 
 // ruleSummariesByRole returns, per role id, the plain-English summaries of the
@@ -741,7 +766,7 @@ func (s *Server) handleIAMFilterCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.create", name,
 		map[string]any{"kind": string(kind)}, "success")
-	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=transforms", http.StatusSeeOther)
 }
 
 // parseFilterConfig reads the filter form's kind + per-kind config, shared by
@@ -843,7 +868,7 @@ func (s *Server) handleIAMFilterDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.delete", name, nil, "success")
-	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=transforms", http.StatusSeeOther)
 }
 
 // iamFilterEditPageData is the view-model for iam_filter_edit.html. The name is
@@ -924,45 +949,46 @@ func (s *Server) handleIAMFilterUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.filter.update", name,
 		map[string]any{"kind": string(kind)}, "success")
-	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
+	http.Redirect(w, r, "/iam?section=transforms", http.StatusSeeOther)
 }
 
 // handleIAMRoleRename renames a role in place (POST /iam/roles/{id}/rename). The
 // id is stable, so rules/guardrails/tokens that reference the role are unaffected.
 // --- transforms (scoped response transforms; spec §7) ---
 
-// transformSpecFromForm parses the Transforms create form into a TransformSpec and
-// its spec_json. Scope (role/connector/op/connections/resource) is parsed by the
-// shared parseBuilderForm; the action (kind + config) by parseFilterConfig; the
-// rank by parseFilterOrder. RoleID "" ⇒ a global transform (the floor).
-func (s *Server) transformSpecFromForm(r *http.Request) (iampolicies.TransformSpec, string, *parseError) {
+// attachmentSpecFromForm parses the Attach form into an AttachmentSpec + spec_json.
+// The scope (role/connector/op/connections/resource) is parsed by the shared
+// parseBuilderForm; the transform definition is chosen by name (the search
+// picker). RoleID "" ⇒ a global attachment (the floor).
+func (s *Server) attachmentSpecFromForm(r *http.Request) (iampolicies.AttachmentSpec, string, *parseError) {
 	scope, _, _, perr := s.parseBuilderForm(r)
 	if perr != nil {
-		return iampolicies.TransformSpec{}, "", perr
+		return iampolicies.AttachmentSpec{}, "", perr
 	}
-	kind, config, perr := s.parseFilterConfig(r)
-	if perr != nil {
-		return iampolicies.TransformSpec{}, "", perr
+	name := strings.TrimSpace(r.FormValue("transform_name"))
+	if name == "" {
+		return iampolicies.AttachmentSpec{}, "", &parseError{msg: "choose a transform to attach", code: http.StatusBadRequest}
 	}
-	ts := iampolicies.TransformSpec{
+	as := iampolicies.AttachmentSpec{
+		TransformName: name,
 		RoleID:        scope.RoleID,
 		ConnectorType: scope.ConnectorType,
 		OpScope:       scope.OpScope,
 		Operations:    scope.Operations,
 		ConnectionIDs: scope.ConnectionIDs,
 		Scopes:        scope.Scopes,
-		Kind:          kind,
-		Config:        config,
-		Rank:          parseFilterOrder(r, kind),
 	}
 	specJSON := "{}"
-	if b, err := json.Marshal(ts); err == nil {
+	if b, err := json.Marshal(as); err == nil {
 		specJSON = string(b)
 	}
-	return ts, specJSON, nil
+	return as, specJSON, nil
 }
 
-// handleIAMTransformCreate creates a scoped transform (POST /iam/transforms).
+// handleIAMTransformCreate attaches a reusable transform definition to a scope
+// (POST /iam/transforms). The attachment references the definition by name via
+// @filters, so the SAME definition can be attached to many roles (or globally) —
+// reuse across roles.
 func (s *Server) handleIAMTransformCreate(w http.ResponseWriter, r *http.Request) {
 	if s.iam == nil {
 		http.Redirect(w, r, "/iam", http.StatusSeeOther)
@@ -972,28 +998,29 @@ func (s *Server) handleIAMTransformCreate(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		s.renderIAMError(w, r, "transform name is required")
-		return
-	}
-	ts, specJSON, perr := s.transformSpecFromForm(r)
+	as, specJSON, perr := s.attachmentSpecFromForm(r)
 	if perr != nil {
 		s.renderIAMError(w, r, perr.msg)
 		return
 	}
-	meta := s.connectorMeta(ts.ConnectorType)
-	cedar, err := iampolicies.BuildTransformCedar(ts, meta.Operations)
+	// The referenced definition must exist — fail with a friendly message rather
+	// than storing a dangling @filters that fail-closes every matching request.
+	if _, err := s.iam.GetFilter(as.TransformName); err != nil {
+		s.renderIAMError(w, r, "no transform named "+as.TransformName+" — create it in the library above first")
+		return
+	}
+	meta := s.connectorMeta(as.ConnectorType)
+	cedar, err := iampolicies.BuildAttachmentCedar(as, meta.Operations)
 	if err != nil {
 		s.renderIAMError(w, r, err.Error())
 		return
 	}
-	if _, err := s.iam.CreateTransform(name, r.FormValue("description"), cedar, specJSON, true); err != nil {
+	if _, err := s.iam.CreateTransform(as.TransformName, r.FormValue("description"), cedar, specJSON, true); err != nil {
 		s.renderIAMError(w, r, err.Error())
 		return
 	}
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.transform.create", name,
-		map[string]any{"kind": string(ts.Kind)}, "success")
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.transform.attach", as.TransformName,
+		map[string]any{"role_id": as.RoleID}, "success")
 	http.Redirect(w, r, "/iam?section=transforms", http.StatusSeeOther)
 }
 

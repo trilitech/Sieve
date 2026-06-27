@@ -606,3 +606,94 @@ func HumanSummary(spec RuleSpec, roleName string, connLabels []string) string {
 	}
 	return b.String()
 }
+
+// AttachmentSpec binds a reusable transform DEFINITION (TransformName — a filter-
+// library entry, spec §7) to a SCOPE: global (RoleID "") or a role, on a
+// connector/op/resource. The same definition can have MANY attachments — that is
+// reuse across roles, the thing standalone scoped transforms lost. It compiles
+// (BuildAttachmentCedar) to a permit-only overlay carrying @filters(<name>); the
+// engine resolves the action against the library, so editing the definition
+// updates every attachment at once.
+type AttachmentSpec struct {
+	TransformName string // the definition referenced (@filters)
+	RoleID        string // "" ⇒ global (any principal — the floor)
+	ConnectorType string // required
+	OpScope       string // "all" | "read" | "write" | "specific"
+	Operations    []string
+	ConnectionIDs []string
+	Scopes        []ScopeRef
+}
+
+// BuildAttachmentCedar compiles an AttachmentSpec into a permit-only Cedar overlay
+// (spec §7.2) annotated @filters(<TransformName>) — a reference the engine
+// resolves against the filter library. Reuses BuildGuardrailCedar (which emits the
+// @filters annotation + the principal/action/resource scope), so attachments and
+// guardrail obligations compile identically. `ops` resolves a "specific" op scope.
+func BuildAttachmentCedar(spec AttachmentSpec, ops []connector.OperationDef) (string, error) {
+	name := strings.TrimSpace(spec.TransformName)
+	if name == "" {
+		return "", fmt.Errorf("choose a transform to attach")
+	}
+	if strings.ContainsAny(name, " \t\"") {
+		return "", fmt.Errorf("invalid transform name %q", name)
+	}
+	if spec.ConnectorType == "" {
+		return "", fmt.Errorf("connector type is required")
+	}
+	rs := RuleSpec{
+		RoleID: spec.RoleID, ConnectorType: spec.ConnectorType, OpScope: spec.OpScope,
+		Operations: spec.Operations, ConnectionIDs: spec.ConnectionIDs, Scopes: spec.Scopes,
+		Filters: []string{name},
+	}
+	return BuildGuardrailCedar(rs, ops)
+}
+
+// AttachmentHumanSummary renders a one-line description of an attachment for the
+// list (plain English instead of Cedar): which definition, its kind, the scope,
+// and whether it is global or bound to a role.
+func AttachmentHumanSummary(spec AttachmentSpec, defKind iam.FilterKind, roleName string, connLabels []string) string {
+	var b strings.Builder
+	b.WriteString(spec.TransformName)
+	switch defKind {
+	case iam.KindScriptFilter:
+		b.WriteString(" (script transform)")
+	case iam.KindRedact:
+		b.WriteString(" (redact)")
+	case iam.KindExcludeItems:
+		b.WriteString(" (exclude items)")
+	case "":
+		// definition not found (dangling reference) — say so plainly.
+		b.WriteString(" (missing definition!)")
+	default:
+		b.WriteString(" (" + string(defKind) + ")")
+	}
+	switch spec.OpScope {
+	case "all":
+		b.WriteString(" on all operations")
+	case "read":
+		b.WriteString(" on read-only operations")
+	case "write":
+		b.WriteString(" on write operations")
+	case "specific":
+		b.WriteString(" on [" + strings.Join(spec.Operations, ", ") + "]")
+	}
+	b.WriteString(" of " + spec.ConnectorType)
+	switch {
+	case len(spec.Scopes) > 0:
+		ids := make([]string, 0, len(spec.Scopes))
+		for _, s := range spec.Scopes {
+			ids = append(ids, s.ID)
+		}
+		b.WriteString(" [" + strings.Join(ids, ", ") + "]")
+	case len(connLabels) > 0:
+		b.WriteString(" (" + strings.Join(connLabels, ", ") + ")")
+	}
+	if spec.RoleID == "" {
+		b.WriteString(" — global (every role)")
+	} else if roleName != "" {
+		b.WriteString(" — role: " + roleName)
+	} else {
+		b.WriteString(" — a role")
+	}
+	return b.String()
+}

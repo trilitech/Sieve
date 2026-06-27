@@ -283,13 +283,14 @@ func (db *DB) migrate() error {
 		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
-	-- A scoped Transform (spec §7): a permit-only Cedar overlay carrying an INLINE
-	-- response transform (@transform_kind/@transform_config/@transform_rank), scoped
-	-- global or to a role. The self-contained successor to the guardrail+filter-
-	-- library split (a transform IS a scoped object, no attach-from-library step).
+	-- A transform ATTACHMENT (spec §7): a permit-only Cedar overlay that references
+	-- a reusable transform DEFINITION (a filter-library entry) by name via @filters,
+	-- scoped global or to a role. The SAME definition can be attached many times —
+	-- reuse across roles — so name (the referenced definition) is NOT unique;
+	-- attachment rows are addressed by id (delete/enable).
 	CREATE TABLE IF NOT EXISTS iam_transforms (
 		id           TEXT PRIMARY KEY,
-		name         TEXT NOT NULL UNIQUE,
+		name         TEXT NOT NULL,
 		description  TEXT NOT NULL DEFAULT '',
 		cedar_text   TEXT NOT NULL,
 		spec_json    TEXT NOT NULL DEFAULT '',

@@ -317,6 +317,13 @@ transform pipeline over the response (§7.4).
   exclude_items / **script-transform**, each with a rank), referenced by guardrails.
   A decision-script is **not** a transform — it is a rule's condition (its script mode,
   §5.4).
+- **Authoring note (reuse).** In the admin UI a guardrail-by-reference is authored in
+  the **Transforms** section as an **attachment**: pick a library definition (a search
+  box, not a checkbox wall), choose a **role or Global**, and a connector/op scope. The
+  *same* definition can be attached to many roles — that is reuse across roles; editing
+  the definition updates every attachment. An attachment compiles to a permit-only
+  overlay carrying `@filters(<definition>)` (the engine resolves the action against the
+  library, §7.3), i.e. exactly a role-bound or global guardrail.
 
 **Worked example (`read_everything` / `read_with_pii_removed`).**
 ```

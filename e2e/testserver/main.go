@@ -177,39 +177,46 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))
 	_, err = iamSvc.CreatePolicy("seed-read", "", grantCedar, true)
 	mustErr(err, "create seed grant")
 
-	// A role-scoped redact TRANSFORM — the read_with_pii_removed pattern: tokens in
-	// seed-role read with SSNs masked. A transform is a self-contained scoped object
-	// (spec §7): scope (here a role) + action, no guardrail wrapper, no library attach.
-	redactSpec := iampolicies.TransformSpec{
-		RoleID: role.ID, ConnectorType: "mock", OpScope: "read",
-		ConnectionIDs: []string{"test-conn"}, Kind: iam.KindRedact,
-		Config: map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}, "match": "regex"}, Rank: 20,
+	// A reusable redact TRANSFORM DEFINITION (the library entry) + an ATTACHMENT
+	// binding it to seed-role: the read_with_pii_removed pattern. The same
+	// definition could be attached to other roles too — that is reuse across roles
+	// (spec §7). The attachment references the definition by name via @filters.
+	_, err = iamSvc.CreateFilter("redact-ssn", "Redact US SSNs in responses",
+		iam.KindRedact, 20, map[string]any{"patterns": []any{`\d{3}-\d{2}-\d{4}`}, "match": "regex"})
+	mustErr(err, "create seed redact definition")
+	redactAtt := iampolicies.AttachmentSpec{
+		TransformName: "redact-ssn", RoleID: role.ID, ConnectorType: "mock",
+		OpScope: "read", ConnectionIDs: []string{"test-conn"},
 	}
-	redactTf, err := iampolicies.BuildTransformCedar(redactSpec, nil)
-	mustErr(err, "build seed redact transform")
-	redactJSON, _ := json.Marshal(redactSpec)
+	redactCedar, err := iampolicies.BuildAttachmentCedar(redactAtt, nil)
+	mustErr(err, "build seed redact attachment")
+	redactJSON, _ := json.Marshal(redactAtt)
 	_, err = iamSvc.CreateTransform("redact-ssn",
-		"Redact SSNs on reads for seed-role", redactTf, string(redactJSON), true)
-	mustErr(err, "create seed redact transform")
+		"Redact SSNs on reads for seed-role", redactCedar, string(redactJSON), true)
+	mustErr(err, "create seed redact attachment")
 
 	// Seed sample scripts — only when a Python runtime is present to run them.
-	// A response TRANSFORM (script-transform) is attached via a guardrail; a
-	// DECISION script (allow/deny/approval) is a RULE's CONDITION, not a transform
-	// (spec §5.4), so it's seeded as a write rule whose condition is a script.
+	// A response TRANSFORM (script-transform) is a reusable definition attached to
+	// a scope; a DECISION script (allow/deny/approval) is a RULE's CONDITION, not a
+	// transform (spec §5.4), so it's seeded as a write rule whose condition is a script.
 	if pyCmd != "" {
-		// A global script-transform: rewrites every read response (any role) — the
-		// floor a global guardrail used to provide, now a self-contained transform.
-		scrubSpec := iampolicies.TransformSpec{
-			ConnectorType: "mock", OpScope: "read", ConnectionIDs: []string{"test-conn"},
-			Kind:   iam.KindScriptFilter,
-			Config: map[string]any{"command": pyCmd, "path": filepath.Join(scriptDir, "scrub_pii.py")}, Rank: 30,
+		// A script-transform DEFINITION + a GLOBAL attachment: rewrites every read
+		// response (any role) — the floor a global guardrail used to provide.
+		_, err = iamSvc.CreateFilter("scrub-pii-script",
+			"Script transform (Python): blanks ssn/secret/token fields in a read response",
+			iam.KindScriptFilter, 30,
+			map[string]any{"command": pyCmd, "path": filepath.Join(scriptDir, "scrub_pii.py")})
+		mustErr(err, "create seed scrub definition")
+		scrubAtt := iampolicies.AttachmentSpec{
+			TransformName: "scrub-pii-script", ConnectorType: "mock",
+			OpScope: "read", ConnectionIDs: []string{"test-conn"}, // RoleID "" ⇒ global
 		}
-		scrubTf, err := iampolicies.BuildTransformCedar(scrubSpec, nil)
-		mustErr(err, "build seed scrub transform")
-		scrubJSON, _ := json.Marshal(scrubSpec)
+		scrubCedar, err := iampolicies.BuildAttachmentCedar(scrubAtt, nil)
+		mustErr(err, "build seed scrub attachment")
+		scrubJSON, _ := json.Marshal(scrubAtt)
 		_, err = iamSvc.CreateTransform("scrub-pii-script",
-			"Script transform (Python): blanks ssn/secret/token fields in every read response", scrubTf, string(scrubJSON), true)
-		mustErr(err, "create seed scrub transform")
+			"Global script transform: blanks ssn/secret/token in every read response", scrubCedar, string(scrubJSON), true)
+		mustErr(err, "create seed scrub attachment")
 
 		writeCedar, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
 			RoleID: role.ID, Effect: "allow", ConnectorType: "mock",

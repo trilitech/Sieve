@@ -69,10 +69,10 @@
         {{end}}
       </div>
 
-      <!-- Transforms (defined here; attached on guardrails) -->
-      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "guardrails"}} hidden{{end}}">
-        <h2 class="text-lg font-semibold text-white mb-1">Transforms</h2>
-        <p class="text-xs text-slate-400 mb-2">Reusable, named response transforms. Author one here, then attach it on a <strong>guardrail</strong> below — the guardrail decides where it applies (global, or bound to a role). A transform never decides allow/deny; it only changes the response of an already-allowed request. (To decide what can be sent, use a rule's <strong>script condition</strong> instead, on the Roles page.)</p>
+      <!-- Transform definitions (reusable library; attached to roles/global below) -->
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "transforms"}} hidden{{end}}">
+        <h2 class="text-lg font-semibold text-white mb-1">Transform definitions</h2>
+        <p class="text-xs text-slate-400 mb-2">Reusable, named response transforms. Author one here, then <strong>attach it</strong> in the Attachments section below — to as many roles as you like, or globally. The same definition reused everywhere; edit it once and every attachment updates. A transform never decides allow/deny; it only changes the response of an already-allowed request. (To decide what can be sent, use a rule's <strong>script condition</strong> on the Roles page.)</p>
         <ul class="text-xs text-slate-500 mb-5 space-y-1 list-disc list-inside">
           <li><strong class="text-slate-300">Script transform</strong> — a Python/JS script that rewrites the response (e.g. LLM-based PII removal). The workhorse.</li>
           <li><strong class="text-slate-300">Redact</strong> / <strong class="text-slate-300">Exclude items</strong> — quick pattern-based helpers: mask matching text, or drop matching list items.</li>
@@ -192,7 +192,7 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             {{end}}
           </div>
           {{else}}
-          <p class="text-sm text-slate-500">No transforms yet — author one above, then attach it on a guardrail.</p>
+          <p class="text-sm text-slate-500">No transforms yet — author one above, then attach it below.</p>
           {{end}}
         </div>
       </div>
@@ -395,13 +395,26 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
         </table>
       </div>
 
-      <!-- Transforms (scoped response transforms — self-contained: scope + action,
-           no guardrail wrapper, no attach-from-library checkboxes) -->
+      <!-- Attachments: bind a reusable definition (above) to a role or global,
+           on a connector/op scope. The same definition can be attached many
+           times → reuse across roles. The transform is chosen via a search box
+           (datalist), never a wall of checkboxes. -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "transforms"}} hidden{{end}}">
-        <h2 class="text-lg font-semibold text-white mb-1">Add a transform</h2>
-        <p class="text-xs text-slate-500 mb-5">A transform changes the <em>response</em> of an already-allowed request — it never decides allow/deny. It carries its own <strong>scope</strong>: <strong>global</strong> (every role — the floor) or bound to a <strong>role</strong> (e.g. read_with_pii_removed). Several transforms on the same scope stack by rank. (To decide what's allowed, use a rule on the Roles page.)</p>
+        <h2 class="text-lg font-semibold text-white mb-1">Attach a transform</h2>
+        <p class="text-xs text-slate-500 mb-5">Attach a definition (above) to a <strong>role</strong> or <strong>globally</strong>, on a connector/operation scope. Attach the same definition to several roles to reuse it — e.g. <code>read_with_pii_removed</code> is a redact transform attached to that role. Several transforms on one response stack by rank.</p>
         <form method="POST" action="/iam/transforms" id="transform-form">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <!-- Transform definition: a search picker (typeahead) over the library -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Transform</label>
+              <input type="text" name="transform_name" list="tf-def-list" required autocomplete="off"
+                     placeholder="type to search the library…"
+                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <datalist id="tf-def-list">
+                {{range .Filters}}<option value="{{.Name}}">{{.Kind}}</option>{{end}}
+              </datalist>
+              <p class="text-xs text-slate-500 mt-1">A definition from the library above — start typing to filter.</p>
+            </div>
             <!-- Scope: role (or global) -->
             <div>
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Applies to</label>
@@ -409,16 +422,6 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <option value="">Global — every role (the floor)</option>
                 {{range .Roles}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-              </select>
-            </div>
-            <!-- Kind (script first — the workhorse) -->
-            <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Kind</label>
-              <select name="kind" id="tf-kind"
-                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="script_filter">Script transform (Python or JS — rewrites the response; the workhorse)</option>
-                <option value="redact">Redact (quick: mask matching text)</option>
-                <option value="exclude_items">Exclude items (quick: drop list items containing text)</option>
               </select>
             </div>
             <!-- Connector -->
@@ -473,60 +476,20 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             </div>
           </div>
 
-          <!-- script-transform config (default) -->
-          <div id="tf-cfg-script" class="mt-5">
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Language</label>
-            <select name="language" class="mb-3 rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-              <option value="python">Python</option>
-              <option value="javascript">JavaScript (Node)</option>
-            </select>
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Script path</label>
-            <input type="text" name="script_path" placeholder="/opt/sieve-py/transforms/scrub_pii.py"
-                   class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <p class="text-xs text-slate-500 mt-2">Absolute path under the allowed scripts dir (<code>/opt/sieve-py</code> by default; no <code>..</code>). Runs after the operation, reads the response on stdin as <code>metadata.response</code>, writes <code>{"rewrite": "&lt;new response&gt;"}</code>. A real one could call a local LLM to strip PII.</p>
-          </div>
-
-          <!-- redact / exclude config -->
-          <div id="tf-cfg-patterns" class="mt-5 hidden">
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Patterns</label>
-            <textarea name="patterns" rows="3" placeholder="One per line, e.g.&#10;confidential&#10;\b\d{16}\b"
-                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
-            <div class="mt-2 flex items-center gap-3">
-              <label class="text-sm text-slate-400">Match</label>
-              <select name="match" class="rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="contains">Contains — literal text, case-insensitive</option>
-                <option value="regex">Regex — RE2 pattern</option>
-              </select>
-            </div>
-            <p class="text-xs text-slate-500 mt-2">Applies only within the <strong>content fields</strong> of the connector (subject, body, …) — never ids, metadata, or base64. Redact masks each match with <code>[REDACTED]</code>; Exclude drops matching list items.</p>
-          </div>
-
+          <!-- The transform's kind / config / rank live on the DEFINITION above;
+               an attachment only references it (by name) and sets the scope. -->
           <div class="mt-5">
-            <label class="block text-sm font-medium text-slate-400 mb-1.5">Order / rank <span class="text-slate-600">(optional)</span></label>
-            <input type="number" name="order" placeholder="e.g. 30"
-                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            <p class="text-xs text-slate-500 mt-1">When several transforms apply to one response they run ascending — <strong>lower first</strong> (exclude 10, redact 20, script 30). Blank = per-kind default.</p>
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Note <span class="text-slate-600">(optional)</span></label>
+            <input type="text" name="description" placeholder="why this transform is attached here"
+                   class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-5">
-            <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Name</label>
-              <input type="text" name="name" required placeholder="e.g. scrub-pii"
-                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
-              <input type="text" name="description" placeholder="what this transform does"
-                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-            </div>
-          </div>
-
-          <button type="submit" class="mt-5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Add transform</button>
+          <button type="submit" class="mt-5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Attach transform</button>
         </form>
 
         <div class="mt-6 border-t border-slate-700 pt-5">
-          <h3 class="text-sm font-medium text-slate-300 mb-1">Transforms</h3>
-          <p class="text-xs text-slate-500 mb-3">Each is scoped (global or a role). When several apply to one response they run by rank, lower first.</p>
+          <h3 class="text-sm font-medium text-slate-300 mb-1">Attachments</h3>
+          <p class="text-xs text-slate-500 mb-3">Each binds a definition to a role or global on a scope. When several apply to one response they run by rank, lower first.</p>
           {{if .Transforms}}
           <table class="w-full">
             <tbody class="divide-y divide-slate-700">
@@ -570,7 +533,7 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             </tbody>
           </table>
           {{else}}
-          <p class="text-sm text-slate-500">No transforms yet — add one above.</p>
+          <p class="text-sm text-slate-500">No attachments yet — attach a transform above.</p>
           {{end}}
         </div>
       </div>
@@ -1075,24 +1038,9 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
         }
         setupBuilder('rb', { withConds: true, condMode: true, effectSel: '#rule-form select[name="effect"]' });
         setupBuilder('gb', { withConds: true, condPrefix: 'exempt' });
-        setupBuilder('tf', {}); // scoped-transform form: scope only (no conditions)
+        setupBuilder('tf', {}); // attach form: scope only (the action lives on the definition)
 
-        // --- Transform form: show only the selected kind's config block. ---
-        (function () {
-          const kindSel = el('tf-kind');
-          if (!kindSel) return;
-          function sync() {
-            const v = kindSel.value;
-            const usesPatterns = (v === 'redact' || v === 'exclude_items');
-            const patterns = el('tf-cfg-patterns'), script = el('tf-cfg-script');
-            if (patterns) patterns.classList.toggle('hidden', !usesPatterns);
-            if (script) script.classList.toggle('hidden', v !== 'script_filter');
-          }
-          kindSel.addEventListener('change', sync);
-          sync();
-        })();
-
-        // --- Filter library: show only the selected kind's config block. ---
+        // --- Definitions library: show only the selected kind's config block. ---
         // Pure show/hide keyed off a fixed <select> value (no dynamic data,
         // no markup injection) — config block ids are static template authors'.
         (function () {
