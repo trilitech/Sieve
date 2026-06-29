@@ -706,7 +706,7 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
       <!-- Decision explorer -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8{{if ne .Section "explore"}} hidden{{end}}">
         <h2 class="text-lg font-semibold text-white mb-1">Test a decision</h2>
-        <p class="text-xs text-slate-500 mb-4">Dry-run a request against the current rules. Nothing is executed.</p>
+        <p class="text-xs text-slate-500 mb-4">Dry-run a request against the current rules. Decision conditions and script-mode rules evaluate against the params below; response transforms are reported, not executed. Nothing is sent to the connector.</p>
         <form method="POST" action="/iam/explore">
           <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div>
@@ -725,27 +725,82 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
             </div>
             <div>
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Operation</label>
-              <input type="text" name="operation" id="ex-op" value="{{.ExploreOperation}}" placeholder="e.g. list_emails" list="ex-op-list"
-                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-              <datalist id="ex-op-list"></datalist>
+              <select name="operation" id="ex-op" data-selected="{{.ExploreOperation}}"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">Select an operation…</option>
+              </select>
             </div>
+          </div>
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Request params (JSON) <span class="text-slate-500">(optional)</span></label>
+            <textarea name="params" id="ex-params" rows="4" placeholder='{"model": "claude-opus-4-8", "max_tokens": 100000, "to": ["a@x.com", "b@y.com"]}'
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">{{.ExploreParams}}</textarea>
+            <p id="ex-params-hint" class="text-xs text-slate-500 mt-1"></p>
+            <p class="text-xs text-slate-500">Conditions (amount/model/recipient_count…) and script-mode rules evaluate against these params.</p>
           </div>
           <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Evaluate</button>
         </form>
 
         {{if .ExploreDone}}
-        <div class="mt-6 rounded-lg border border-slate-700 bg-slate-900 p-4">
+        <div class="mt-6 rounded-lg border border-slate-700 bg-slate-900 p-4 space-y-3">
           {{if .ExploreError}}
           <p class="text-sm font-medium text-red-400 mb-1">Error</p>
           <p class="text-sm text-slate-300">{{.ExploreError}}</p>
           {{else}}
-          <p class="text-sm text-slate-300 mb-1">
+          <p class="text-sm text-slate-300">
             <span class="text-slate-500">Decision:</span>
             {{if eq .ExploreAction "allow"}}<span class="font-semibold text-emerald-400">allow</span>
             {{else if eq .ExploreAction "deny"}}<span class="font-semibold text-red-400">deny</span>
             {{else}}<span class="font-semibold text-amber-400">{{.ExploreAction}}</span>{{end}}
           </p>
-          <p class="text-sm text-slate-300"><span class="text-slate-500">Reason:</span> {{if .ExploreReason}}{{.ExploreReason}}{{else}}<span class="text-slate-500">(none)</span>{{end}}</p>
+          {{if .ExploreReason}}<p class="text-sm text-slate-300"><span class="text-slate-500">Reason:</span> {{.ExploreReason}}</p>{{end}}
+
+          {{if .ExploreDefaultDeny}}
+          <p class="text-sm text-slate-400">No matching grant — <span class="text-slate-300">default deny</span>. No rule allowed this request.</p>
+          {{else if .ExploreDetermining}}
+          <div>
+            <p class="text-xs uppercase tracking-wide text-slate-500 mb-1">Determined by</p>
+            <ul class="text-sm text-slate-300 space-y-0.5">
+              {{range .ExploreDetermining}}<li>• <span class="font-medium text-white">{{.Name}}</span>{{if .Detail}} — <span class="text-slate-400">{{.Detail}}</span>{{end}}</li>{{end}}
+            </ul>
+          </div>
+          {{end}}
+
+          {{if .ExploreScripts}}
+          <div>
+            <p class="text-xs uppercase tracking-wide text-slate-500 mb-1">Script conditions</p>
+            <ul class="text-sm text-slate-300 space-y-0.5">
+              {{range .ExploreScripts}}<li>• <span class="font-medium text-white">{{.Rule}}</span>: <span class="{{if eq .Verdict "allow"}}text-emerald-400{{else if eq .Verdict "approval_required"}}text-amber-400{{else}}text-red-400{{end}}">{{.Verdict}}</span></li>{{end}}
+            </ul>
+          </div>
+          {{end}}
+
+          {{if .ExploreApproval}}
+          <p class="text-sm text-amber-400">⚑ Requires human approval before the operation runs.</p>
+          {{end}}
+
+          {{if ne .ExploreAction "deny"}}
+          <div>
+            <p class="text-xs uppercase tracking-wide text-slate-500 mb-1">Transforms that would run</p>
+            {{if .ExploreTransforms}}
+            <ol class="text-sm text-slate-300 space-y-0.5 list-decimal list-inside">
+              {{range .ExploreTransforms}}<li><span class="font-medium text-white">{{.Name}}</span> <span class="text-slate-500">({{.Kind}})</span></li>{{end}}
+            </ol>
+            <p class="text-xs text-slate-600 mt-1">Applied to the response in this order. Not executed here — this is a dry run.</p>
+            {{else}}
+            <p class="text-sm text-slate-500">None — the response is returned unmodified.</p>
+            {{end}}
+          </div>
+          {{end}}
+
+          {{if .ExploreEvalErrors}}
+          <div>
+            <p class="text-xs uppercase tracking-wide text-amber-500/80 mb-1">Evaluation warnings</p>
+            <ul class="text-xs text-slate-400 space-y-0.5">
+              {{range .ExploreEvalErrors}}<li>• {{.}}</li>{{end}}
+            </ul>
+          </div>
+          {{end}}
           {{end}}
         </div>
         {{end}}
@@ -1154,11 +1209,36 @@ print(json.dumps({"rewrite": json.dumps(walk(data))}))</pre>
               sel.appendChild(o);
             }
           }
+          const opSel = el('ex-op');
           function exRefresh() {
             const t = CONN_TYPE[sel.value];
-            const dl = el('ex-op-list'); dl.innerHTML = '';
-            for (const o of ((IAM_CATALOG[t] || {}).operations || [])) {
-              const opt = document.createElement('option'); opt.value = o.name; dl.appendChild(opt);
+            const cat = IAM_CATALOG[t] || {};
+            // Operations come from the SELECTED connection's connector type — a
+            // native <select> so the list drops below + is height-capped, never
+            // sprawling. (A mock connection only ever shows mock ops, etc.)
+            const want = opSel.dataset.selected || opSel.value;
+            opSel.textContent = '';
+            const blank = document.createElement('option');
+            blank.value = ''; blank.textContent = 'Select an operation…';
+            opSel.appendChild(blank);
+            for (const o of (cat.operations || [])) {
+              const opt = document.createElement('option');
+              opt.value = o.name;
+              opt.textContent = o.name + (o.readOnly ? ' (read)' : '');
+              if (o.name === want) opt.selected = true;
+              opSel.appendChild(opt);
+            }
+            // Hint: which request params this connector's conditions can gate on
+            // (derived from each condition's context.param.<key> path).
+            const hint = el('ex-params-hint');
+            if (hint) {
+              const keys = [];
+              for (const c of (cat.conditions || [])) {
+                const p = c.ctxPath || '';
+                if (p.indexOf('context.param.') === 0) keys.push(p.slice('context.param.'.length));
+              }
+              const uniq = [...new Set(keys)];
+              hint.textContent = uniq.length ? ('Params this connector can gate on: ' + uniq.join(', ')) : '';
             }
           }
           sel.addEventListener('change', exRefresh);

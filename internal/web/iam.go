@@ -165,9 +165,17 @@ type iamPageData struct {
 	ExploreConnID    string
 	ExploreConnType  string
 	ExploreOperation string
+	ExploreParams    string // echo of the params JSON textarea
 	ExploreAction    string
 	ExploreReason    string
 	ExploreError     string
+	// Rich result (populated from iampolicies.Explain).
+	ExploreApproval    bool
+	ExploreDefaultDeny bool
+	ExploreDetermining []iampolicies.ExplainRule
+	ExploreTransforms  []iampolicies.ExplainTransform
+	ExploreScripts     []iampolicies.ExplainScript
+	ExploreEvalErrors  []string
 }
 
 // iamPolicyView wraps a StoredPolicy with a HasSpec flag so the rules list can
@@ -1863,6 +1871,7 @@ func (s *Server) handleIAMExplore(w http.ResponseWriter, r *http.Request) {
 		ExploreConnID:    r.FormValue("connection_id"),
 		ExploreConnType:  r.FormValue("connector_type"),
 		ExploreOperation: r.FormValue("operation"),
+		ExploreParams:    r.FormValue("params"),
 	}
 
 	if s.iam == nil {
@@ -1878,7 +1887,18 @@ func (s *Server) handleIAMExplore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	dec, err := s.iam.Decide(
+	// Optional request params (JSON) — what makes the dry-run exercise conditions
+	// and script-mode rules. Invalid JSON is a friendly inline error, not a 500.
+	var params map[string]any
+	if raw := strings.TrimSpace(data.ExploreParams); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			data.ExploreError = "Request params must be a valid JSON object: " + err.Error()
+			s.renderIAM(w, r, data)
+			return
+		}
+	}
+
+	res, err := s.iam.Explain(
 		r.Context(),
 		s.iamRegistry,
 		"explorer",
@@ -1887,14 +1907,20 @@ func (s *Server) handleIAMExplore(w http.ResponseWriter, r *http.Request) {
 		data.ExploreConnID,
 		"active",
 		data.ExploreOperation,
-		nil,
+		params,
 	)
 	if err != nil {
 		data.ExploreError = err.Error()
 		s.renderIAM(w, r, data)
 		return
 	}
-	data.ExploreAction = dec.Action
-	data.ExploreReason = dec.Reason
+	data.ExploreAction = res.Action
+	data.ExploreReason = res.Reason
+	data.ExploreApproval = res.Approval
+	data.ExploreDefaultDeny = res.DefaultDeny
+	data.ExploreDetermining = res.Determining
+	data.ExploreTransforms = res.Transforms
+	data.ExploreScripts = res.ScriptRules
+	data.ExploreEvalErrors = res.EvalErrors
 	s.renderIAM(w, r, data)
 }
