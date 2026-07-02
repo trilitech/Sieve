@@ -160,6 +160,8 @@ var Meta = connector.ConnectorMeta{
 			HelpText: "When the upstream expects credentials in a URL query parameter (e.g. OpenWeather's ?appid=...) rather than a header, set the parameter name. Empty = header auth only."},
 		{Name: "additional_denied_headers", Label: "Additional denied headers", Type: "textarea", EditOnly: true, Editable: true, Placeholder: "X-Custom-Internal\nX-Tenant-ID",
 			HelpText: "One header key per line, case-insensitive. Adds to the built-in baseline deny-list; cannot remove from it."},
+		{Name: "outbound_allowlist", Label: "Outbound allow-list (CIDRs)", Type: "textarea", EditOnly: true, Editable: true,
+			HelpText: "Opt CIDRs into httpguard's outbound-host allow-list. Empty = block private / loopback / link-local. Set to 127.0.0.0/8 for a local mock; the operator's actual production allow-list otherwise. One entry per line."},
 	},
 	Operations: operations,
 	RuleConditions: []connector.RuleCondition{
@@ -315,6 +317,26 @@ func Factory(config map[string]any) (connector.Connector, error) {
 }
 
 func (p *ProxyConnector) Type() string { return "http_proxy" }
+
+// ConfigSchemaKeys implements connector.ConfigSchemaProvider. http_proxy
+// reads from a free-form map (no typed Config struct), so the persisted-key
+// list is declared explicitly. The architecture test verifies these are
+// covered by Meta().SetupFields.
+func (p *ProxyConnector) ConfigSchemaKeys() []string {
+	return []string{
+		"target_url",
+		"auth_header",
+		"auth_value",
+		"auth_value_scrub",
+		"auth_query_param",
+		"additional_denied_headers",
+		"extra_headers",
+		"category",
+		"aws_access_key",
+		"aws_region",
+		"outbound_allowlist",
+	}
+}
 
 // injectAuthQueryParam writes auth_value into the outbound URL's query
 // string under the configured authQueryParam, replacing any existing

@@ -3,6 +3,8 @@ package connector
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 )
 
 // ErrNeedsReauth signals that a connection's stored credentials cannot be
@@ -33,6 +35,72 @@ type Connector interface {
 	Operations() []OperationDef
 	Execute(ctx context.Context, op string, params map[string]any) (any, error)
 	Validate(ctx context.Context) error
+}
+
+// EditConfigNormalizer lets a connector migrate or normalize a stored
+// config map before the generic edit page projects fields from it.
+// Used to handle legacy aliases (e.g. mcp_proxy's target_url → url) so
+// older rows are editable without forcing the operator to re-type a
+// value that's already stored. Called both at edit-page render time AND
+// before UpdateConfig writes the saved form back, so the normalized
+// shape eventually lands in the persisted config.
+//
+// Implementations should mutate-and-return the input map. The normalize
+// step MUST be idempotent — running it on an already-normalized config
+// must be a no-op.
+type EditConfigNormalizer interface {
+	NormalizeForEdit(cfg map[string]any) map[string]any
+}
+
+// ConfigSchemaProvider exposes the JSON keys a connector's persisted Config
+// can carry. The architecture test in cmd/sieve/registry_arch_test.go uses
+// this to verify ConnectorMeta.SetupFields covers the entire persisted
+// shape — no connector may write a config key its Meta doesn't declare,
+// regardless of whether the connector ships a bespoke create flow (OAuth,
+// App install) or relies on the generic data-driven form.
+//
+// Connectors with a typed `type Config struct` typically implement this by
+// returning ConfigKeysFromTags(reflect.TypeOf(Config{})). Connectors that
+// persist a free-form map (httpproxy, mcpproxy) don't need to implement it
+// — their persisted keys are guaranteed by construction to come from
+// SetupFields-driven form parsing.
+type ConfigSchemaProvider interface {
+	ConfigSchemaKeys() []string
+}
+
+// ConfigKeysFromTags returns the JSON tag names of a struct type's fields.
+// Untagged fields, anonymous embeds, and `-` tags are skipped. The tag's
+// `,omitempty` (and similar) suffixes are stripped. Used by typed-Config
+// connectors to implement ConfigSchemaProvider via reflection rather than
+// maintaining a parallel string list (which would itself drift).
+//
+// Panics if t is not a struct — call sites are static
+// reflect.TypeOf(Config{}) in package init / method bodies, so a wrong
+// type means a programming error, not a runtime condition.
+func ConfigKeysFromTags(t reflect.Type) []string {
+	if t.Kind() != reflect.Struct {
+		panic("connector.ConfigKeysFromTags: expected struct, got " + t.Kind().String())
+	}
+	keys := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		tag := f.Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		// Strip ",omitempty" and similar comma-separated suffixes.
+		if c := strings.IndexByte(tag, ','); c >= 0 {
+			tag = tag[:c]
+		}
+		if tag == "" {
+			continue
+		}
+		keys = append(keys, tag)
+	}
+	return keys
 }
 
 // OperationDef describes a single operation a connector supports.
@@ -211,8 +279,17 @@ type ConnectorMeta struct {
 // forms: the create flow renders/parses every non-EditOnly field, the
 // edit page renders/parses every Editable field. Adding a field here is
 // the ONLY step needed to surface it in both forms — the web layer has
-// no per-connector form code. (Bespoke flows — Google OAuth, Slack
-// install — bypass this mechanism entirely.)
+// no per-connector form code.
+//
+// CRITICAL invariant (enforced by the architecture test in
+// cmd/sieve/registry_arch_test.go): every key a connector persists in
+// its config — INCLUDING keys written by bespoke create flows (Google
+// OAuth, GitHub PAT/App install, Slack OAuth) — MUST be declared as a
+// SetupField on Meta(). Bespoke flows own their own HTML and parsing,
+// but the field MUST still appear here so the architectural test and
+// the edit page agree on the persisted shape. Mark such fields with
+// Editable=false + EditOnly=true if the generic form should not
+// render them; the test only checks declaration, not rendering.
 type Field struct {
 	Name        string `json:"name"`
 	Label       string `json:"label"`

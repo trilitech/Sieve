@@ -56,12 +56,16 @@ var Meta = connector.ConnectorMeta{
 	ResourceTypes: []connector.ResourceType{{Name: "Sieve::Mcp::Tool"}},
 	SetupFields: []connector.Field{
 		{Name: "url", Label: "MCP Server URL", Type: "text", Required: true, Editable: true, Placeholder: "http://localhost:3000/mcp"},
+		{Name: "target_url", Label: "Target URL (legacy alias)", Type: "text", Editable: false, EditOnly: true,
+			HelpText: "Legacy/compatibility alias for url. Factory reads target_url as a fallback when url is absent (older rows persisted via the web form handler used this name). Declared here so the architecture test sees the full persisted shape; new configs should set url instead."},
 		{Name: "auth_header", Label: "Auth Header (optional)", Type: "text", Required: false, Editable: true, Placeholder: "Authorization"},
 		{Name: "auth_value", Label: "Auth Value (optional)", Type: "password", Required: false, Editable: true, Secret: true, Placeholder: "Bearer sk-...",
 			HelpText: "Leave blank on edit to keep the stored value."},
 		{Name: "name", Label: "Server Name", Type: "text", Required: false, Editable: true, Placeholder: "my-mcp-server"},
 		{Name: "response_body_cap_bytes", Label: "Upstream response body cap (bytes)", Type: "number", EditOnly: true, Editable: true, Placeholder: "5242880",
 			HelpText: "Maximum bytes Sieve reads from a tools/call upstream response. 0 or empty = 5 MiB default."},
+		{Name: "outbound_allowlist", Label: "Outbound allow-list (CIDRs)", Type: "textarea", EditOnly: true, Editable: true,
+			HelpText: "Opt CIDRs into httpguard's outbound-host allow-list. Empty = block private / loopback / link-local. Set to 127.0.0.0/8 for a local mock. One entry per line."},
 	},
 }
 
@@ -205,6 +209,37 @@ func Factory(config map[string]any) (connector.Connector, error) {
 }
 
 func (m *MCPProxyConnector) Type() string { return "mcp_proxy" }
+
+// ConfigSchemaKeys implements connector.ConfigSchemaProvider. mcp_proxy
+// reads from a free-form map (no typed Config struct), so the persisted-key
+// list is declared explicitly. The architecture test verifies these are
+// covered by Meta().SetupFields.
+func (m *MCPProxyConnector) ConfigSchemaKeys() []string {
+	return []string{
+		"url",
+		"target_url", // legacy alias Factory reads as fallback when url is absent
+		"auth_header",
+		"auth_value",
+		"name",
+		"response_body_cap_bytes",
+		"outbound_allowlist",
+	}
+}
+
+// NormalizeForEdit implements connector.EditConfigNormalizer. Promotes the
+// legacy target_url alias to url so the edit form's required url field is
+// pre-filled for older rows; deletes the alias unconditionally so the
+// next save persists only the canonical key. Idempotent — running it on
+// an already-canonical config is a no-op.
+func (m *MCPProxyConnector) NormalizeForEdit(cfg map[string]any) map[string]any {
+	if u, _ := cfg["url"].(string); u == "" {
+		if alias, _ := cfg["target_url"].(string); alias != "" {
+			cfg["url"] = alias
+		}
+	}
+	delete(cfg, "target_url")
+	return cfg
+}
 
 // discoverTools calls tools/list on the upstream server to discover available tools.
 func (m *MCPProxyConnector) discoverTools(ctx context.Context) error {

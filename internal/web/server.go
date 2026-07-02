@@ -1675,12 +1675,18 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]any{
-		"Active":           "settings",
-		"Connections":      llmConns,
-		"LLMConnection":    allSettings[settings.KeyLLMConnection],
-		"LLMModel":         allSettings[settings.KeyLLMModel],
-		"LLMMaxTokens":     maxTokens,
-		"PublicBaseURL":    allSettings[settings.KeyPublicBaseURL],
+		"Active":        "settings",
+		"Connections":   llmConns,
+		"LLMConnection": allSettings[settings.KeyLLMConnection],
+		"LLMModel":      allSettings[settings.KeyLLMModel],
+		"LLMMaxTokens":  maxTokens,
+		"PublicBaseURL": allSettings[settings.KeyPublicBaseURL],
+		// Derived from PublicBaseURL via the same publicBaseURL() helper
+		// used by googleOAuthConfig.RedirectURL, so what the operator sees
+		// here is byte-for-byte the URL Sieve will send to OAuth providers.
+		// Surfacing it on the settings page is the lowest-friction way to
+		// avoid Error 400: redirect_uri_mismatch on the provider side.
+		"OAuthCallbackURL": s.publicBaseURL(r) + "/oauth/callback",
 		"CommandAllowlist": allSettings[settings.KeyCommandAllowlist],
 		"AdminTLSCertPath": allSettings[settings.KeyAdminTLSCertPath],
 		"AdminTLSKeyPath":  allSettings[settings.KeyAdminTLSKeyPath],
