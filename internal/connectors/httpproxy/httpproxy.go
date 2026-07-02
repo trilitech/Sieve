@@ -363,9 +363,28 @@ func (p *ProxyConnector) AuthValueScrubFilter() *policy.ResponseFilter {
 	}
 	return &policy.ResponseFilter{
 		Label:          "auth_value_scrubbed",
-		RedactPatterns: []string{regexp.QuoteMeta(p.authValue)},
+		RedactPatterns: authScrubPatterns(p.authValue),
 		Match:          "regex",
 	}
+}
+
+// authScrubPatterns returns the literal (QuoteMeta'd) redaction patterns for a
+// configured auth value. The configured value may carry a scheme — for an
+// Authorization header a bare token is stored as "Bearer <token>" — but an
+// upstream that echoes the credential back in an error body often prints the
+// RAW token with no scheme (e.g. `invalid key sk-...`). So we scrub BOTH the
+// full value and, when a scheme prefix is present, the bare credential, so an
+// echoed "Bearer sk-..." and a bare "sk-..." are both masked.
+func authScrubPatterns(authValue string) []string {
+	pats := []string{regexp.QuoteMeta(authValue)}
+	for _, scheme := range []string{"Bearer ", "Basic "} {
+		if len(authValue) > len(scheme) && strings.EqualFold(authValue[:len(scheme)], scheme) {
+			if bare := strings.TrimSpace(authValue[len(scheme):]); bare != "" {
+				pats = append(pats, regexp.QuoteMeta(bare))
+			}
+		}
+	}
+	return pats
 }
 
 // Operations returns a single "proxy" operation. The real routing happens
@@ -471,7 +490,7 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 	// curated Execute path bypasses handleProxy.
 	if p.authValueScrub && p.authValue != "" {
 		scrubFilter := policy.ResponseFilter{
-			RedactPatterns: []string{regexp.QuoteMeta(p.authValue)},
+			RedactPatterns: authScrubPatterns(p.authValue),
 			Match:          "regex",
 		}
 		// Regex-only scrub — no script command, so ApplyResponseFilters

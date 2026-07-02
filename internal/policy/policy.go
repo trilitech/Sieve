@@ -10,6 +10,7 @@ package policy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -161,16 +162,29 @@ func compileFilterPattern(pattern, match string) (*regexp.Regexp, error) {
 	return regexp.Compile("(?i)" + regexp.QuoteMeta(pattern))
 }
 
-// compileFilters compiles a pattern list under a match mode, skipping any that
-// fail to compile (best-effort, as before).
-func compileFilters(patterns []string, match string) []*regexp.Regexp {
+// compileFilters compiles a pattern list under a match mode. A pattern that
+// fails to compile is FATAL, not skipped: a protective redact/exclude whose
+// pattern is malformed must fail CLOSED (the whole response is withheld by the
+// caller) rather than silently degrade to a no-op that leaks the very content it
+// was meant to remove.
+func compileFilters(patterns []string, match string) ([]*regexp.Regexp, error) {
 	res := make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {
-		if re, err := compileFilterPattern(p, match); err == nil {
-			res = append(res, re)
+		re, err := compileFilterPattern(p, match)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s pattern %q: %w", matchLabel(match), p, err)
 		}
+		res = append(res, re)
 	}
-	return res
+	return res, nil
+}
+
+// matchLabel names the match mode for error messages.
+func matchLabel(match string) string {
+	if match == "regex" {
+		return "regex"
+	}
+	return "contains"
 }
 
 func anyMatch(res []*regexp.Regexp, s string) bool {
@@ -250,11 +264,11 @@ func (e *ResponseFilterError) Unwrap() error { return e.Err }
 // here. Each filter operates on the running result, so order is meaningful and
 // deterministic: a redaction ranked before an exclusion masks the text the
 // exclusion would otherwise key on. Returns the (possibly modified) response and
-// a summary of what was done. On a script-filter construction or evaluation
-// failure, returns the ORIGINAL response unchanged and a non-nil
-// *ResponseFilterError so the caller can fail closed rather than leak un-redacted
-// content. (A regex that fails to compile is best-effort skipped and does NOT
-// raise this error.)
+// a summary of what was done. On ANY filter failure — a script-filter
+// construct/run failure, or a redact/exclude pattern that won't compile —
+// returns the ORIGINAL response unchanged and a non-nil *ResponseFilterError so
+// the caller can fail closed rather than leak un-redacted content. A protective
+// filter that cannot run must never silently pass content through.
 func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter, contentFields []string) ([]byte, string, error) {
 	if len(filters) == 0 {
 		return responseJSON, "", nil
@@ -265,12 +279,18 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter, content
 
 	for _, f := range filters {
 		if len(f.ExcludePatterns) > 0 {
-			r, act := applyExclusion(result, f, contentFields)
+			r, act, err := applyExclusion(result, f, contentFields)
+			if err != nil {
+				return responseJSON, strings.Join(actions, "; "), err
+			}
 			result = r
 			actions = append(actions, act...)
 		}
 		if len(f.RedactPatterns) > 0 {
-			r, act := applyRedaction(result, f, contentFields)
+			r, act, err := applyRedaction(result, f, contentFields)
+			if err != nil {
+				return responseJSON, strings.Join(actions, "; "), err
+			}
 			result = r
 			actions = append(actions, act...)
 		}
@@ -294,20 +314,46 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter, content
 // effective field set), handling the standard list shapes. Field-aware filters
 // match only within content fields (a hit inside base64/metadata never drops the
 // item); a whole-response filter matches the item's serialized JSON.
-func applyExclusion(result string, f ResponseFilter, contentFields []string) (string, []string) {
-	res := compileFilters(f.ExcludePatterns, f.Match)
+func applyExclusion(result string, f ResponseFilter, contentFields []string) (string, []string, error) {
+	res, err := compileFilters(f.ExcludePatterns, f.Match)
+	if err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
+	}
 	if len(res) == 0 {
-		return result, nil
+		return result, nil, nil
 	}
 	fields := f.fieldSet(contentFields)
 
 	var data map[string]any
 	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		// Not a JSON object — only a whole-response exclude can match it.
-		if fields == nil && anyMatch(res, result) {
-			return "", []string{"response filtered: matched exclude pattern"}
+		// Not a JSON object. Only the whole-response path (no field restriction)
+		// can act on a non-object body.
+		if fields == nil {
+			// A top-level JSON array root ([...]) is a real connector shape — drop
+			// matching items rather than treating it as an opaque blob.
+			var arr []any
+			if json.Unmarshal([]byte(result), &arr) == nil {
+				kept := make([]any, 0, len(arr))
+				removed := 0
+				for _, item := range arr {
+					if itemExcluded(item, res, fields) {
+						removed++
+					} else {
+						kept = append(kept, item)
+					}
+				}
+				if removed == 0 {
+					return result, nil, nil
+				}
+				rewritten, _ := json.Marshal(kept)
+				return string(rewritten), []string{fmt.Sprintf("excluded %d item(s)", removed)}, nil
+			}
+			// Opaque body — a match nukes the whole response.
+			if anyMatch(res, result) {
+				return "", []string{"response filtered: matched exclude pattern"}, nil
+			}
 		}
-		return result, nil
+		return result, nil, nil
 	}
 
 	var actions []string
@@ -318,7 +364,8 @@ func applyExclusion(result string, f ResponseFilter, contentFields []string) (st
 		if !ok {
 			continue
 		}
-		var filtered []any
+		// Non-nil slice so an all-removed list serialises as [] rather than null.
+		filtered := make([]any, 0, len(items))
 		removed := 0
 		for _, item := range items {
 			if itemExcluded(item, res, fields) {
@@ -329,22 +376,49 @@ func applyExclusion(result string, f ResponseFilter, contentFields []string) (st
 		}
 		if removed > 0 {
 			data[key] = filtered
-			if total, ok := data["total"].(float64); ok {
-				data["total"] = total - float64(removed)
-			}
-			// Clear pagination token to prevent side-channel leakage.
-			for _, ptKey := range []string{"next_page_token", "nextPageToken"} {
-				delete(data, ptKey)
-			}
+			// Close the count + pagination side-channels: an unadjusted count or a
+			// live cursor lets an agent infer how many items were withheld and page
+			// around the exclusion.
+			decrementCountFields(data, removed)
+			clearPaginationTokens(data)
 			actions = append(actions, fmt.Sprintf("excluded %d item(s)", removed))
 			changed = true
 		}
 	}
 	if !changed {
-		return result, nil
+		return result, nil, nil
 	}
 	rewritten, _ := json.Marshal(data)
-	return string(rewritten), actions
+	return string(rewritten), actions, nil
+}
+
+// countFields and paginationKeys enumerate the response fields across connector
+// shapes that would otherwise leak an exclusion: a count of how many items exist
+// (total/count/Gmail's resultSizeEstimate) or a cursor to page past the dropped
+// item. After an exclude, every present count is decremented and every present
+// cursor is cleared.
+var countFields = []string{"total", "count", "resultSizeEstimate"}
+var paginationKeys = []string{
+	"next_page_token", "nextPageToken", "nextLink",
+	"cursor", "next_cursor", "page_token", "pageToken",
+}
+
+func decrementCountFields(data map[string]any, removed int) {
+	for _, k := range countFields {
+		if v, ok := data[k].(float64); ok {
+			nv := v - float64(removed)
+			if nv < 0 {
+				nv = 0
+			}
+			data[k] = nv
+		}
+	}
+}
+
+func clearPaginationTokens(data map[string]any) {
+	for _, k := range paginationKeys {
+		delete(data, k)
+	}
 }
 
 // itemExcluded reports whether item matches the exclude filter. Field-aware
@@ -364,10 +438,13 @@ func itemExcluded(item any, res []*regexp.Regexp, fields map[string]bool) bool {
 // otherwise (the connector-agnostic auth-value scrub / back-compat path). A
 // filter that masks ≥1 match is recorded by its label (audit attribution, e.g.
 // auth_value_scrubbed).
-func applyRedaction(result string, f ResponseFilter, contentFields []string) (string, []string) {
-	res := compileFilters(f.RedactPatterns, f.Match)
+func applyRedaction(result string, f ResponseFilter, contentFields []string) (string, []string, error) {
+	res, err := compileFilters(f.RedactPatterns, f.Match)
+	if err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
+	}
 	if len(res) == 0 {
-		return result, nil
+		return result, nil, nil
 	}
 	fields := f.fieldSet(contentFields)
 	matched := false
@@ -395,15 +472,29 @@ func applyRedaction(result string, f ResponseFilter, contentFields []string) (st
 	}
 
 	if matched {
-		return result, []string{redactLabel(f)}
+		return result, []string{redactLabel(f)}, nil
 	}
-	return result, nil
+	return result, nil, nil
 }
 
-// applyScript runs an opaque post-filter rewrite on the running result. A
-// construct/run failure returns a *ResponseFilterError so the caller can fail
-// closed (never leak the un-rewritten content).
+// applyScript runs an opaque post-filter rewrite on the running result. It fails
+// CLOSED via a *ResponseFilterError whenever it cannot positively confirm a
+// clean outcome, so a broken/denying scrub can never leak the un-rewritten
+// content:
+//   - the script path is re-validated against the allowlist at exec time
+//     (defense-in-depth: a path that left the allowlist since save, or a
+//     tampered config, must not reach the interpreter — mirrors runScriptCondition);
+//   - a construct or evaluation error fails closed;
+//   - a rewrite is applied;
+//   - a genuine {"action":"allow"} with no rewrite is a legit no-op (the script
+//     inspected the response and chose not to modify it);
+//   - ANY other outcome (deny / approval_required / a runtime failure that the
+//     evaluator surfaces as a deny PolicyDecision with a nil error) fails closed
+//     — returning the un-rewritten response here was the original fail-OPEN bug.
 func applyScript(result string, f ResponseFilter) (string, []string, error) {
+	if err := ValidateScriptPath(f.ScriptPath); err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
+	}
 	eval, err := NewScriptEvaluator(map[string]any{"command": f.ScriptCommand, "script": f.ScriptPath})
 	if err != nil {
 		return result, nil, &ResponseFilterError{Filter: f, Err: err}
@@ -419,5 +510,12 @@ func applyScript(result string, f ResponseFilter) (string, []string, error) {
 	if scriptDec.Rewrite != "" {
 		return scriptDec.Rewrite, []string{"script-filtered"}, nil
 	}
-	return result, nil, nil
+	if scriptDec.Action == "allow" {
+		return result, nil, nil
+	}
+	reason := scriptDec.Reason
+	if reason == "" {
+		reason = fmt.Sprintf("script filter returned no rewrite (action %q)", scriptDec.Action)
+	}
+	return result, nil, &ResponseFilterError{Filter: f, Err: errors.New(reason)}
 }

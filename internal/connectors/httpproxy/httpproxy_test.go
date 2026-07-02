@@ -472,6 +472,43 @@ func TestAuthValueScrubFilterReturnsFilterWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestAuthValueScrubBareTokenWithAuthorizationHeader is the regression test for
+// M3: for an Authorization header a bare token is stored as "Bearer <token>",
+// but an upstream that echoes the RAW token (no scheme) in an error body must
+// still be scrubbed. The filter must carry patterns for BOTH the full value and
+// the bare credential.
+func TestAuthValueScrubBareTokenWithAuthorizationHeader(t *testing.T) {
+	const token = "sk-ant-rawsecret123"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		// Upstream echoes the bare token, no "Bearer " scheme.
+		io.WriteString(w, `{"error":"invalid key `+token+`"}`)
+	}))
+	defer upstream.Close()
+
+	pc := makeProxy(t, upstream, "Authorization", token) // bare → stored "Bearer <token>"
+
+	f := pc.AuthValueScrubFilter()
+	if f == nil {
+		t.Fatal("scrub filter must be enabled")
+	}
+	if len(f.RedactPatterns) < 2 {
+		t.Fatalf("expected patterns for both the scheme-prefixed value and the bare token, got %v", f.RedactPatterns)
+	}
+
+	res, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "/v1/anything",
+	})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	body := res.(*ExecuteResult).Body
+	if strings.Contains(body, token) {
+		t.Errorf("bare token (echoed without a scheme) must be scrubbed; body=%q", body)
+	}
+}
+
 // --- auth_query_param injection ---
 
 // makeQueryAuthProxy builds a ProxyConnector configured for query-string auth
