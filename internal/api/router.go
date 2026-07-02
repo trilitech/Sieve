@@ -929,24 +929,31 @@ func (rt *Router) approvalStatus(w http.ResponseWriter, r *http.Request) {
 // actually PERMITTED to use for this operation: with several Google accounts,
 // picking the first one blindly would resolve to an account the token isn't
 // granted, get denied, and never try the account the grant targets — making a
-// valid IAM grant unusable via "me". So for "me" we IAM-probe the candidates and
-// choose the first non-deny; the per-op Decide in gmailExecute remains the
-// authoritative gate.
-func (rt *Router) resolveGmailConnection(ctx context.Context, tok *tokens.Token, userId, operation string, params map[string]any) (string, error) {
+// valid IAM grant unusable via "me". So for "me" with multiple accounts we probe
+// the candidates and choose the first non-deny.
+//
+// When the probe decides a connection, that decision is RETURNED so gmailExecute
+// can reuse it rather than re-evaluating (a redundant second Decide). This matters
+// because Decide is not free of observable work: a rule with a script-mode
+// condition runs its script during evaluation — those decision-scripts are
+// side-effect-free by contract, but probing still spawns them, so we avoid running
+// them twice for the chosen connection. A nil decision means "not probed" (alias,
+// single account, or fallback) and gmailExecute performs the authoritative Decide.
+func (rt *Router) resolveGmailConnection(ctx context.Context, tok *tokens.Token, userId, operation string, params map[string]any) (string, *policy.PolicyDecision, error) {
 	if userId != "me" {
 		// Treat userId as a connection alias — verify it's allowed and is gmail.
 		// (IAM: per-op Decide is the real gate; this only resolves the alias.)
 		if !rt.tokenConnectionAllowed(tok, userId) {
-			return "", fmt.Errorf("connection %q not allowed for this token", userId)
+			return "", nil, fmt.Errorf("connection %q not allowed for this token", userId)
 		}
 		conn, err := rt.connections.Get(userId)
 		if err != nil {
-			return "", fmt.Errorf("connection %q not found", userId)
+			return "", nil, fmt.Errorf("connection %q not found", userId)
 		}
 		if conn.ConnectorType != "google" {
-			return "", fmt.Errorf("connection %q is not a gmail connection", userId)
+			return "", nil, fmt.Errorf("connection %q is not a gmail connection", userId)
 		}
-		return userId, nil
+		return userId, nil, nil
 	}
 
 	// "me" — the token's Google connections, in order.
@@ -960,14 +967,14 @@ func (rt *Router) resolveGmailConnection(ctx context.Context, tok *tokens.Token,
 	}
 	switch len(candidates) {
 	case 0:
-		return "", fmt.Errorf("no gmail connection available for this token")
+		return "", nil, fmt.Errorf("no gmail connection available for this token")
 	case 1:
 		// Single account: the Decide gate in gmailExecute is authoritative.
-		return candidates[0], nil
+		return candidates[0], nil, nil
 	}
 	// Multiple accounts: pick the first the token is permitted for this op, so a
-	// grant scoped to a non-first account is reachable via "me". Decide is pure
-	// (no side effects), so probing is safe.
+	// grant scoped to a non-first account is reachable via "me". Return the probe's
+	// decision for the chosen connection so gmailExecute doesn't re-Decide it.
 	for _, connID := range candidates {
 		conn, err := rt.connections.GetConnector(connID)
 		if err != nil {
@@ -978,12 +985,13 @@ func (rt *Router) resolveGmailConnection(ctx context.Context, tok *tokens.Token,
 			continue
 		}
 		if decision.Action != "deny" {
-			return connID, nil
+			return connID, decision, nil
 		}
 	}
 	// None permitted (or all errored/dead) — fall back to the first account so the
-	// caller gets the normal deny/reauth response against a concrete connection.
-	return candidates[0], nil
+	// caller gets the normal deny/reauth response against a concrete connection
+	// (gmailExecute performs the authoritative Decide since we pass no decision).
+	return candidates[0], nil, nil
 }
 
 // gmailExecute runs an operation through the full policy pipeline and returns the result.
@@ -1000,7 +1008,7 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 		userId = "me"
 	}
 
-	connID, err := rt.resolveGmailConnection(r.Context(), tok, userId, operation, params)
+	connID, preDecision, err := rt.resolveGmailConnection(r.Context(), tok, userId, operation, params)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -1018,11 +1026,16 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 		return
 	}
 
-	// Policy check (IAM decision source when enabled, else legacy).
-	decision, err := rt.decide(r.Context(), tok, conn, connID, operation, params)
-	if err != nil {
-		writeError(w, http.StatusForbidden, "policy error: "+err.Error())
-		return
+	// Policy check (IAM decision source when enabled, else legacy). Reuse the
+	// decision the "me" probe already computed for this connection, if any, so we
+	// don't evaluate (and re-run any script-mode condition) twice.
+	decision := preDecision
+	if decision == nil {
+		decision, err = rt.decide(r.Context(), tok, conn, connID, operation, params)
+		if err != nil {
+			writeError(w, http.StatusForbidden, "policy error: "+err.Error())
+			return
+		}
 	}
 
 	if decision.Action == "deny" {

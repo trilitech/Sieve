@@ -416,20 +416,6 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("add iam_policies.spec_json: %w", err)
 	}
 
-	// tokens.role_ids: a token is now assigned a SET of roles (RBAC, spec §5.1).
-	// Additive; backfill the JSON array from the legacy single role_id so existing
-	// tokens keep working (the IAM engine composes the union of role_ids).
-	if err := addColumnIfMissing(db, "tokens", "role_ids",
-		`ALTER TABLE tokens ADD COLUMN role_ids TEXT NOT NULL DEFAULT '[]'`); err != nil {
-		return fmt.Errorf("add tokens.role_ids: %w", err)
-	}
-	if _, err := db.Exec(
-		`UPDATE tokens SET role_ids = json_array(role_id)
-		 WHERE (role_ids IS NULL OR role_ids = '' OR role_ids = '[]') AND role_id != ''`,
-	); err != nil {
-		return fmt.Errorf("backfill tokens.role_ids: %w", err)
-	}
-
 	if hasOldColumn {
 		// SQLite doesn't support DROP COLUMN in older versions, so we rebuild
 		// the table to replace policy_id (TEXT) with policy_ids (JSON array).
@@ -600,6 +586,25 @@ func (db *DB) migrate() error {
 				return fmt.Errorf("migrate tokens to roles: %w", err)
 			}
 		}
+	}
+
+	// tokens.role_ids: a token is now assigned a SET of roles (RBAC, spec §5.1).
+	// Additive; backfill the JSON array from the legacy single role_id so existing
+	// tokens keep working (the IAM engine composes the union of role_ids).
+	//
+	// MUST run AFTER the tokens_v2/v3 rebuilds above: on a legacy DB those rebuilds
+	// create `role_id` (tokens_v3) and recreate the tokens table without role_ids,
+	// so adding+backfilling role_ids earlier would either reference a not-yet-created
+	// role_id column (startup abort) or be silently dropped by the later rebuild.
+	if err := addColumnIfMissing(db, "tokens", "role_ids",
+		`ALTER TABLE tokens ADD COLUMN role_ids TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return fmt.Errorf("add tokens.role_ids: %w", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE tokens SET role_ids = json_array(role_id)
+		 WHERE (role_ids IS NULL OR role_ids = '' OR role_ids = '[]') AND role_id != ''`,
+	); err != nil {
+		return fmt.Errorf("backfill tokens.role_ids: %w", err)
 	}
 
 	return nil

@@ -548,11 +548,15 @@ func (s *Service) ListFilters() ([]iam.Filter, error) {
 	return out, rows.Err()
 }
 
-// FilterInUse reports whether any stored guardrail (or, for back-compat, policy)
-// references the named filter in an @filters annotation. The admin UI refuses to
-// delete an in-use filter, since removing it would fail-close every guardrail
-// that references it. @filters live on guardrails (spec §7.2); legacy policies
-// are still scanned in case a migrated rule retained one.
+// FilterInUse reports whether any stored transform attachment, guardrail (or,
+// for back-compat, policy) references the named filter/definition in an @filters
+// annotation. The admin UI refuses to delete an in-use definition, since removing
+// it would leave an enabled attachment whose @filters reference cannot be resolved
+// — the next matching request would then fail closed with an unknown-filter deny.
+// A reusable transform DEFINITION is attached by reference: BuildAttachmentCedar
+// emits @filters(<name>) into iam_transforms, so those MUST be scanned too. @filters
+// also live on guardrails (spec §7.2); legacy policies are scanned in case a
+// migrated rule retained one.
 func (s *Service) FilterInUse(name string) (bool, error) {
 	refsName := func(cedar string) bool {
 		for _, m := range filtersAnnRE.FindAllStringSubmatch(cedar, -1) {
@@ -563,6 +567,15 @@ func (s *Service) FilterInUse(name string) (bool, error) {
 			}
 		}
 		return false
+	}
+	transforms, err := s.ListTransforms()
+	if err != nil {
+		return false, err
+	}
+	for _, t := range transforms {
+		if refsName(t.Cedar) {
+			return true, nil
+		}
 	}
 	guards, err := s.ListGuardrails()
 	if err != nil {

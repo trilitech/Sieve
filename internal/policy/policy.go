@@ -385,6 +385,13 @@ func applyExclusion(result string, f ResponseFilter, contentFields []string) (st
 			changed = true
 		}
 	}
+	// GraphQL connection shape (Linear/GitHub v4): items live under nested
+	// `data.<conn>.nodes` arrays, not the top-level keys above. Recurse and drop
+	// matching nodes so an exclude on e.g. linear_list_issues actually filters.
+	if nested := excludeFromNodes(data, res, fields); nested > 0 {
+		actions = append(actions, fmt.Sprintf("excluded %d item(s)", nested))
+		changed = true
+	}
 	if !changed {
 		return result, nil, nil
 	}
@@ -392,12 +399,61 @@ func applyExclusion(result string, f ResponseFilter, contentFields []string) (st
 	return string(rewritten), actions, nil
 }
 
+// excludeFromNodes recurses the decoded response and applies the exclude to any
+// GraphQL-style `nodes` array (the Linear/GitHub-v4 connection shape,
+// data.<conn>.nodes). It returns the number of items removed. On each object that
+// owns a `nodes` array it also closes the side-channels — decrementing count fields
+// (incl. GraphQL `totalCount`) and clearing pagination (top-level cursors and a
+// nested `pageInfo`) — mirroring the top-level list-key handling. It does not
+// recurse into a `nodes` array's own items, so a dropped item is removed whole and
+// sub-connections of kept items are left intact.
+func excludeFromNodes(v any, res []*regexp.Regexp, fields map[string]bool) int {
+	removed := 0
+	switch x := v.(type) {
+	case map[string]any:
+		if nodes, ok := x["nodes"].([]any); ok {
+			filtered := make([]any, 0, len(nodes))
+			r := 0
+			for _, item := range nodes {
+				if itemExcluded(item, res, fields) {
+					r++
+				} else {
+					filtered = append(filtered, item)
+				}
+			}
+			if r > 0 {
+				x["nodes"] = filtered
+				decrementCountFields(x, r)
+				clearPaginationTokens(x)
+				if pi, ok := x["pageInfo"].(map[string]any); ok {
+					delete(pi, "endCursor")
+					delete(pi, "startCursor")
+					pi["hasNextPage"] = false
+					pi["hasPreviousPage"] = false
+				}
+				removed += r
+			}
+		}
+		for k, val := range x {
+			if k == "nodes" {
+				continue // handled at this level; don't descend into the item list
+			}
+			removed += excludeFromNodes(val, res, fields)
+		}
+	case []any:
+		for _, e := range x {
+			removed += excludeFromNodes(e, res, fields)
+		}
+	}
+	return removed
+}
+
 // countFields and paginationKeys enumerate the response fields across connector
 // shapes that would otherwise leak an exclusion: a count of how many items exist
 // (total/count/Gmail's resultSizeEstimate) or a cursor to page past the dropped
 // item. After an exclude, every present count is decremented and every present
 // cursor is cleared.
-var countFields = []string{"total", "count", "resultSizeEstimate"}
+var countFields = []string{"total", "count", "resultSizeEstimate", "totalCount"}
 var paginationKeys = []string{
 	"next_page_token", "nextPageToken", "nextLink",
 	"cursor", "next_cursor", "page_token", "pageToken",
