@@ -227,7 +227,7 @@ func (rt *Router) listConnections(w http.ResponseWriter, r *http.Request) {
 		Status      string `json:"status"`
 	}
 
-	connIDs := rt.tokenCandidateConnections(tok)
+	connIDs := rt.tokenVisibleConnections(r.Context(), tok)
 	result := make([]connInfo, 0, len(connIDs))
 	for _, connID := range connIDs {
 		conn, err := rt.connections.Get(connID)
@@ -763,6 +763,60 @@ func (rt *Router) tokenCandidateConnections(tok *tokens.Token) []string {
 	return ids
 }
 
+// tokenVisibleConnections returns the connections this token may DISCOVER: one is
+// included only if an IAM decision for a representative read operation on it is
+// not a deny. Discovery must not leak connections the token has no grant for —
+// default-deny at execution is too late, since listing has already exposed the
+// id / display name / status (and, for Gmail, the account email). The per-op
+// Decide at execution remains the authoritative gate; this only scopes what
+// /api/v1/connections and /gmail/v1/users reveal. (Decide with nil params is
+// evaluated once per connection; a connection whose only grants are param- or
+// script-conditioned may be hidden from discovery yet still usable at exec —
+// erring toward hiding is the safe direction for a discovery surface.)
+func (rt *Router) tokenVisibleConnections(ctx context.Context, tok *tokens.Token) []string {
+	conns, err := rt.connections.List()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(conns))
+	for _, c := range conns {
+		if rt.iam == nil {
+			// IAM unwired (defensive): preserve prior list-everything behavior.
+			out = append(out, c.ID)
+			continue
+		}
+		op := rt.representativeReadOp(c.ConnectorType)
+		if op == "" {
+			continue // no operation to probe → not discoverable
+		}
+		dec, err := rt.iam.Decide(ctx, rt.registry, tok.ID, tok.RoleIDs, c.ConnectorType, c.ID, c.Status, op, nil)
+		if err != nil || dec == nil || dec.Action == "deny" {
+			continue
+		}
+		out = append(out, c.ID)
+	}
+	return out
+}
+
+// representativeReadOp picks an operation name to probe a connector's
+// discoverability with: the first read-only op, else the first op, else "".
+func (rt *Router) representativeReadOp(connType string) string {
+	meta, ok := rt.registry.Meta(connType)
+	if !ok {
+		return ""
+	}
+	first := ""
+	for _, o := range meta.Operations {
+		if first == "" {
+			first = o.Name
+		}
+		if o.ReadOnly {
+			return o.Name
+		}
+	}
+	return first
+}
+
 // tokenFromContext extracts the validated token from the request context.
 func tokenFromContext(r *http.Request) *tokens.Token {
 	tok, _ := r.Context().Value(tokenContextKey).(*tokens.Token)
@@ -1142,7 +1196,7 @@ func (rt *Router) gmailListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var users []userInfo
-	for _, connID := range rt.tokenCandidateConnections(tok) {
+	for _, connID := range rt.tokenVisibleConnections(r.Context(), tok) {
 		conn, err := rt.connections.Get(connID)
 		if err != nil {
 			continue

@@ -13,7 +13,7 @@ import (
 
 	"github.com/trilitech/Sieve/internal/api"
 	"github.com/trilitech/Sieve/internal/connections"
-	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
 
@@ -101,18 +101,23 @@ func TestRouter_ListConnections_IncludesStatus(t *testing.T) {
 	if err := env.Connections.SetStatus("disabled-one", connections.StatusDisabled); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	// Bind the second connection to the same role so both appear in the
-	// list response.
+	// Grant the second connection to the same role so it appears in the list
+	// response. Discovery now filters by IAM (a connection the token has no grant
+	// for is not leaked), so the connection must be granted to be listed — its
+	// status (disabled) is still surfaced once visible.
 	role, err := env.Roles.GetByName("test-role")
 	if err != nil {
 		t.Fatalf("get role: %v", err)
 	}
-	bindings := append(role.Bindings, roles.Binding{
-		ConnectionID: "disabled-one",
-		PolicyIDs:    nil, // no policies = deny-all, but list endpoint doesn't gate on policy
-	})
-	if err := env.Roles.Update(role.ID, role.Name, bindings); err != nil {
-		t.Fatalf("update role: %v", err)
+	grant, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: role.ID, Effect: "allow", ConnectorType: "mock",
+		OpScope: "read", ConnectionIDs: []string{"disabled-one"},
+	}, env.Mock.Meta().Operations)
+	if err != nil {
+		t.Fatalf("build grant: %v", err)
+	}
+	if _, err := env.IAM.CreatePolicy("disabled-grant", "", grant, true); err != nil {
+		t.Fatalf("create grant: %v", err)
 	}
 
 	resp := doRequest(t, "GET", url+"/api/v1/connections", tok, "")

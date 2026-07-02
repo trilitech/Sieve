@@ -1311,6 +1311,24 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
 
 	// Capability rollup: for each token, the union of its roles' rule summaries —
 	// so the operator can see what a token can actually DO, not just role names.
+	caps := s.tokenCaps(toks)
+
+	data := map[string]any{
+		"Active":    "tokens",
+		"Tokens":    toks,
+		"Roles":     rolesList,
+		"RoleNames": roleNames,
+		"Caps":      caps,
+		"Filter":    filter,
+	}
+	s.render(w, r, "tokens", data)
+}
+
+// tokenCaps builds the per-token capability rollup the tokens.html template reads
+// via `index $.Caps .ID`: for each token, the deduped union of its roles' rule
+// summaries. Both the list page and the create-success render must supply it —
+// tokens.html evaluates `index $.Caps .ID`, which errors on a nil map.
+func (s *Server) tokenCaps(toks []tokens.Token) map[string][]string {
 	byRole := s.ruleSummariesByRole()
 	caps := make(map[string][]string, len(toks))
 	for _, t := range toks {
@@ -1326,16 +1344,7 @@ func (s *Server) handleTokens(w http.ResponseWriter, r *http.Request) {
 		}
 		caps[t.ID] = lines
 	}
-
-	data := map[string]any{
-		"Active":    "tokens",
-		"Tokens":    toks,
-		"Roles":     rolesList,
-		"RoleNames": roleNames,
-		"Caps":      caps,
-		"Filter":    filter,
-	}
-	s.render(w, r, "tokens", data)
+	return caps
 }
 
 // parseExpiry parses a token-expiry duration. It accepts standard Go durations
@@ -1431,11 +1440,20 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// tokens.html reads RoleNames + Caps (index $.Caps .ID); both must be supplied
+	// here too, or the create-success render errors once any token exists.
+	roleNames := make(map[string]string, len(rolesList))
+	for _, role := range rolesList {
+		roleNames[role.ID] = role.Name
+	}
+
 	data := map[string]any{
 		"Active":         "tokens",
 		"Tokens":         toks,
 		"Connections":    connList,
 		"Roles":          rolesList,
+		"RoleNames":      roleNames,
+		"Caps":           s.tokenCaps(toks),
 		"PlaintextToken": result.PlaintextToken,
 		"CreatedToken":   result.Token,
 	}
