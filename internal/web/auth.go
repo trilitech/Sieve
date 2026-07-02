@@ -538,4 +538,3 @@ func isLoopbackClient(r *http.Request) bool {
 	}
 	return ip.IsLoopback()
 }
-

@@ -29,7 +29,7 @@ func TestRouter_OperationNotEnabled_Returns501(t *testing.T) {
 	env.Mock.Errors["list_emails"] = fmt.Errorf("%w: pretend this op is gated until vNext", connector.ErrOperationNotEnabled)
 
 	router := api.NewRouter(
-		env.Tokens, env.Connections, env.Policies, env.Roles, env.Approval, env.Audit,
+		env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit,
 	)
 	srv := httptest.NewServer(router.Handler())
 	t.Cleanup(srv.Close)

@@ -21,7 +21,7 @@ func TestDocsRejectsPathTraversal(t *testing.T) {
 	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := NewServer(
-		env.Tokens, env.Connections, env.Policies, env.Roles,
+		env.Tokens, env.Connections, env.Roles,
 		env.Registry, env.Approval, env.Audit,
 		"", env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",

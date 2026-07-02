@@ -10,7 +10,6 @@ import (
 	"github.com/trilitech/Sieve/internal/operator"
 )
 
-
 func newTestService(t *testing.T) *operator.Service {
 	t.Helper()
 	db, err := database.New(filepath.Join(t.TempDir(), "test.db"))

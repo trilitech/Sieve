@@ -30,7 +30,7 @@ import (
 	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
-	"github.com/trilitech/Sieve/internal/policies"
+	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/secrets"
@@ -93,17 +93,26 @@ type ContentBlock struct {
 type Server struct {
 	tokens      *tokens.Service
 	connections *connections.Service
-	policies    *policies.Service
+	iam         *iampolicies.Service
+	registry    *connector.Registry
 	roles       *roles.Service
-	approval *approval.Queue
-	audit    *audit.Logger
+	approval    *approval.Queue
+	audit       *audit.Logger
+}
+
+// decide is the MCP decision source: IAM is the sole engine. The non-blocking
+// MCP approval shape is unchanged.
+func (s *Server) decide(ctx context.Context, tok *tokens.Token, connType, connID, connStatus, op string, params map[string]any) (*policy.PolicyDecision, error) {
+	// RBAC: the token's whole role set composes (spec §5.1).
+	return s.iam.Decide(ctx, s.registry, tok.ID, tok.RoleIDs, connType, connID, connStatus, op, params)
 }
 
 // NewServer creates a new MCP Server.
 func NewServer(
 	tokensSvc *tokens.Service,
 	connsSvc *connections.Service,
-	policiesSvc *policies.Service,
+	iamSvc *iampolicies.Service,
+	registry *connector.Registry,
 	rolesSvc *roles.Service,
 	approvalQ *approval.Queue,
 	auditLog *audit.Logger,
@@ -111,10 +120,11 @@ func NewServer(
 	return &Server{
 		tokens:      tokensSvc,
 		connections: connsSvc,
-		policies:    policiesSvc,
+		iam:         iamSvc,
+		registry:    registry,
 		roles:       rolesSvc,
-		approval: approvalQ,
-		audit:    auditLog,
+		approval:    approvalQ,
+		audit:       auditLog,
 	}
 }
 
@@ -194,18 +204,9 @@ func (s *Server) handleInitialize(id any) *JSONRPCResponse {
 
 // handleToolsList builds and returns tool definitions based on the token's connections.
 func (s *Server) handleToolsList(id any, tok *tokens.Token) *JSONRPCResponse {
-	role, err := s.roles.Get(tok.RoleID)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "role not found: " + err.Error()},
-		}
-	}
-
 	var tools []ToolDef
 
-	connIDs := role.ConnectionIDs()
+	connIDs := s.tokenConnectionIDs(tok)
 	// Determine if there are multiple connections (affects tool naming).
 	multiConn := len(connIDs) > 1
 
@@ -249,64 +250,6 @@ func (s *Server) handleToolsList(id any, tok *tokens.Token) *JSONRPCResponse {
 		},
 	})
 
-	tools = append(tools, ToolDef{
-		Name:        "list_policies",
-		Description: "List all available policies with their names and rule summaries.",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	})
-
-	tools = append(tools, ToolDef{
-		Name:        "get_my_policy",
-		Description: "Get the full policy (rules) that applies to this token.",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	})
-
-	tools = append(tools, ToolDef{
-		Name:        "get_policy_schema",
-		Description: "Get the full JSON schema for policy rules. Use this before calling propose_policy to understand exactly what match fields, actions, and filters are available.",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	})
-
-	tools = append(tools, ToolDef{
-		Name:        "propose_policy",
-		Description: "Propose a new policy or changes to an existing policy. The proposal goes to the human admin for approval — you cannot enact policy changes directly. Call get_policy_schema first to see all available match fields and actions.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"name": map[string]any{
-					"type":        "string",
-					"description": "Name for the proposed policy",
-				},
-				"description": map[string]any{
-					"type":        "string",
-					"description": "Human-readable description of what this policy does and why you're proposing it",
-				},
-				"default_action": map[string]any{
-					"type":        "string",
-					"enum":        []string{"allow", "deny"},
-					"description": "Action when no rule matches. Use 'deny' for fail-closed (recommended).",
-				},
-				"rules": map[string]any{
-					"type":        "array",
-					"description": "Ordered array of policy rules. First matching rule wins.",
-					"items": map[string]any{
-						"type": "object",
-					},
-				},
-			},
-			"required": []string{"name", "description", "rules"},
-		},
-	})
-
 	return &JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -333,28 +276,10 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	switch call.Name {
 	case "list_connections":
 		return s.handleListConnections(id, tok, start)
-	case "list_policies":
-		return s.handleListPolicies(id, tok, start)
-	case "get_my_policy":
-		return s.handleGetMyPolicy(id, tok, start)
-	case "get_policy_schema":
-		return s.handleGetPolicySchema(id, tok, start)
-	case "propose_policy":
-		return s.handleProposePolicy(id, tok, start, call.Arguments)
-	}
-
-	// Resolve the role for this token.
-	role, err := s.roles.Get(tok.RoleID)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "role not found: " + err.Error()},
-		}
 	}
 
 	// Resolve connection and operation from the tool name.
-	connID, opName, err := s.resolveToolCall(role, call)
+	connID, opName, err := s.resolveToolCall(tok, call)
 	if err != nil {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -363,10 +288,10 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		}
 	}
 
-	// Security: verify the resolved connection is in the role's allow-list.
+	// Security: verify the resolved connection is reachable by this token.
 	// This prevents an agent from accessing connections it wasn't granted,
 	// even if it crafts a tool name or "connection" argument manually.
-	if !s.tokenHasConnection(role, connID) {
+	if !s.tokenHasConnection(tok, connID) {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      id,
@@ -400,30 +325,11 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		}
 	}
 
-	// Build policy request.
-	policyReq := &policy.PolicyRequest{
-		Operation:  opName,
-		Connection: connID,
-		Connector:  conn.ConnectorType,
-		Params:     call.Arguments,
-		Metadata:   call.Arguments,
-		Phase:      "pre",
-	}
-
-	// Get or create the policy evaluator for this connection's policies.
-	evaluator, err := s.getEvaluator(role, connID)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "policy evaluator error: " + err.Error()},
-		}
-	}
-
-	// Phase 1: Pre-execution policy check. The Phase field is not set here,
-	// so it defaults to "pre" in the evaluator. This is the primary access
-	// control gate — deny/approval_required decisions stop execution entirely.
-	decision, err := evaluator.Evaluate(ctx, policyReq)
+	// Pre-execution policy check — the primary access-control gate. The
+	// decision SOURCE is the IAM engine when enabled, else the legacy
+	// evaluator; both return a *policy.PolicyDecision so deny/approval_required
+	// handling below is identical.
+	decision, err := s.decide(ctx, tok, conn.ConnectorType, connID, conn.Status, opName, call.Arguments)
 	if err != nil {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -590,7 +496,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 	// NOT reach the agent.
 	var reason string
 	if len(decision.Filters) > 0 {
-		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters)
+		filtered, summary, ferr := policy.ApplyResponseFilters(resultJSON, decision.Filters, s.registry.ContentFieldKeys(conn.ConnectorType))
 		if ferr != nil {
 			// Log the detailed failure server-side; keep the
 			// agent-facing message generic so internal details (script
@@ -620,17 +526,8 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 
 // handleListConnections returns the token's available connections.
 func (s *Server) handleListConnections(id any, tok *tokens.Token, start time.Time) *JSONRPCResponse {
-	role, err := s.roles.Get(tok.RoleID)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "role not found: " + err.Error()},
-		}
-	}
-
 	var conns []map[string]string
-	for _, connID := range role.ConnectionIDs() {
+	for _, connID := range s.tokenConnectionIDs(tok) {
 		conn, err := s.connections.Get(connID)
 		if err != nil {
 			continue
@@ -656,291 +553,11 @@ func (s *Server) handleListConnections(id any, tok *tokens.Token, start time.Tim
 	}
 }
 
-func (s *Server) handleListPolicies(id any, tok *tokens.Token, start time.Time) *JSONRPCResponse {
-	pols, err := s.policies.List()
-	if err != nil {
-		return &JSONRPCResponse{JSONRPC: "2.0", ID: id, Error: &JSONRPCError{Code: -32000, Message: err.Error()}}
-	}
-
-	var summaries []map[string]any
-	for _, p := range pols {
-		summary := map[string]any{
-			"id":   p.ID,
-			"name": p.Name,
-			"type": p.PolicyType,
-		}
-		if rules, ok := p.PolicyConfig["rules"].([]any); ok {
-			summary["rule_count"] = len(rules)
-		}
-		summaries = append(summaries, summary)
-	}
-
-	resultJSON, _ := json.Marshal(summaries)
-	s.logAudit(tok, "", "list_policies", nil, "allow", "", time.Since(start).Milliseconds())
-
-	return &JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Result:  ToolCallResult{Content: []ContentBlock{{Type: "text", Text: string(resultJSON)}}},
-	}
-}
-
-func (s *Server) handleGetMyPolicy(id any, tok *tokens.Token, start time.Time) *JSONRPCResponse {
-	role, err := s.roles.Get(tok.RoleID)
-	if err != nil {
-		return &JSONRPCResponse{JSONRPC: "2.0", ID: id, Error: &JSONRPCError{Code: -32000, Message: "role not found: " + err.Error()}}
-	}
-
-	var results []map[string]any
-	for _, binding := range role.Bindings {
-		var bindingPolicies []map[string]any
-		for _, pid := range binding.PolicyIDs {
-			p, err := s.policies.Get(pid)
-			if err != nil {
-				return &JSONRPCResponse{JSONRPC: "2.0", ID: id, Error: &JSONRPCError{Code: -32000, Message: err.Error()}}
-			}
-			bindingPolicies = append(bindingPolicies, map[string]any{
-				"id":     p.ID,
-				"name":   p.Name,
-				"type":   p.PolicyType,
-				"config": p.PolicyConfig,
-			})
-		}
-		results = append(results, map[string]any{
-			"connection_id": binding.ConnectionID,
-			"policies":      bindingPolicies,
-		})
-	}
-
-	resultJSON, _ := json.Marshal(results)
-	s.logAudit(tok, "", "get_my_policy", nil, "allow", "", time.Since(start).Milliseconds())
-
-	return &JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Result:  ToolCallResult{Content: []ContentBlock{{Type: "text", Text: string(resultJSON)}}},
-	}
-}
-
-func (s *Server) handleGetPolicySchema(id any, tok *tokens.Token, start time.Time) *JSONRPCResponse {
-	schema := map[string]any{
-		"description": "A policy has an ordered list of rules (first match wins) and a default_action (\"allow\" or \"deny\"). Each rule has a match block (all conditions ANDed; omit for catch-all) and an action.",
-		"actions": map[string]any{
-			"allow":             "Permit the operation.",
-			"deny":              "Block the operation. Optionally set 'reason'.",
-			"approval_required": "Queue for human approval before executing.",
-			"filter":            "Like allow, but apply content filters (filter_exclude / redact_patterns) to the response before returning it.",
-		},
-		"common_rule_fields": map[string]any{
-			"action":          "Required. One of: allow, deny, approval_required, filter.",
-			"reason":          "Optional. Human-readable reason shown when this rule fires.",
-			"filter_exclude":  "For filter action: remove response items containing this string (case-insensitive).",
-			"redact_patterns": "For filter action: array of regex patterns replaced with [REDACTED].",
-		},
-		"common_match_fields": map[string]any{
-			"operations": "Array of operation names this rule applies to. Empty or omitted = match all operations.",
-		},
-		"scopes": map[string]any{
-			"gmail": map[string]any{
-				"operations": []string{"list_emails", "read_email", "read_thread", "get_attachment", "create_draft", "update_draft", "reply", "send_email", "send_draft", "add_label", "remove_label", "archive", "list_labels"},
-				"match_fields": map[string]any{
-					"from":             "Array of sender patterns (glob: \"*@company.com\").",
-					"to":               "Array of recipient patterns (glob: \"*@company.com\").",
-					"subject_contains": "Array of strings — match if subject contains any.",
-					"content_contains": "String — match if response body contains this.",
-					"labels":           "Array of label names — match if email has any of these.",
-				},
-				"example": map[string]any{
-					"default_action": "deny",
-					"rules": []any{
-						map[string]any{"match": map[string]any{"operations": []any{"list_emails", "read_email"}}, "action": "allow"},
-						map[string]any{"match": map[string]any{"operations": []any{"send_email"}, "to": []any{"*@company.com"}}, "action": "approval_required"},
-					},
-				},
-			},
-			"llm": map[string]any{
-				"description": "For LLM API connections (Anthropic, OpenAI, Gemini, Bedrock).",
-				"operations":  []string{"chat", "complete", "embed"},
-				"match_fields": map[string]any{
-					"model":                  "Array of model patterns (glob: \"claude-*\", \"gpt-4*\").",
-					"providers":              "Array of provider names (exact: \"anthropic\", \"openai\", \"gemini\", \"bedrock\").",
-					"max_tokens":             "Integer — deny if request's max_tokens exceeds this.",
-					"max_cost":               "Float — deny if estimated cost per request exceeds this (dollars).",
-					"extended_thinking":      "\"enabled\" or \"disabled\". Anthropic only.",
-					"system_prompt_contains": "String — match if system prompt contains this.",
-					"max_temperature":        "Float — deny if temperature exceeds this. OpenAI.",
-					"json_mode":              "\"required\" or \"forbidden\". OpenAI.",
-					"grounding":              "\"enabled\" or \"disabled\". Gemini.",
-					"safety_threshold":       "Safety level. Gemini.",
-				},
-				"example": map[string]any{
-					"default_action": "deny",
-					"rules": []any{
-						map[string]any{"match": map[string]any{"model": []any{"claude-sonnet-*"}, "max_tokens": 4096, "max_cost": 0.10}, "action": "allow"},
-					},
-				},
-			},
-			"http_proxy": map[string]any{
-				"description": "For generic HTTP proxy connections. Operations are proxy:{METHOD}:{path}.",
-				"match_fields": map[string]any{
-					"path":          "Glob pattern for request path (e.g. \"/v1/messages*\").",
-					"body_contains": "String — match if request body contains this (case-insensitive).",
-				},
-				"example": map[string]any{
-					"default_action": "deny",
-					"rules": []any{
-						map[string]any{"match": map[string]any{"path": "/v1/chat/completions"}, "action": "allow"},
-					},
-				},
-			},
-			"drive": map[string]any{
-				"operations": []string{"drive.list_files", "drive.get_file", "drive.download_file", "drive.upload_file", "drive.share_file"},
-				"match_fields": map[string]any{
-					"mime_type":     "Glob pattern for file MIME type (e.g. \"application/pdf\").",
-					"owner":         "Glob pattern for file owner email.",
-					"shared_status": "\"shared with me\" or \"owned by me\".",
-				},
-			},
-			"calendar": map[string]any{
-				"operations": []string{"calendar.list_events", "calendar.get_event", "calendar.create_event", "calendar.update_event", "calendar.delete_event"},
-				"match_fields": map[string]any{
-					"calendar_id": "Exact match for calendar ID (e.g. \"primary\", \"work@group.calendar.google.com\").",
-					"attendee":    "Glob pattern for attendee email.",
-				},
-			},
-			"people": map[string]any{
-				"operations": []string{"people.list_contacts", "people.get_contact", "people.create_contact", "people.update_contact", "people.delete_contact"},
-				"match_fields": map[string]any{
-					"contact_group":  "Exact match for contact group (e.g. \"myContacts\").",
-					"allowed_fields": "Comma-separated allowed fields (e.g. \"names,emailAddresses\"). Denies if request asks for other fields.",
-				},
-			},
-			"sheets": map[string]any{
-				"operations": []string{"sheets.get_spreadsheet", "sheets.read_range", "sheets.write_range", "sheets.create_spreadsheet"},
-				"match_fields": map[string]any{
-					"spreadsheet_id": "Exact match — restrict to a specific spreadsheet.",
-					"range_pattern":  "Glob pattern for cell range (e.g. \"Sheet1!*\").",
-				},
-			},
-			"docs": map[string]any{
-				"operations": []string{"docs.get_document", "docs.list_documents", "docs.create_document", "docs.update_document"},
-				"match_fields": map[string]any{
-					"document_id":    "Exact match — restrict to a specific document.",
-					"title_contains": "Case-insensitive substring match on document title.",
-				},
-			},
-			"ec2": map[string]any{
-				"operations": []string{"ec2.describe_instances", "ec2.describe_vpcs", "ec2.describe_security_groups", "ec2.describe_subnets", "ec2.describe_images", "ec2.run_instances", "ec2.start_instances", "ec2.stop_instances", "ec2.terminate_instances", "ec2.reboot_instances", "ec2.create_security_group", "ec2.authorize_security_group_ingress", "ec2.create_key_pair"},
-				"match_fields": map[string]any{
-					"instance_type": "Array of allowed types (e.g. [\"t3.micro\", \"t3.small\"]).",
-					"region":        "AWS region (e.g. \"us-east-1\").",
-					"max_count":     "Integer — max instances per launch request.",
-					"ami":           "Glob pattern for AMI ID (e.g. \"ami-0abc*\").",
-					"vpc":           "VPC or subnet ID to restrict to.",
-					"ports":         "Comma-separated allowed ports (e.g. \"443,8080\").",
-					"cidr":          "CIDR pattern. Use \"!0.0.0.0/0\" to block public access.",
-					"tag":           "Tag in \"key=value\" format.",
-				},
-				"example": map[string]any{
-					"default_action": "deny",
-					"rules": []any{
-						map[string]any{"match": map[string]any{"operations": []any{"ec2.describe_instances", "ec2.describe_vpcs"}}, "action": "allow"},
-						map[string]any{"match": map[string]any{"operations": []any{"ec2.run_instances"}, "instance_type": []any{"t3.micro"}, "region": "us-east-1", "max_count": 3}, "action": "allow"},
-					},
-				},
-			},
-			"s3": map[string]any{
-				"operations": []string{"s3.list_buckets", "s3.list_objects", "s3.get_object", "s3.head_object", "s3.put_object", "s3.delete_object", "s3.copy_object"},
-				"match_fields": map[string]any{
-					"bucket":     "Glob pattern for bucket name (e.g. \"prod-*\").",
-					"key_prefix": "Prefix match for object key (e.g. \"public/\").",
-					"region":     "AWS region.",
-				},
-			},
-			"lambda": map[string]any{
-				"operations": []string{"lambda.list_functions", "lambda.get_function", "lambda.invoke", "lambda.invoke_async"},
-				"match_fields": map[string]any{
-					"function_name": "Glob pattern for function name.",
-					"region":        "AWS region.",
-				},
-			},
-			"ses": map[string]any{
-				"operations": []string{"ses.send_email", "ses.send_templated_email", "ses.list_identities", "ses.get_send_quota"},
-				"match_fields": map[string]any{
-					"recipient":       "Glob pattern for recipient email (e.g. \"*@company.com\").",
-					"sender_identity": "Exact match for sender email address.",
-				},
-			},
-			"dynamodb": map[string]any{
-				"operations": []string{"dynamodb.get_item", "dynamodb.query", "dynamodb.scan", "dynamodb.list_tables", "dynamodb.put_item", "dynamodb.update_item", "dynamodb.delete_item"},
-				"match_fields": map[string]any{
-					"table_name": "Exact match for table name.",
-					"index_name": "Exact match for index name.",
-				},
-			},
-			"hyperstack": map[string]any{
-				"operations": []string{"hyperstack.list_vms", "hyperstack.get_vm", "hyperstack.create_vm", "hyperstack.delete_vm", "hyperstack.start_vm", "hyperstack.stop_vm", "hyperstack.restart_vm", "hyperstack.list_flavors", "hyperstack.list_images"},
-				"match_fields": map[string]any{
-					"flavor":  "Exact match for VM flavor (e.g. \"a100\").",
-					"max_vms": "Integer — max VMs per request.",
-				},
-			},
-		},
-	}
-
-	resultJSON, _ := json.Marshal(schema)
-	s.logAudit(tok, "", "get_policy_schema", nil, "allow", "", time.Since(start).Milliseconds())
-
-	return &JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Result:  ToolCallResult{Content: []ContentBlock{{Type: "text", Text: string(resultJSON)}}},
-	}
-}
-
-func (s *Server) handleProposePolicy(id any, tok *tokens.Token, start time.Time, args map[string]any) *JSONRPCResponse {
-	name, _ := args["name"].(string)
-	description, _ := args["description"].(string)
-	rules, _ := args["rules"].([]any)
-
-	if name == "" || description == "" {
-		return &JSONRPCResponse{JSONRPC: "2.0", ID: id, Error: &JSONRPCError{Code: -32602, Message: "name and description are required"}}
-	}
-
-	// Submit to approval queue — the human decides
-	item, err := s.approval.Submit(&approval.SubmitRequest{
-		TokenID:      tok.ID,
-		ConnectionID: "",
-		Operation:    "propose_policy",
-		RequestData: map[string]any{
-			"name":           name,
-			"description":    description,
-			"rules":          rules,
-			"default_action": "deny",
-			"proposed_by":    tok.Name,
-		},
-	})
-	if err != nil {
-		return &JSONRPCResponse{JSONRPC: "2.0", ID: id, Error: &JSONRPCError{Code: -32000, Message: err.Error()}}
-	}
-
-	s.logAudit(tok, "", "propose_policy", args, "approval_required", description, time.Since(start).Milliseconds())
-
-	msg := fmt.Sprintf("Policy proposal submitted for review.\n\nProposal: %s\nDescription: %s\nRules: %d rule(s)\nApproval ID: %s\nReview at: the Sieve admin UI (/approvals)",
-		name, description, len(rules), item.ID)
-
-	return &JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Result:  ToolCallResult{Content: []ContentBlock{{Type: "text", Text: msg}}},
-	}
-}
-
 // resolveToolCall determines the connection ID and operation name from a tool call.
 // When there are multiple connections, the tool name may be prefixed with the
 // connector type, and a "connection" argument may be provided. For single
 // connections the tool name maps directly to the operation.
-func (s *Server) resolveToolCall(role *roles.Role, call ToolCallParams) (connID string, opName string, err error) {
+func (s *Server) resolveToolCall(tok *tokens.Token, call ToolCallParams) (connID string, opName string, err error) {
 	// If a "connection" argument is explicitly provided, use it.
 	if connArg, ok := call.Arguments["connection"]; ok {
 		connIDStr, ok := connArg.(string)
@@ -966,7 +583,7 @@ func (s *Server) resolveToolCall(role *roles.Role, call ToolCallParams) (connID 
 
 	// Single connection: use the only available connection.
 	// Reverse the dot-to-underscore normalization applied when building tool names.
-	connIDs := role.ConnectionIDs()
+	connIDs := s.tokenConnectionIDs(tok)
 	if len(connIDs) == 1 {
 		return connIDs[0], denormalizeDots(call.Name), nil
 	}
@@ -982,26 +599,39 @@ func (s *Server) resolveToolCall(role *roles.Role, call ToolCallParams) (connID 
 	return "", "", fmt.Errorf("cannot resolve connection for tool %q; provide a 'connection' argument", call.Name)
 }
 
-// tokenHasConnection checks whether the given connection ID is in the role's allowed list.
-func (s *Server) tokenHasConnection(role *roles.Role, connID string) bool {
-	for _, c := range role.ConnectionIDs() {
-		if c == connID {
-			return true
-		}
-	}
-	return false
+// tokenHasConnection reports whether the token may reach the connection. IAM is
+// the gate: per-op Decide default-denies if no rule of any of the token's roles
+// permits this connection, so resolution itself doesn't pre-check.
+func (s *Server) tokenHasConnection(tok *tokens.Token, connID string) bool {
+	return true
 }
 
-// getEvaluator creates a composite evaluator from the policies assigned to a
-// specific connection within a role. Different connections in the same role can
-// have different policies. Returns a deny-all evaluator if the connection has
-// no policies in the role.
-func (s *Server) getEvaluator(role *roles.Role, connID string) (policy.Evaluator, error) {
-	policyIDs := role.PoliciesForConnection(connID)
-	if len(policyIDs) == 0 {
-		return nil, fmt.Errorf("no policies for connection %q in role %q — access denied", connID, role.Name)
+// rolesForToken resolves every role assigned to a token (RBAC, spec §5.1).
+// Missing roles are skipped.
+func (s *Server) rolesForToken(tok *tokens.Token) []*roles.Role {
+	out := make([]*roles.Role, 0, len(tok.RoleIDs))
+	for _, rid := range tok.RoleIDs {
+		if r, err := s.roles.Get(rid); err == nil {
+			out = append(out, r)
+		}
 	}
-	return s.policies.BuildEvaluator(policyIDs)
+	return out
+}
+
+// tokenConnectionIDs lists the connections to expose as tools for this token.
+// IAM gates each tool CALL per-op (Decide default-denies if no rule permits), so
+// discovery lists all connections; calls the token can't make are denied at
+// execution rather than hidden.
+func (s *Server) tokenConnectionIDs(tok *tokens.Token) []string {
+	conns, err := s.connections.List()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(conns))
+	for _, c := range conns {
+		out = append(out, c.ID)
+	}
+	return out
 }
 
 // denormalizeDots reverses the dot-to-underscore normalization applied to tool

@@ -46,6 +46,14 @@ var Meta = connector.ConnectorMeta{
 	Name:        "MCP Proxy",
 	Description: "Proxy to an upstream MCP server — apply Sieve policies to any MCP tool",
 	Category:    "Proxy",
+	Operations: []connector.OperationDef{{
+		Name:         "call",
+		ReadOnly:     false,
+		ResourceType: "Sieve::Mcp::Tool",
+		Resource:     mcpToolResource,
+		Description:  "Call an upstream MCP tool (policy-binding surface; runtime tools are discovered).",
+	}},
+	ResourceTypes: []connector.ResourceType{{Name: "Sieve::Mcp::Tool"}},
 	SetupFields: []connector.Field{
 		{Name: "url", Label: "MCP Server URL", Type: "text", Required: true, Editable: true, Placeholder: "http://localhost:3000/mcp"},
 		{Name: "target_url", Label: "Target URL (legacy alias)", Type: "text", Editable: false, EditOnly: true,
@@ -59,6 +67,18 @@ var Meta = connector.ConnectorMeta{
 		{Name: "outbound_allowlist", Label: "Outbound allow-list (CIDRs)", Type: "textarea", EditOnly: true, Editable: true,
 			HelpText: "Opt CIDRs into httpguard's outbound-host allow-list. Empty = block private / loopback / link-local. Set to 127.0.0.0/8 for a local mock. One entry per line."},
 	},
+}
+
+// mcpToolResource maps a tools/call request to its IAM resource entity: the
+// single synthetic Sieve::Mcp::Tool whose id is "<connID>/<tool>". The tool
+// name arrives in the "tool" param (taxonomy binding surface); the runtime
+// Execute path uses "name", so fall back to that. Pure; no I/O.
+func mcpToolResource(connID string, params map[string]any) []connector.ResourceRef {
+	tool, _ := params["tool"].(string)
+	if tool == "" {
+		tool, _ = params["name"].(string)
+	}
+	return []connector.ResourceRef{{Type: "Sieve::Mcp::Tool", ID: connID + "/" + tool}}
 }
 
 // jsonRPCRequest is a JSON-RPC 2.0 request.

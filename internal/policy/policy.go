@@ -10,6 +10,7 @@ package policy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -39,11 +40,167 @@ type ResponseFilter struct {
 	// behaviour. When non-empty, ApplyResponseFilters records the label
 	// instead of the generic "redacted" action string so callers can
 	// distinguish auto-attached scrub filters from operator-defined redacts.
-	Label             string   `json:"-"`
-	ExcludeContaining string   `json:"exclude_containing,omitempty"` // remove items containing this text
-	RedactPatterns    []string `json:"redact_patterns,omitempty"`    // regex patterns to redact
-	ScriptPath        string   `json:"script_path,omitempty"`        // post-filter script
-	ScriptCommand     string   `json:"script_command,omitempty"`     // e.g. "python3"
+	Label string `json:"-"`
+	// ExcludePatterns drops list items matching ANY pattern; RedactPatterns masks
+	// matches of ANY pattern with [REDACTED]. Both interpret their patterns by the
+	// same Match mode — a consistent matching model across the two transforms.
+	ExcludePatterns []string `json:"exclude_patterns,omitempty"`
+	RedactPatterns  []string `json:"redact_patterns,omitempty"`
+	// Match is "contains" (default — case-insensitive literal substring) or
+	// "regex". It applies to both ExcludePatterns and RedactPatterns, so exclude
+	// and redact are equally powerful (no more "exclude is literal, redact is
+	// regex" asymmetry).
+	Match string `json:"match,omitempty"`
+	// Fields optionally narrows redact/exclude to a subset of the connector's
+	// content fields (by JSON key name). Empty ⇒ all of the connector's content
+	// fields (passed to ApplyResponseFilters). redact/exclude apply ONLY within
+	// these fields' string values, never the whole serialized blob — so base64
+	// attachments and metadata are untouched.
+	Fields        []string `json:"fields,omitempty"`
+	ScriptPath    string   `json:"script_path,omitempty"`    // post-filter script
+	ScriptCommand string   `json:"script_command,omitempty"` // e.g. "python3" or "node"
+}
+
+// fieldSet builds the effective set of content-field keys for a filter: the
+// filter's own subset if it set one, else the connector's content fields. An
+// empty result means "no field restriction" → whole-response matching (the
+// back-compat / auth-scrub path).
+func (f ResponseFilter) fieldSet(contentFields []string) map[string]bool {
+	keys := f.Fields
+	if len(keys) == 0 {
+		keys = contentFields
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		set[k] = true
+	}
+	return set
+}
+
+// --- field-aware redaction ---
+//
+// Transforms apply SEQUENTIALLY in the order the engine hands them. Post
+// obligations are sorted by (Order, Name) in internal/iam/obligations.go, so the
+// slice ApplyResponseFilters receives is already in operator-set rank order.
+// Order is therefore meaningful and deterministic — a redaction ranked before an
+// exclusion can mask the very text the exclusion keys on. redactInFields masks,
+// in place, every match of a single filter's patterns within the connector's
+// content-field string values; non-content fields (ids, base64 attachment data,
+// metadata) are never touched.
+func redactInFields(v any, fields map[string]bool, res []*regexp.Regexp) bool {
+	changed := false
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if s, ok := val.(string); ok {
+				if fields[k] {
+					ns := s
+					for _, re := range res {
+						ns = re.ReplaceAllString(ns, "[REDACTED]")
+					}
+					if ns != s {
+						x[k] = ns
+						changed = true
+					}
+				}
+				continue
+			}
+			if redactInFields(val, fields, res) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if redactInFields(e, fields, res) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// matchInFields reports whether any regex matches the string value of a map key
+// in `fields`, anywhere in v. Used by exclude to drop a list item based on its
+// CONTENT fields only (not encoded/metadata fields).
+func matchInFields(v any, fields map[string]bool, res []*regexp.Regexp) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if s, ok := val.(string); ok && fields[k] {
+				for _, re := range res {
+					if re.MatchString(s) {
+						return true
+					}
+				}
+				continue
+			}
+			if matchInFields(val, fields, res) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if matchInFields(e, fields, res) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// compileFilterPattern compiles one pattern under a Match mode into a regexp:
+// "regex" uses the pattern verbatim; "contains" (default) escapes it and makes it
+// case-insensitive, so a literal substring match. This single helper backs both
+// redact and exclude, which is what makes their matching consistent.
+func compileFilterPattern(pattern, match string) (*regexp.Regexp, error) {
+	if match == "regex" {
+		return regexp.Compile(pattern)
+	}
+	return regexp.Compile("(?i)" + regexp.QuoteMeta(pattern))
+}
+
+// compileFilters compiles a pattern list under a match mode. A pattern that
+// fails to compile is FATAL, not skipped: a protective redact/exclude whose
+// pattern is malformed must fail CLOSED (the whole response is withheld by the
+// caller) rather than silently degrade to a no-op that leaks the very content it
+// was meant to remove.
+func compileFilters(patterns []string, match string) ([]*regexp.Regexp, error) {
+	res := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		re, err := compileFilterPattern(p, match)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s pattern %q: %w", matchLabel(match), p, err)
+		}
+		res = append(res, re)
+	}
+	return res, nil
+}
+
+// matchLabel names the match mode for error messages.
+func matchLabel(match string) string {
+	if match == "regex" {
+		return "regex"
+	}
+	return "contains"
+}
+
+func anyMatch(res []*regexp.Regexp, s string) bool {
+	for _, re := range res {
+		if re.MatchString(s) {
+			return true
+		}
+	}
+	return false
+}
+
+func redactLabel(f ResponseFilter) string {
+	if f.Label != "" {
+		return f.Label
+	}
+	return "redacted"
 }
 
 // Redaction describes a region of a field that should be masked.
@@ -69,32 +226,6 @@ type PolicyDecision struct {
 type Evaluator interface {
 	Evaluate(ctx context.Context, req *PolicyRequest) (*PolicyDecision, error)
 	Type() string
-}
-
-// LLMProviderConfig holds configuration for an LLM provider endpoint.
-type LLMProviderConfig struct {
-	Endpoint  string `json:"endpoint"`
-	Region    string `json:"region"`
-	APIKeyEnv string `json:"api_key_env"`
-	Model     string `json:"model"`
-}
-
-// CreateEvaluator builds an Evaluator based on the given type string and config.
-func CreateEvaluator(policyType string, config map[string]any, providers map[string]LLMProviderConfig) (Evaluator, error) {
-	switch policyType {
-	case "builtin":
-		return NewBuiltinEvaluator(config)
-	case "script":
-		return NewScriptEvaluator(config)
-	case "llm":
-		return NewLLMEvaluator(config, providers)
-	case "chain":
-		return NewChainEvaluator(config, providers)
-	case "rules":
-		return NewRulesEvaluator(config, providers)
-	default:
-		return nil, fmt.Errorf("unknown policy evaluator type: %s", policyType)
-	}
 }
 
 // ResponseFilterError carries a failure to instantiate or run a response
@@ -127,14 +258,18 @@ func (e *ResponseFilterError) Error() string {
 
 func (e *ResponseFilterError) Unwrap() error { return e.Err }
 
-// ApplyResponseFilters applies a list of response filters to a JSON response.
-// Returns the (potentially modified) response and a summary of what was done.
-// On a script-filter construction or evaluation failure, returns the original
-// response unchanged and a non-nil *ResponseFilterError so the caller can
-// fail closed (e.g. surface a deny decision) rather than leak un-redacted
-// content. Non-script filter errors (a regex that fails to compile is
-// already best-effort skipped) do NOT raise this error.
-func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte, string, error) {
+// ApplyResponseFilters applies response filters to a JSON response IN THE ORDER
+// GIVEN. The slice is already in operator-set rank order — the engine sorts post
+// obligations by (Order, Name) (internal/iam/obligations.go) before handing them
+// here. Each filter operates on the running result, so order is meaningful and
+// deterministic: a redaction ranked before an exclusion masks the text the
+// exclusion would otherwise key on. Returns the (possibly modified) response and
+// a summary of what was done. On ANY filter failure — a script-filter
+// construct/run failure, or a redact/exclude pattern that won't compile —
+// returns the ORIGINAL response unchanged and a non-nil *ResponseFilterError so
+// the caller can fail closed rather than leak un-redacted content. A protective
+// filter that cannot run must never silently pass content through.
+func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter, contentFields []string) ([]byte, string, error) {
 	if len(filters) == 0 {
 		return responseJSON, "", nil
 	}
@@ -143,100 +278,300 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter) ([]byte
 	var actions []string
 
 	for _, f := range filters {
-		// Exclude: remove items from lists that contain the text.
-		if f.ExcludeContaining != "" {
-			excludeLower := strings.ToLower(f.ExcludeContaining)
-
-			var data map[string]any
-			if err := json.Unmarshal([]byte(result), &data); err != nil {
-				// Not JSON, check the whole response.
-				if strings.Contains(strings.ToLower(result), excludeLower) {
-					result = ""
-					actions = append(actions, fmt.Sprintf("response filtered: contains %q", f.ExcludeContaining))
-				}
-				continue
-			}
-
-			// Handle list formats: {"emails": [...]}, {"messages": [...]}, etc.
-			for _, key := range []string{"emails", "messages", "items", "threads", "results"} {
-				items, ok := data[key].([]any)
-				if !ok {
-					continue
-				}
-
-				var filtered []any
-				removed := 0
-				for _, item := range items {
-					itemJSON, _ := json.Marshal(item)
-					if strings.Contains(strings.ToLower(string(itemJSON)), excludeLower) {
-						removed++
-					} else {
-						filtered = append(filtered, item)
-					}
-				}
-
-				if removed > 0 {
-					data[key] = filtered
-					if total, ok := data["total"].(float64); ok {
-						data["total"] = total - float64(removed)
-					}
-					// Clear pagination token to prevent side-channel leakage.
-					for _, ptKey := range []string{"next_page_token", "nextPageToken"} {
-						delete(data, ptKey)
-					}
-					rewritten, _ := json.Marshal(data)
-					result = string(rewritten)
-					actions = append(actions, fmt.Sprintf("filtered %d item(s) containing %q", removed, f.ExcludeContaining))
-				}
-			}
-		}
-
-		// Redact: replace regex matches with [REDACTED].
-		for _, pattern := range f.RedactPatterns {
-			re, err := regexp.Compile(pattern)
+		if len(f.ExcludePatterns) > 0 {
+			r, act, err := applyExclusion(result, f, contentFields)
 			if err != nil {
-				continue
+				return responseJSON, strings.Join(actions, "; "), err
 			}
-			newResult := re.ReplaceAllString(result, "[REDACTED]")
-			if newResult != result {
-				result = newResult
-				if f.Label != "" {
-					actions = append(actions, f.Label)
-				} else {
-					actions = append(actions, "redacted")
-				}
-			}
+			result = r
+			actions = append(actions, act...)
 		}
-
-		// Script: run a post-filter script. A failure to construct or run
-		// the evaluator MUST fail closed — silently skipping the filter
-		// would return un-redacted content to the agent.
+		if len(f.RedactPatterns) > 0 {
+			r, act, err := applyRedaction(result, f, contentFields)
+			if err != nil {
+				return responseJSON, strings.Join(actions, "; "), err
+			}
+			result = r
+			actions = append(actions, act...)
+		}
 		if f.ScriptPath != "" {
-			scriptConfig := map[string]any{
-				"command": f.ScriptCommand,
-				"script":  f.ScriptPath,
-			}
-			eval, err := NewScriptEvaluator(scriptConfig)
+			// Opaque post-filter rewrite — a construct/run failure MUST fail
+			// closed: return the ORIGINAL response, not the partially transformed
+			// one, so a broken scrub can never leak content.
+			r, act, err := applyScript(result, f)
 			if err != nil {
-				return responseJSON, strings.Join(actions, "; "), &ResponseFilterError{Filter: f, Err: err}
+				return responseJSON, strings.Join(actions, "; "), err
 			}
-			scriptReq := &PolicyRequest{
-				Phase: "post",
-				Metadata: map[string]any{
-					"phase":    "post",
-					"response": result,
-				},
-			}
-			scriptDec, err := eval.Evaluate(context.Background(), scriptReq)
-			if err != nil {
-				return responseJSON, strings.Join(actions, "; "), &ResponseFilterError{Filter: f, Err: err}
-			}
-			if scriptDec.Rewrite != "" {
-				result = scriptDec.Rewrite
-				actions = append(actions, "script-filtered")
-			}
+			result = r
+			actions = append(actions, act...)
 		}
 	}
 
 	return []byte(result), strings.Join(actions, "; "), nil
+}
+
+// applyExclusion drops list items matching this filter's patterns (within its
+// effective field set), handling the standard list shapes. Field-aware filters
+// match only within content fields (a hit inside base64/metadata never drops the
+// item); a whole-response filter matches the item's serialized JSON.
+func applyExclusion(result string, f ResponseFilter, contentFields []string) (string, []string, error) {
+	res, err := compileFilters(f.ExcludePatterns, f.Match)
+	if err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
+	}
+	if len(res) == 0 {
+		return result, nil, nil
+	}
+	fields := f.fieldSet(contentFields)
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(result), &data); err != nil {
+		// Not a JSON object. Only the whole-response path (no field restriction)
+		// can act on a non-object body.
+		if fields == nil {
+			// A top-level JSON array root ([...]) is a real connector shape — drop
+			// matching items rather than treating it as an opaque blob.
+			var arr []any
+			if json.Unmarshal([]byte(result), &arr) == nil {
+				kept := make([]any, 0, len(arr))
+				removed := 0
+				for _, item := range arr {
+					if itemExcluded(item, res, fields) {
+						removed++
+					} else {
+						kept = append(kept, item)
+					}
+				}
+				if removed == 0 {
+					return result, nil, nil
+				}
+				rewritten, _ := json.Marshal(kept)
+				return string(rewritten), []string{fmt.Sprintf("excluded %d item(s)", removed)}, nil
+			}
+			// Opaque body — a match nukes the whole response.
+			if anyMatch(res, result) {
+				return "", []string{"response filtered: matched exclude pattern"}, nil
+			}
+		}
+		return result, nil, nil
+	}
+
+	var actions []string
+	changed := false
+	// Handle list formats: {"emails": [...]}, {"messages": [...]}, etc.
+	for _, key := range []string{"emails", "messages", "items", "threads", "results"} {
+		items, ok := data[key].([]any)
+		if !ok {
+			continue
+		}
+		// Non-nil slice so an all-removed list serialises as [] rather than null.
+		filtered := make([]any, 0, len(items))
+		removed := 0
+		for _, item := range items {
+			if itemExcluded(item, res, fields) {
+				removed++
+			} else {
+				filtered = append(filtered, item)
+			}
+		}
+		if removed > 0 {
+			data[key] = filtered
+			// Close the count + pagination side-channels: an unadjusted count or a
+			// live cursor lets an agent infer how many items were withheld and page
+			// around the exclusion.
+			decrementCountFields(data, removed)
+			clearPaginationTokens(data)
+			actions = append(actions, fmt.Sprintf("excluded %d item(s)", removed))
+			changed = true
+		}
+	}
+	// GraphQL connection shape (Linear/GitHub v4): items live under nested
+	// `data.<conn>.nodes` arrays, not the top-level keys above. Recurse and drop
+	// matching nodes so an exclude on e.g. linear_list_issues actually filters.
+	if nested := excludeFromNodes(data, res, fields); nested > 0 {
+		actions = append(actions, fmt.Sprintf("excluded %d item(s)", nested))
+		changed = true
+	}
+	if !changed {
+		return result, nil, nil
+	}
+	rewritten, _ := json.Marshal(data)
+	return string(rewritten), actions, nil
+}
+
+// excludeFromNodes recurses the decoded response and applies the exclude to any
+// GraphQL-style `nodes` array (the Linear/GitHub-v4 connection shape,
+// data.<conn>.nodes). It returns the number of items removed. On each object that
+// owns a `nodes` array it also closes the side-channels — decrementing count fields
+// (incl. GraphQL `totalCount`) and clearing pagination (top-level cursors and a
+// nested `pageInfo`) — mirroring the top-level list-key handling. It does not
+// recurse into a `nodes` array's own items, so a dropped item is removed whole and
+// sub-connections of kept items are left intact.
+func excludeFromNodes(v any, res []*regexp.Regexp, fields map[string]bool) int {
+	removed := 0
+	switch x := v.(type) {
+	case map[string]any:
+		if nodes, ok := x["nodes"].([]any); ok {
+			filtered := make([]any, 0, len(nodes))
+			r := 0
+			for _, item := range nodes {
+				if itemExcluded(item, res, fields) {
+					r++
+				} else {
+					filtered = append(filtered, item)
+				}
+			}
+			if r > 0 {
+				x["nodes"] = filtered
+				decrementCountFields(x, r)
+				clearPaginationTokens(x)
+				if pi, ok := x["pageInfo"].(map[string]any); ok {
+					delete(pi, "endCursor")
+					delete(pi, "startCursor")
+					pi["hasNextPage"] = false
+					pi["hasPreviousPage"] = false
+				}
+				removed += r
+			}
+		}
+		for k, val := range x {
+			if k == "nodes" {
+				continue // handled at this level; don't descend into the item list
+			}
+			removed += excludeFromNodes(val, res, fields)
+		}
+	case []any:
+		for _, e := range x {
+			removed += excludeFromNodes(e, res, fields)
+		}
+	}
+	return removed
+}
+
+// countFields and paginationKeys enumerate the response fields across connector
+// shapes that would otherwise leak an exclusion: a count of how many items exist
+// (total/count/Gmail's resultSizeEstimate) or a cursor to page past the dropped
+// item. After an exclude, every present count is decremented and every present
+// cursor is cleared.
+var countFields = []string{"total", "count", "resultSizeEstimate", "totalCount"}
+var paginationKeys = []string{
+	"next_page_token", "nextPageToken", "nextLink",
+	"cursor", "next_cursor", "page_token", "pageToken",
+}
+
+func decrementCountFields(data map[string]any, removed int) {
+	for _, k := range countFields {
+		if v, ok := data[k].(float64); ok {
+			nv := v - float64(removed)
+			if nv < 0 {
+				nv = 0
+			}
+			data[k] = nv
+		}
+	}
+}
+
+func clearPaginationTokens(data map[string]any) {
+	for _, k := range paginationKeys {
+		delete(data, k)
+	}
+}
+
+// itemExcluded reports whether item matches the exclude filter. Field-aware
+// filters match only within content fields (so a hit inside base64/metadata never
+// drops the item); a whole-response filter matches the item's serialized JSON.
+func itemExcluded(item any, res []*regexp.Regexp, fields map[string]bool) bool {
+	if fields == nil {
+		itemJSON, _ := json.Marshal(item)
+		return anyMatch(res, string(itemJSON))
+	}
+	return matchInFields(item, fields, res)
+}
+
+// applyRedaction masks every match of this filter's patterns with "[REDACTED]"
+// on the running result. Field-aware (only within the connector's content-field
+// string values) when the filter has an effective field set; whole-response
+// otherwise (the connector-agnostic auth-value scrub / back-compat path). A
+// filter that masks ≥1 match is recorded by its label (audit attribution, e.g.
+// auth_value_scrubbed).
+func applyRedaction(result string, f ResponseFilter, contentFields []string) (string, []string, error) {
+	res, err := compileFilters(f.RedactPatterns, f.Match)
+	if err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
+	}
+	if len(res) == 0 {
+		return result, nil, nil
+	}
+	fields := f.fieldSet(contentFields)
+	matched := false
+
+	if fields == nil {
+		out := result
+		for _, re := range res {
+			nr := re.ReplaceAllString(out, "[REDACTED]")
+			if nr != out {
+				out = nr
+				matched = true
+			}
+		}
+		result = out
+	} else {
+		var data any
+		if err := json.Unmarshal([]byte(result), &data); err == nil {
+			if redactInFields(data, fields, res) {
+				matched = true
+				if rewritten, mErr := json.Marshal(data); mErr == nil {
+					result = string(rewritten)
+				}
+			}
+		}
+	}
+
+	if matched {
+		return result, []string{redactLabel(f)}, nil
+	}
+	return result, nil, nil
+}
+
+// applyScript runs an opaque post-filter rewrite on the running result. It fails
+// CLOSED via a *ResponseFilterError whenever it cannot positively confirm a
+// clean outcome, so a broken/denying scrub can never leak the un-rewritten
+// content:
+//   - the script path is re-validated against the allowlist at exec time
+//     (defense-in-depth: a path that left the allowlist since save, or a
+//     tampered config, must not reach the interpreter — mirrors runScriptCondition);
+//   - a construct or evaluation error fails closed;
+//   - a rewrite is applied;
+//   - a genuine {"action":"allow"} with no rewrite is a legit no-op (the script
+//     inspected the response and chose not to modify it);
+//   - ANY other outcome (deny / approval_required / a runtime failure that the
+//     evaluator surfaces as a deny PolicyDecision with a nil error) fails closed
+//     — returning the un-rewritten response here was the original fail-OPEN bug.
+func applyScript(result string, f ResponseFilter) (string, []string, error) {
+	if err := ValidateScriptPath(f.ScriptPath); err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
+	}
+	eval, err := NewScriptEvaluator(map[string]any{"command": f.ScriptCommand, "script": f.ScriptPath})
+	if err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
+	}
+	scriptReq := &PolicyRequest{
+		Phase:    "post",
+		Metadata: map[string]any{"phase": "post", "response": result},
+	}
+	scriptDec, err := eval.Evaluate(context.Background(), scriptReq)
+	if err != nil {
+		return result, nil, &ResponseFilterError{Filter: f, Err: err}
+	}
+	if scriptDec.Rewrite != "" {
+		return scriptDec.Rewrite, []string{"script-filtered"}, nil
+	}
+	if scriptDec.Action == "allow" {
+		return result, nil, nil
+	}
+	reason := scriptDec.Reason
+	if reason == "" {
+		reason = fmt.Sprintf("script filter returned no rewrite (action %q)", scriptDec.Action)
+	}
+	return result, nil, &ResponseFilterError{Filter: f, Err: errors.New(reason)}
 }

@@ -23,7 +23,7 @@ func newTestWebServer(t *testing.T) (http.Handler, *testenv.Env) {
 	env := testenv.New(t).WithOperator("test-pass", "test-op")
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := web.NewServer(
-		env.Tokens, env.Connections, env.Policies, env.Roles, env.Registry,
+		env.Tokens, env.Connections, env.Roles, env.Registry,
 		env.Approval, env.Audit,
 		"", // no Google credentials file in tests
 		env.Settings, scriptgenSvc,

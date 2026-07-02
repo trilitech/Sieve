@@ -74,6 +74,57 @@ func Meta() connector.ConnectorMeta {
 			{Name: "cross_fork_pr_allowlist", Label: "Cross-fork PR allow-list", Type: "textarea", EditOnly: true, Editable: true, Placeholder: "alice\nbob",
 				HelpText: "GitHub user logins (one per line; case-insensitive) whose forks Sieve accepts as cross-fork PR heads via github_create_pr. Empty = deny all cross-fork heads. Wildcards are NOT honoured. The escape-hatch github_request op is unaffected."},
 		},
+		Operations: operations,
+		// Issue/PR/commit text is the filterable content; ids/shas/refs are metadata.
+		ContentFields: []connector.ContentField{
+			{Key: "title", Label: "Title"},
+			{Key: "body", Label: "Body"},
+			{Key: "message", Label: "Commit message"},
+		},
+		// github_create_pr decodes a `draft` flag — let an operator require PRs be
+		// opened as drafts (e.g. "this agent may open PRs, but only drafts").
+		RuleConditions: []connector.RuleCondition{
+			{
+				Key:     "draft",
+				Label:   "Draft pull request",
+				Kind:    "bool",
+				CtxPath: "context.param.draft",
+				Help:    "Constrain whether the PR is opened as a draft (true) or ready-for-review (false)",
+				Ops:     []string{"github_create_pr"},
+			},
+		},
+		ResourceTypes: []connector.ResourceType{
+			{Name: "Sieve::Github::Owner"},
+			{Name: "Sieve::Github::Repo", Parent: "Sieve::Github::Owner"},
+		},
+		// RuleScopes mirror the runtime resource mappers in ops.go
+		// (githubOwnerResource / githubRepoResource): the IDFormat strings
+		// MUST stay byte-for-byte aligned with the ids those mappers build —
+		// "{conn}/{owner}" and "{conn}/{owner}/{repo}" — so a rule scoped in
+		// the admin builder and a live request resolve to the same Cedar entity.
+		RuleScopes: []connector.RuleScope{
+			{
+				Key:        "owner",
+				Label:      "Owner / org",
+				EntityType: "Sieve::Github::Owner",
+				Fields: []connector.ScopeField{
+					{Key: "owner", Label: "Owner", Placeholder: "trilitech"},
+				},
+				IDFormat: "{conn}/{owner}",
+				Help:     "Restrict to a GitHub owner/org",
+			},
+			{
+				Key:        "repo",
+				Label:      "Repository",
+				EntityType: "Sieve::Github::Repo",
+				Fields: []connector.ScopeField{
+					{Key: "owner", Label: "Owner", Placeholder: "trilitech"},
+					{Key: "repo", Label: "Repo", Placeholder: "sieve"},
+				},
+				IDFormat: "{conn}/{owner}/{repo}",
+				Help:     "Restrict to a single repository",
+			},
+		},
 	}
 }
 

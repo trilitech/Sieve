@@ -30,7 +30,7 @@ func newConnectionEditTestServer(t *testing.T) (*httptest.Server, *testenv.Env) 
 
 	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
 	srv := NewServer(
-		env.Tokens, env.Connections, env.Policies, env.Roles,
+		env.Tokens, env.Connections, env.Roles,
 		env.Registry, env.Approval, env.Audit,
 		"", env.Settings, scriptgenSvc,
 		env.Keyring, env.DB, "127.0.0.1:0",
@@ -628,7 +628,7 @@ func TestEditViewFiltersUnrenderableTypes(t *testing.T) {
 	}
 
 	srv := NewServer(
-		env.Tokens, env.Connections, env.Policies, env.Roles,
+		env.Tokens, env.Connections, env.Roles,
 		env.Registry, env.Approval, env.Audit,
 		"", env.Settings, nil,
 		env.Keyring, env.DB, "127.0.0.1:0",

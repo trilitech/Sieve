@@ -14,16 +14,16 @@ import (
 
 func TestRedactSensitive_StripsKnownSecrets(t *testing.T) {
 	in := map[string]any{
-		"name":              "alice-token",
-		"role_id":           "role-123",
-		"plaintext_token":   "sieve_tok_REAL_SECRET_64HEX",
-		"bot_token":         "xoxb-real-secret",
-		"client_secret":     "shhh",
-		"oauth_secret":      "abcdef",
-		"private_key_pem":   "-----BEGIN PRIVATE KEY-----...",
+		"name":               "alice-token",
+		"role_id":            "role-123",
+		"plaintext_token":    "sieve_tok_REAL_SECRET_64HEX",
+		"bot_token":          "xoxb-real-secret",
+		"client_secret":      "shhh",
+		"oauth_secret":       "abcdef",
+		"private_key_pem":    "-----BEGIN PRIVATE KEY-----...",
 		"current_passphrase": "old-pass",
-		"new_passphrase":    "new-pass",
-		"password":          "swordfish",
+		"new_passphrase":     "new-pass",
+		"password":           "swordfish",
 	}
 	out := audit.RedactSensitive(in)
 	// Non-sensitive keys pass through.

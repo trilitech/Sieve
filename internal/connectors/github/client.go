@@ -22,9 +22,9 @@ const (
 // httpResponse is the structured form returned to agents by both curated ops
 // (after they unmarshal) and the github_request escape hatch.
 type httpResponse struct {
-	Status  int             `json:"status"`
+	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers"`
-	Body    json.RawMessage `json:"body"`
+	Body    json.RawMessage   `json:"body"`
 }
 
 // doRequest routes a request through the auth router, picks the right

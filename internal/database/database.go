@@ -217,6 +217,7 @@ func (db *DB) migrate() error {
 		name             TEXT NOT NULL UNIQUE,
 		token_hash       TEXT NOT NULL,
 		role_id          TEXT NOT NULL,
+		role_ids         TEXT NOT NULL DEFAULT '[]',
 		created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
 		expires_at       DATETIME,
 		revoked          INTEGER DEFAULT 0
@@ -245,6 +246,68 @@ func (db *DB) migrate() error {
 		policy_result     TEXT NOT NULL,
 		response_summary  TEXT,
 		duration_ms       INTEGER
+	);
+
+	-- IAM (internal/iam) — additive, coexists with legacy policies/roles while
+	-- iam_enabled is off. See docs/architecture/iam/. The connections + tokens
+	-- tables are untouched (credentials preserved). Roles reuse the existing
+	-- roles table for identity (id, name); iam_role_groups add the principal
+	-- grouping the IAM model uses.
+	CREATE TABLE IF NOT EXISTS iam_policies (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL UNIQUE,
+		description  TEXT NOT NULL DEFAULT '',
+		cedar_text   TEXT NOT NULL,
+		spec_json    TEXT NOT NULL DEFAULT '',
+		enabled      INTEGER NOT NULL DEFAULT 1,
+		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS iam_filters (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL UNIQUE,
+		description  TEXT NOT NULL DEFAULT '',
+		kind         TEXT NOT NULL,
+		sort_order   INTEGER NOT NULL DEFAULT 0,
+		config       TEXT NOT NULL DEFAULT '{}',
+		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS iam_guardrails (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL UNIQUE,
+		description  TEXT NOT NULL DEFAULT '',
+		cedar_text   TEXT NOT NULL,
+		spec_json    TEXT NOT NULL DEFAULT '',
+		enabled      INTEGER NOT NULL DEFAULT 1,
+		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	-- A transform ATTACHMENT (spec §7): a permit-only Cedar overlay that references
+	-- a reusable transform DEFINITION (a filter-library entry) by name via @filters,
+	-- scoped global or to a role. The SAME definition can be attached many times —
+	-- reuse across roles — so name (the referenced definition) is NOT unique;
+	-- attachment rows are addressed by id (delete/enable).
+	CREATE TABLE IF NOT EXISTS iam_transforms (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL,
+		description  TEXT NOT NULL DEFAULT '',
+		cedar_text   TEXT NOT NULL,
+		spec_json    TEXT NOT NULL DEFAULT '',
+		enabled      INTEGER NOT NULL DEFAULT 1,
+		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS iam_role_groups (
+		id           TEXT PRIMARY KEY,
+		name         TEXT NOT NULL UNIQUE,
+		created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS iam_role_group_members (
+		group_id     TEXT NOT NULL,
+		role_id      TEXT NOT NULL,
+		PRIMARY KEY (group_id, role_id)
 	);
 	`
 
@@ -344,6 +407,13 @@ func (db *DB) migrate() error {
 	// keyring unloaded — this is a plaintext-column update only.
 	if err := migrateNeedsReauthToStatus(db); err != nil {
 		return fmt.Errorf("migrate needs_reauth → status: %w", err)
+	}
+
+	// iam_policies.spec_json stores the structured builder rule (for edit-in-place
+	// reload) alongside the compiled Cedar. Additive; older IAM DBs get it here.
+	if err := addColumnIfMissing(db, "iam_policies", "spec_json",
+		`ALTER TABLE iam_policies ADD COLUMN spec_json TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add iam_policies.spec_json: %w", err)
 	}
 
 	if hasOldColumn {
@@ -516,6 +586,25 @@ func (db *DB) migrate() error {
 				return fmt.Errorf("migrate tokens to roles: %w", err)
 			}
 		}
+	}
+
+	// tokens.role_ids: a token is now assigned a SET of roles (RBAC, spec §5.1).
+	// Additive; backfill the JSON array from the legacy single role_id so existing
+	// tokens keep working (the IAM engine composes the union of role_ids).
+	//
+	// MUST run AFTER the tokens_v2/v3 rebuilds above: on a legacy DB those rebuilds
+	// create `role_id` (tokens_v3) and recreate the tokens table without role_ids,
+	// so adding+backfilling role_ids earlier would either reference a not-yet-created
+	// role_id column (startup abort) or be silently dropped by the later rebuild.
+	if err := addColumnIfMissing(db, "tokens", "role_ids",
+		`ALTER TABLE tokens ADD COLUMN role_ids TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return fmt.Errorf("add tokens.role_ids: %w", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE tokens SET role_ids = json_array(role_id)
+		 WHERE (role_ids IS NULL OR role_ids = '' OR role_ids = '[]') AND role_id != ''`,
+	); err != nil {
+		return fmt.Errorf("backfill tokens.role_ids: %w", err)
 	}
 
 	return nil

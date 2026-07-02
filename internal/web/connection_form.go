@@ -35,12 +35,13 @@ const (
 // declared with an unknown type silently falls back to a plain text
 // input on one form and is rejected on the other.
 var renderableFieldTypes = map[string]bool{
-	"text":     true,
-	"password": true,
-	"checkbox": true,
-	"textarea": true,
-	"number":   true,
-	"json":     true,
+	"text":       true,
+	"password":   true,
+	"checkbox":   true,
+	"textarea":   true,
+	"number":     true,
+	"json":       true,
+	"json_array": true,
 	// "oauth" deliberately excluded — handled by per-connector bespoke
 	// flows (Google) and not by the generic form.
 	// "select" deliberately excluded — first-class select rendering
@@ -150,6 +151,21 @@ func applyConnectorFormFields(meta connector.ConnectorMeta, mode formMode, r *ht
 				return fmt.Sprintf("%s must be a JSON object: %v", f.Label, err)
 			}
 			cfg[f.Name] = obj
+
+		case "json_array":
+			if mode == formModeEdit && !present(f.Name) {
+				continue
+			}
+			t := strings.TrimSpace(raw)
+			if t == "" {
+				delete(cfg, f.Name)
+				break
+			}
+			var arr []any
+			if err := json.Unmarshal([]byte(t), &arr); err != nil {
+				return fmt.Sprintf("%s must be a JSON array: %v", f.Label, err)
+			}
+			cfg[f.Name] = arr
 
 		default: // text, password, select, anything stringy
 			// Secrets are never trimmed (could legitimately contain

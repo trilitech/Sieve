@@ -60,6 +60,28 @@ func Meta() connector.ConnectorMeta {
 		Name:        "Anthropic (Claude)",
 		Description: "Call Claude models via Anthropic's Messages API with per-operation policy gating.",
 		Category:    "LLM",
+		Operations:  operations,
+		// messages_create takes `model` (string) and a required numeric
+		// max_tokens — expose both as rule conditions so operators can gate which
+		// models an agent may call and cap output length per request.
+		RuleConditions: []connector.RuleCondition{
+			{
+				Key:     "model",
+				Label:   "Model",
+				Kind:    "one_of",
+				CtxPath: "context.param.model",
+				Help:    "Allow (or, on a deny rule, block) specific models — comma-separated, e.g. claude-opus-4-8, claude-sonnet-4-6",
+				Ops:     []string{"messages_create"},
+			},
+			{
+				Key:     "max_tokens",
+				Label:   "Max tokens",
+				Kind:    "number",
+				CtxPath: "context.param.max_tokens",
+				Help:    "Cap max_tokens per request",
+				Ops:     []string{"messages_create"},
+			},
+		},
 		SetupFields: []connector.Field{
 			{
 				Name:        "api_key",
@@ -174,15 +196,15 @@ const validateModel = "claude-haiku-4-5"
 // allow-list rejection, a transient 5xx, a network blip — leaves
 // Validate succeeding. Two reasons:
 //
-//   1. Failing Validate prevents the connection from being saved at
-//      all. Refusing to save because the operator's gateway disabled
-//      claude-haiku-4-5 would be a UX regression with no security
-//      benefit; the operator can switch to a working model at runtime.
+//  1. Failing Validate prevents the connection from being saved at
+//     all. Refusing to save because the operator's gateway disabled
+//     claude-haiku-4-5 would be a UX regression with no security
+//     benefit; the operator can switch to a working model at runtime.
 //
-//   2. The thing Validate is actually checking is whether the API key
-//      is live. A non-401 upstream response (structured or otherwise)
-//      means the key was accepted far enough for the upstream to give
-//      us a specific answer, which is sufficient evidence.
+//  2. The thing Validate is actually checking is whether the API key
+//     is live. A non-401 upstream response (structured or otherwise)
+//     means the key was accepted far enough for the upstream to give
+//     us a specific answer, which is sufficient evidence.
 //
 // Transport errors fall through to "OK" too — they'd repeat on first
 // agent call, and refusing to save during a transient outage is bad
@@ -300,7 +322,7 @@ func (a *Connector) doRequest(ctx context.Context, method, path string, body any
 //   - errType set, errMsg empty         → "<status> <type>"
 //   - errType empty, errMsg set         → "<status>: <message>"
 //   - both empty (plain text / null)    → "status <code>" (+ body excerpt
-//                                          if no wrap target)
+//     if no wrap target)
 //
 // Without this consolidation we'd get dangling ": " or ": :"
 // substrings in audit rows and agent-visible error responses.

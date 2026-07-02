@@ -26,7 +26,7 @@ func setupForStatus(t *testing.T) (serverURL, token, connID string, env *testenv
 	tok := env.CreateToken(t, role.ID)
 
 	router := api.NewRouter(
-		env.Tokens, env.Connections, env.Policies, env.Roles, env.Approval, env.Audit,
+		env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit,
 	)
 	srv := httptest.NewServer(router.Handler())
 	t.Cleanup(srv.Close)
