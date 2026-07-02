@@ -332,7 +332,7 @@ func NewServer(
 	// given partial just ignore it. The ops picker partial is included so
 	// policies.html and policy_edit.html resolve to the same scope-aware
 	// markup — making create/edit divergence structurally impossible.
-	pages := []string{"connections", "connection_edit", "tokens", "tokens_edit", "approvals", "audit", "settings", "iam", "iam_edit", "iam_guardrail_edit", "iam_filter_edit", "docs"}
+	pages := []string{"connections", "connection_edit", "tokens", "tokens_edit", "approvals", "audit", "settings", "iam", "iam_edit", "iam_filter_edit", "docs"}
 	for _, page := range pages {
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
@@ -472,11 +472,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /iam/filters/{name}/edit", s.handleIAMFilterEditPage)
 	mux.HandleFunc("POST /iam/filters/{name}/update", s.handleIAMFilterUpdate)
 	mux.HandleFunc("POST /iam/filters/{name}/delete", s.handleIAMFilterDelete)
-	mux.HandleFunc("POST /iam/guardrails", s.handleIAMGuardrailCreate)
-	mux.HandleFunc("GET /iam/guardrails/{id}/edit", s.handleIAMGuardrailEditPage)
-	mux.HandleFunc("POST /iam/guardrails/{id}/update", s.handleIAMGuardrailUpdate)
-	mux.HandleFunc("POST /iam/guardrails/{id}/delete", s.handleIAMGuardrailDelete)
-	mux.HandleFunc("POST /iam/guardrails/{id}/enabled", s.handleIAMGuardrailSetEnabled)
 	mux.HandleFunc("POST /iam/transforms", s.handleIAMTransformCreate)
 	mux.HandleFunc("POST /iam/transforms/{id}/delete", s.handleIAMTransformDelete)
 	mux.HandleFunc("POST /iam/transforms/{id}/enabled", s.handleIAMTransformSetEnabled)

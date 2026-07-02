@@ -143,7 +143,7 @@
                 {{if not .Revoked}}
                 <a href="/tokens/{{.ID}}/edit" class="text-sm text-indigo-400 hover:text-indigo-300 font-medium mr-3">Edit roles</a>
                 <form method="POST" action="/tokens/{{.ID}}/revoke"
-                      onsubmit="return confirm('Revoke token \'{{.Name}}\'?')"
+                      data-token-name="{{.Name}}" onsubmit="return confirmRevoke(this)"
                       class="inline">
                   <button type="submit" class="text-sm text-red-400 hover:text-red-300 font-medium">Revoke</button>
                 </form>
@@ -162,6 +162,14 @@
       </div>
     </div>
   </main>
+  <script>
+    // confirmRevoke reads the token name from a data-attribute (never inlined into
+    // the JS-string context) and confirms before the POST.
+    function confirmRevoke(form) {
+      const name = form.dataset.tokenName || '';
+      return confirm('Revoke token "' + name + '"?');
+    }
+  </script>
 </body>
 </html>
 {{end}}

@@ -619,9 +619,29 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if decision.Action == "approval_required" {
+		// Submit an approval record so the request can actually BE approved. The
+		// proxy is a passthrough surface, so (like MCP) this is non-blocking: we
+		// return the approval id + poll URL with 429 and the agent retries once
+		// approved. Previously this returned 429 without submitting, so the agent
+		// was told to wait for an approval that never existed.
+		item, aerr := rt.approval.Submit(&approval.SubmitRequest{
+			TokenID:      tok.ID,
+			ConnectionID: connID,
+			Operation:    operation,
+			RequestData:  policyParams,
+		})
+		if aerr != nil {
+			writeError(w, http.StatusInternalServerError, "submit for approval: "+aerr.Error())
+			return
+		}
 		rt.logAudit(tok, connID, operation, nil, "approval_required", "", time.Since(start).Milliseconds())
 		w.Header().Set("Retry-After", "30")
-		writeError(w, http.StatusTooManyRequests, "action requires human approval")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{
+			"error":        "approval_required",
+			"message":      "action requires human approval",
+			"approval_id":  item.ID,
+			"approval_url": "/api/v1/approvals/" + item.ID + "/status",
+		})
 		return
 	}
 

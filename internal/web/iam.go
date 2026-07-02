@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -146,7 +147,6 @@ type iamPageData struct {
 	RoleViews []iamRoleView
 	// RuleGroups is the rules list grouped by the role each rule targets.
 	RuleGroups []ruleGroupView
-	Guardrails []iamGuardrailView
 	// Transforms is the scoped-transform list (the Transforms section — the
 	// self-contained successor to the guardrail+filter-library split).
 	Transforms []iamTransformView
@@ -207,15 +207,6 @@ type ruleGroupView struct {
 	Policies []iamPolicyView
 }
 
-// iamGuardrailView wraps a StoredGuardrail for the guardrails list.
-type iamGuardrailView struct {
-	iampolicies.StoredGuardrail
-	HasSpec bool
-	// Summary is the plain-English rendering recomputed from spec_json, so the
-	// list is legible without reading Cedar (raw guardrails have no spec → "").
-	Summary string
-}
-
 // iamTransformView is one scoped transform in the Transforms list. Kind/Order/
 // Summary are derived from spec_json so the row reads in plain English.
 type iamTransformView struct {
@@ -252,7 +243,7 @@ type iamEditPageData struct {
 
 // iamSections are the /iam subsections shown one-at-a-time via ?section= (the
 // sidebar sub-nav). Default is roles — the main authoring surface.
-var iamSections = map[string]bool{"roles": true, "transforms": true, "guardrails": true, "explore": true}
+var iamSections = map[string]bool{"roles": true, "transforms": true, "explore": true}
 
 func iamSection(r *http.Request) string {
 	if s := r.URL.Query().Get("section"); iamSections[s] {
@@ -296,18 +287,13 @@ func (s *Server) renderIAM(w http.ResponseWriter, r *http.Request, data *iamPage
 		})
 	}
 
+	// Legacy guardrails (iam_guardrails) still feed the engine + role blast-radius
+	// counts, but authoring is retired — obligations are authored as scoped
+	// transforms now, so there is no guardrails view-list.
 	guards, err := s.iam.ListGuardrails()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-	data.Guardrails = make([]iamGuardrailView, 0, len(guards))
-	for _, g := range guards {
-		data.Guardrails = append(data.Guardrails, iamGuardrailView{
-			StoredGuardrail: g,
-			HasSpec:         g.SpecJSON != "",
-			Summary:         s.guardrailSummaryFromSpecJSON(g.SpecJSON),
-		})
 	}
 
 	transforms, err := s.iam.ListTransforms()
@@ -348,21 +334,6 @@ func (s *Server) summaryFromSpecJSON(specJSON string) string {
 	}
 	spec := s.specFromState(st)
 	return iampolicies.HumanSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
-}
-
-// guardrailSummaryFromSpecJSON recomputes a guardrail's plain-English summary
-// from its stored spec_json (same shape as a rule's), so the guardrails list is
-// legible without reading Cedar. Returns "" for raw guardrails (no spec_json).
-func (s *Server) guardrailSummaryFromSpecJSON(specJSON string) string {
-	if specJSON == "" {
-		return ""
-	}
-	var st builderFormState
-	if err := json.Unmarshal([]byte(specJSON), &st); err != nil {
-		return ""
-	}
-	spec := s.specFromState(st)
-	return guardrailSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
 }
 
 // decodeAttachmentSpec decodes a stored attachment's spec_json (an
@@ -802,6 +773,15 @@ func (s *Server) parseFilterConfig(r *http.Request) (iam.FilterKind, map[string]
 		config["patterns"] = patterns
 		if m := r.FormValue("match"); m == "regex" {
 			config["match"] = "regex"
+			// Reject uncompilable patterns at save time so a malformed protective
+			// pattern can't be stored. Complements the apply-time fail-closed
+			// (a bad pattern withholds the response); catching it here means the
+			// operator gets a friendly error instead of a silently-failing filter.
+			for _, p := range patterns {
+				if _, err := regexp.Compile(p); err != nil {
+					return "", nil, &parseError{msg: "invalid regex pattern " + strconv.Quote(p) + ": " + err.Error(), code: http.StatusBadRequest}
+				}
+			}
 		} else {
 			config["match"] = "contains"
 		}
@@ -917,7 +897,7 @@ func (s *Server) renderFilterEditPage(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 	data := &iamFilterEditPageData{
-		Active: "iam-guardrails", Error: errMsg,
+		Active: "iam-transforms", Error: errMsg,
 		Name: f.Name, Description: f.Description, Kind: string(f.Kind), Order: f.Order, Match: "contains",
 	}
 	switch f.Kind {
@@ -1409,6 +1389,13 @@ func (s *Server) createAdvancedPolicy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "policy did not validate: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Role groups are not wired into the runtime PIP (no group edges are populated),
+	// so a policy scoped to a RoleGroup principal would silently never match. Reject
+	// it at authoring time so it fails loud rather than silently never applying.
+	if strings.Contains(cedar, "Sieve::RoleGroup::") {
+		http.Error(w, "role groups are not supported — scope the policy to a role (Sieve::Role::\"…\") instead", http.StatusBadRequest)
+		return
+	}
 	pol, err := s.iam.CreatePolicy(name, "(raw Cedar)", cedar, true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1611,250 +1598,6 @@ func (s *Server) handleIAMPolicySetEnabled(w http.ResponseWriter, r *http.Reques
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.set_enabled", id,
 		map[string]any{"enabled": enabled}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
-}
-
-// handleIAMGuardrailCreate compiles the guardrail form into a permit-only
-// obligation overlay (POST /iam/guardrails). It reuses parseBuilderForm (the
-// guardrail form posts the same field names); for a guardrail the obligation is
-// approval (the approval checkbox posts effect="require_approval") and/or library
-// filters — the allow/deny of a grant is irrelevant here. BuildGuardrailCedar
-// emits a permit carrying @approval/@filters over the rule's scope; the engine's
-// second pass attaches it to any matching allowed request, regardless of which
-// rule granted it (spec §7.2), so composition can't bypass it.
-func (s *Server) handleIAMGuardrailCreate(w http.ResponseWriter, r *http.Request) {
-	if s.iam == nil {
-		http.Redirect(w, r, "/iam", http.StatusSeeOther)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	spec, _, formStateJSON, perr := s.parseBuilderForm(r)
-	if perr != nil {
-		s.renderIAMError(w, r, perr.msg)
-		return
-	}
-	if spec.Effect != "require_approval" && len(spec.Filters) == 0 {
-		s.renderIAMError(w, r, "A guardrail must impose approval and/or at least one filter — otherwise it does nothing.")
-		return
-	}
-
-	meta := s.connectorMeta(spec.ConnectorType)
-	cedar, err := iampolicies.BuildGuardrailCedar(spec, meta.Operations)
-	if err != nil {
-		s.renderIAMError(w, r, "Could not build guardrail: "+err.Error())
-		return
-	}
-
-	summary := guardrailSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
-	name := r.FormValue("name")
-	if name == "" {
-		name = summary
-	}
-	name = s.uniqueGuardrailName(name)
-
-	g, err := s.iam.CreateGuardrail(name, summary, cedar, true)
-	if err != nil {
-		s.renderIAMError(w, r, err.Error())
-		return
-	}
-	_ = s.iam.SetGuardrailSpec(g.ID, formStateJSON)
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.create", g.ID,
-		map[string]any{"name": name}, "success")
-	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
-}
-
-// handleIAMGuardrailDelete removes a guardrail (POST /iam/guardrails/{id}/delete).
-func (s *Server) handleIAMGuardrailDelete(w http.ResponseWriter, r *http.Request) {
-	if s.iam == nil {
-		http.Redirect(w, r, "/iam", http.StatusSeeOther)
-		return
-	}
-	id := r.PathValue("id")
-	if err := s.iam.DeleteGuardrail(id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.delete", id, nil, "success")
-	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
-}
-
-// handleIAMGuardrailSetEnabled enables/disables a guardrail
-// (POST /iam/guardrails/{id}/enabled, field enabled="true"/"false").
-func (s *Server) handleIAMGuardrailSetEnabled(w http.ResponseWriter, r *http.Request) {
-	if s.iam == nil {
-		http.Redirect(w, r, "/iam", http.StatusSeeOther)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	id := r.PathValue("id")
-	enabled := r.FormValue("enabled") == "true"
-	if err := s.iam.SetGuardrailEnabled(id, enabled); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.set_enabled", id,
-		map[string]any{"enabled": enabled}, "success")
-	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
-}
-
-// iamGuardrailEditPageData is the view-model for iam_guardrail_edit.html
-// (edit-in-place of one builder-authored guardrail). The guardrail's spec_json
-// is the same builderFormState the rule builder stores, so the prefill JS mirrors
-// the rule edit page.
-type iamGuardrailEditPageData struct {
-	Active      string
-	CSRFToken   string
-	Error       string
-	HasSpec     bool
-	GuardrailID string
-	Name        string
-	Spec        builderFormState
-	iamBuilderData
-}
-
-// handleIAMGuardrailEditPage renders the edit-in-place form for one
-// builder-authored guardrail (GET /iam/guardrails/{id}/edit). Guardrails with no
-// stored structured form (raw Cedar) render a notice instead.
-func (s *Server) handleIAMGuardrailEditPage(w http.ResponseWriter, r *http.Request) {
-	if s.iam == nil {
-		http.Redirect(w, r, "/iam", http.StatusSeeOther)
-		return
-	}
-	s.renderGuardrailEditPage(w, r, r.PathValue("id"), "")
-}
-
-// renderGuardrailEditPage renders the guardrail edit form, optionally with an
-// error banner (shared by the GET page and the update handler's failure path).
-func (s *Server) renderGuardrailEditPage(w http.ResponseWriter, r *http.Request, id, errMsg string) {
-	g, err := s.iam.GetGuardrail(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	data := &iamGuardrailEditPageData{
-		Active: "iam-guardrails", Error: errMsg,
-		GuardrailID: g.ID, Name: g.Name, HasSpec: g.SpecJSON != "",
-	}
-	if data.HasSpec {
-		if err := json.Unmarshal([]byte(g.SpecJSON), &data.Spec); err != nil {
-			data.HasSpec = false
-		} else {
-			s.populateBuilderData(&data.iamBuilderData)
-		}
-	}
-	s.render(w, r, "iam_guardrail_edit", data)
-}
-
-// handleIAMGuardrailUpdate recompiles an edited guardrail in place
-// (POST /iam/guardrails/{id}/update). It reuses parseBuilderForm +
-// BuildGuardrailCedar so create/edit share identical parsing and compilation.
-func (s *Server) handleIAMGuardrailUpdate(w http.ResponseWriter, r *http.Request) {
-	if s.iam == nil {
-		http.Redirect(w, r, "/iam", http.StatusSeeOther)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	id := r.PathValue("id")
-
-	spec, _, formStateJSON, perr := s.parseBuilderForm(r)
-	if perr != nil {
-		s.renderGuardrailEditPage(w, r, id, perr.msg)
-		return
-	}
-	if spec.Effect != "require_approval" && len(spec.Filters) == 0 {
-		s.renderGuardrailEditPage(w, r, id, "A guardrail must impose approval and/or at least one filter — otherwise it does nothing.")
-		return
-	}
-
-	meta := s.connectorMeta(spec.ConnectorType)
-	cedar, err := iampolicies.BuildGuardrailCedar(spec, meta.Operations)
-	if err != nil {
-		s.renderGuardrailEditPage(w, r, id, "Could not build guardrail: "+err.Error())
-		return
-	}
-
-	summary := guardrailSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
-	name := r.FormValue("name")
-	if name == "" {
-		name = summary
-	}
-	if err := s.iam.UpdateGuardrail(id, name, summary, cedar, true); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = s.iam.SetGuardrailSpec(id, formStateJSON)
-	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.guardrail.update", id,
-		map[string]any{"name": name}, "success")
-	http.Redirect(w, r, "/iam?section=guardrails", http.StatusSeeOther)
-}
-
-// guardrailSummary renders a one-line operator-readable description of a guardrail.
-func guardrailSummary(spec iampolicies.RuleSpec, roleName string, connLabels []string) string {
-	var obl []string
-	if spec.Effect == "require_approval" {
-		obl = append(obl, "Require approval")
-	}
-	if len(spec.Filters) > 0 {
-		obl = append(obl, "filters["+strings.Join(spec.Filters, ", ")+"]")
-	}
-	var b strings.Builder
-	if len(obl) == 0 {
-		b.WriteString("(no obligation)")
-	} else {
-		b.WriteString(strings.Join(obl, " + "))
-	}
-	switch spec.OpScope {
-	case "all":
-		b.WriteString(" for all operations")
-	case "read":
-		b.WriteString(" for read-only operations")
-	case "write":
-		b.WriteString(" for write operations")
-	case "specific":
-		b.WriteString(" for [" + strings.Join(spec.Operations, ", ") + "]")
-	}
-	b.WriteString(" on " + spec.ConnectorType)
-	if len(connLabels) > 0 {
-		b.WriteString(" (" + strings.Join(connLabels, ", ") + ")")
-	} else {
-		b.WriteString(" (any connection)")
-	}
-	if roleName == "" {
-		b.WriteString(" — any role")
-	} else {
-		b.WriteString(" — role: " + roleName)
-	}
-	return b.String()
-}
-
-// uniqueGuardrailName avoids the UNIQUE name collision for guardrails.
-func (s *Server) uniqueGuardrailName(base string) string {
-	gs, err := s.iam.ListGuardrails()
-	if err != nil {
-		return base
-	}
-	taken := make(map[string]bool, len(gs))
-	for _, g := range gs {
-		taken[g.Name] = true
-	}
-	if !taken[base] {
-		return base
-	}
-	for i := 2; ; i++ {
-		cand := base + " (" + strconv.Itoa(i) + ")"
-		if !taken[cand] {
-			return cand
-		}
-	}
 }
 
 // handleIAMExplore runs the decision explorer (POST /iam/explore).
