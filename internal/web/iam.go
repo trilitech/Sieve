@@ -1378,6 +1378,13 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 
 // createAdvancedPolicy stores raw Cedar (the escape hatch for expressivity the
 // visual builder doesn't cover).
+// referencesRoleGroup reports whether raw Cedar targets a RoleGroup principal.
+// Role groups are not wired into the runtime PIP, so such a policy would silently
+// never match; the raw-Cedar save path rejects it so it fails loud at authoring.
+func referencesRoleGroup(cedar string) bool {
+	return strings.Contains(cedar, "Sieve::RoleGroup::")
+}
+
 func (s *Server) createAdvancedPolicy(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	cedar := r.FormValue("cedar")
@@ -1392,7 +1399,7 @@ func (s *Server) createAdvancedPolicy(w http.ResponseWriter, r *http.Request) {
 	// Role groups are not wired into the runtime PIP (no group edges are populated),
 	// so a policy scoped to a RoleGroup principal would silently never match. Reject
 	// it at authoring time so it fails loud rather than silently never applying.
-	if strings.Contains(cedar, "Sieve::RoleGroup::") {
+	if referencesRoleGroup(cedar) {
 		http.Error(w, "role groups are not supported — scope the policy to a role (Sieve::Role::\"…\") instead", http.StatusBadRequest)
 		return
 	}
