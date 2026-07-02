@@ -216,7 +216,7 @@ type ConnectorMeta struct {
 type Field struct {
 	Name        string `json:"name"`
 	Label       string `json:"label"`
-	Type        string `json:"type"` // "text", "password", "oauth", "select", "checkbox", "textarea", "number", "json"
+	Type        string `json:"type"` // "text", "password", "oauth", "select", "checkbox", "textarea", "number", "json" (object), "json_array"
 	Required    bool   `json:"required"`
 	Placeholder string `json:"placeholder,omitempty"`
 	HelpText    string `json:"help_text,omitempty"`

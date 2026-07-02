@@ -36,6 +36,33 @@ func newTestConnector(t *testing.T, handler http.HandlerFunc) *Connector {
 	return c.(*Connector)
 }
 
+// TestFactory_OutboundAllowlistJSONArray proves the factory honors the
+// outbound_allowlist in the []any shape the connection form now stores (Type
+// "json_array") — the shape advertised by the field. Regression for the bug
+// where the form's Type:"json" rejected the documented array (or stored an
+// object the factory ignored), leaving the allowlist unconfigurable from the UI.
+// If the []any allowlist were dropped, httpguard would default-deny the loopback
+// dial and Execute would fail before reaching the server.
+func TestFactory_OutboundAllowlistJSONArray(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"issues":{"nodes":[]}}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := Factory()(map[string]any{
+		"api_key":            "lin_api_test-not-real",
+		"base_url":           srv.URL,
+		"outbound_allowlist": []any{"127.0.0.0/8"}, // exactly what the json_array form parser produces
+	})
+	if err != nil {
+		t.Fatalf("Factory with []any allowlist: %v", err)
+	}
+	if _, err := c.Execute(context.Background(), "linear_list_issues", map[string]any{}); err != nil {
+		t.Fatalf("loopback dial should be permitted by the []any allowlist: %v", err)
+	}
+}
+
 // --- parseConfig ---
 
 func TestParseConfig_RequiresAPIKey(t *testing.T) {

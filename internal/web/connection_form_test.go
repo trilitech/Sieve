@@ -191,6 +191,35 @@ func TestApply_TextareaSplitsAndTrims(t *testing.T) {
 	}
 }
 
+// TestApply_JSONArrayField pins the json_array field type: it accepts a JSON
+// array (the shape advertised by e.g. Linear's outbound_allowlist) and stores it
+// as []any, and rejects a non-array with a useful message. Regression for the
+// bug where such a field was declared Type:"json" — the parser then only
+// accepted an object, so the documented array was rejected / an object was saved
+// that the connector factory ignored.
+func TestApply_JSONArrayField(t *testing.T) {
+	meta := connector.ConnectorMeta{
+		SetupFields: []connector.Field{
+			{Name: "outbound_allowlist", Type: "json_array", Editable: true, Label: "Allowlist"},
+		},
+	}
+	// A JSON array round-trips to []any.
+	cfg := map[string]any{}
+	ok := applyConnectorFormFields(meta, formModeCreate, formReq(t, url.Values{"outbound_allowlist": {`["127.0.0.0/8","10.0.0.0/8"]`}}), cfg)
+	if ok != "" {
+		t.Fatalf("valid JSON array should be accepted; got %q", ok)
+	}
+	arr, isArr := cfg["outbound_allowlist"].([]any)
+	if !isArr || len(arr) != 2 || arr[0] != "127.0.0.0/8" {
+		t.Fatalf("expected []any{127.0.0.0/8, 10.0.0.0/8}; got %#v", cfg["outbound_allowlist"])
+	}
+	// A JSON object (or other non-array) is rejected, naming the field.
+	msg := applyConnectorFormFields(meta, formModeCreate, formReq(t, url.Values{"outbound_allowlist": {`{"a":1}`}}), map[string]any{})
+	if msg == "" || !strings.Contains(msg, "Allowlist") {
+		t.Fatalf("non-array should be rejected naming the field; got %q", msg)
+	}
+}
+
 // TestApply_JSONFieldRejectsMalformed verifies the JSON parser refuses
 // invalid input with a useful message rather than persisting garbage.
 func TestApply_JSONFieldRejectsMalformed(t *testing.T) {

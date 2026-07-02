@@ -39,6 +39,14 @@
       class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">{{.StringValue}}</textarea>
   </label>
 
+  {{else if eq .Type "json_array"}}
+  <label class="block">
+    <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    <textarea name="{{.Name}}" rows="4" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
+      class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">{{.StringValue}}</textarea>
+  </label>
+
   {{else if eq .Type "number"}}
   <label class="block">
     <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>

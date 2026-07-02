@@ -924,9 +924,15 @@ func (rt *Router) approvalStatus(w http.ResponseWriter, r *http.Request) {
 // These translate Gmail REST API format into Sieve connector operations,
 // going through the same auth + policy pipeline.
 
-// resolveGmailConnection resolves a Gmail userId to a connection ID.
-// "me" resolves to the first gmail connection. A specific alias is looked up directly.
-func (rt *Router) resolveGmailConnection(tok *tokens.Token, userId string) (string, error) {
+// resolveGmailConnection resolves a Gmail userId to a connection ID. A specific
+// alias is looked up directly. "me" resolves to a gmail connection the token is
+// actually PERMITTED to use for this operation: with several Google accounts,
+// picking the first one blindly would resolve to an account the token isn't
+// granted, get denied, and never try the account the grant targets — making a
+// valid IAM grant unusable via "me". So for "me" we IAM-probe the candidates and
+// choose the first non-deny; the per-op Decide in gmailExecute remains the
+// authoritative gate.
+func (rt *Router) resolveGmailConnection(ctx context.Context, tok *tokens.Token, userId, operation string, params map[string]any) (string, error) {
 	if userId != "me" {
 		// Treat userId as a connection alias — verify it's allowed and is gmail.
 		// (IAM: per-op Decide is the real gate; this only resolves the alias.)
@@ -943,17 +949,41 @@ func (rt *Router) resolveGmailConnection(tok *tokens.Token, userId string) (stri
 		return userId, nil
 	}
 
-	// "me" — find the first gmail connection this token can resolve.
+	// "me" — the token's Google connections, in order.
+	var candidates []string
 	for _, connID := range rt.tokenCandidateConnections(tok) {
 		conn, err := rt.connections.Get(connID)
+		if err != nil || conn.ConnectorType != "google" {
+			continue
+		}
+		candidates = append(candidates, connID)
+	}
+	switch len(candidates) {
+	case 0:
+		return "", fmt.Errorf("no gmail connection available for this token")
+	case 1:
+		// Single account: the Decide gate in gmailExecute is authoritative.
+		return candidates[0], nil
+	}
+	// Multiple accounts: pick the first the token is permitted for this op, so a
+	// grant scoped to a non-first account is reachable via "me". Decide is pure
+	// (no side effects), so probing is safe.
+	for _, connID := range candidates {
+		conn, err := rt.connections.GetConnector(connID)
+		if err != nil {
+			continue // reauth-required / disabled / unavailable — skip
+		}
+		decision, err := rt.decide(ctx, tok, conn, connID, operation, params)
 		if err != nil {
 			continue
 		}
-		if conn.ConnectorType == "google" {
+		if decision.Action != "deny" {
 			return connID, nil
 		}
 	}
-	return "", fmt.Errorf("no gmail connection available for this token")
+	// None permitted (or all errored/dead) — fall back to the first account so the
+	// caller gets the normal deny/reauth response against a concrete connection.
+	return candidates[0], nil
 }
 
 // gmailExecute runs an operation through the full policy pipeline and returns the result.
@@ -970,7 +1000,7 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 		userId = "me"
 	}
 
-	connID, err := rt.resolveGmailConnection(tok, userId)
+	connID, err := rt.resolveGmailConnection(r.Context(), tok, userId, operation, params)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return

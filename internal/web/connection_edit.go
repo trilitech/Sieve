@@ -292,6 +292,11 @@ func fieldViewFromStored(f connector.Field, cfg map[string]any) editFieldView {
 			b, _ := json.MarshalIndent(obj, "", "  ")
 			v.StringValue = string(b)
 		}
+	case "json_array":
+		if arr, ok := cfg[f.Name].([]any); ok && len(arr) > 0 {
+			b, _ := json.MarshalIndent(arr, "", "  ")
+			v.StringValue = string(b)
+		}
 	default:
 		if f.Secret {
 			// Never echo the stored secret back into the form. The

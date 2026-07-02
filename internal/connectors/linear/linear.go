@@ -120,7 +120,7 @@ func Meta() connector.ConnectorMeta {
 			{
 				Name:        "outbound_allowlist",
 				Label:       "Outbound allowlist (CIDRs)",
-				Type:        "json",
+				Type:        "json_array",
 				Required:    false,
 				Editable:    true,
 				Placeholder: `["127.0.0.0/8"]`,
