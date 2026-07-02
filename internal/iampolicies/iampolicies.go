@@ -655,47 +655,6 @@ func (s *Service) FilterLibrary() (iam.MapFilterLibrary, error) {
 	return lib, nil
 }
 
-// --- role groups ---
-
-// CreateRoleGroup creates a named principal group.
-func (s *Service) CreateRoleGroup(name string) (string, error) {
-	id := generateID()
-	if _, err := s.db.DB.Exec(`INSERT INTO iam_role_groups (id, name, created_at) VALUES (?, ?, ?)`,
-		id, name, time.Now().UTC()); err != nil {
-		return "", fmt.Errorf("create role group: %w", err)
-	}
-	return id, nil
-}
-
-// AddRoleToGroup adds a role to a group (idempotent).
-func (s *Service) AddRoleToGroup(groupID, roleID string) error {
-	_, err := s.db.DB.Exec(
-		`INSERT OR IGNORE INTO iam_role_group_members (group_id, role_id) VALUES (?, ?)`, groupID, roleID)
-	if err != nil {
-		return fmt.Errorf("add role to group: %w", err)
-	}
-	return nil
-}
-
-// GroupsForRole returns the group ids a role belongs to (for the PIP's
-// principal hierarchy).
-func (s *Service) GroupsForRole(roleID string) ([]string, error) {
-	rows, err := s.db.DB.Query(`SELECT group_id FROM iam_role_group_members WHERE role_id = ?`, roleID)
-	if err != nil {
-		return nil, fmt.Errorf("groups for role: %w", err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var g string
-		if err := rows.Scan(&g); err != nil {
-			return nil, err
-		}
-		out = append(out, g)
-	}
-	return out, rows.Err()
-}
-
 // --- engine ---
 
 // BuildEngine loads the enabled policies + filter library and constructs the

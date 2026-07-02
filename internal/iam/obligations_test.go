@@ -110,3 +110,29 @@ func TestCollect_Empty(t *testing.T) {
 		t.Fatalf("empty input should yield empty obligations, got %+v", obl)
 	}
 }
+
+// TestCollect_AuditLabelDedup pins that the same @audit_label from two matching
+// permits appears once (first-seen order preserved).
+func TestCollect_AuditLabelDedup(t *testing.T) {
+	perPermit := []map[string]string{
+		{"audit_label": "pii"},
+		{"audit_label": "money"},
+		{"audit_label": "pii"},
+	}
+	obl, err := collectObligations(perPermit, MapFilterLibrary{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obl.AuditLabel != "pii,money" {
+		t.Errorf("audit labels should dedupe preserving order: got %q want %q", obl.AuditLabel, "pii,money")
+	}
+}
+
+// TestToValue_HighPrecisionDecimalRounds pins the minor fix: an agent-supplied
+// number with more than Cedar's 4-dp precision is ROUNDED, not hard-errored (a
+// >4dp value would otherwise fail the whole Decide).
+func TestToValue_HighPrecisionDecimalRounds(t *testing.T) {
+	if _, err := toValue(3.14159); err != nil {
+		t.Errorf(">4dp decimal should round, not error: %v", err)
+	}
+}

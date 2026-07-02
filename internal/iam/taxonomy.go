@@ -128,10 +128,10 @@ func ResolveResource(connType, connID string, op connector.OperationDef, params 
 
 // BuildRequest assembles a complete Request from taxonomy pieces — this is the
 // PIP (NIST SP 800-162) the PEP calls per request (PR-D). Pure; no I/O. The
-// caller supplies the role's groups (iampolicies.GroupsForRole), the
-// connection's type + status (connections.Get), and the op's OperationDef (from
-// the connector's Meta().Operations). The connection entity is annotated with
-// connection_status so a policy may gate on it.
+// caller supplies the token's role ids, the connection's type + status
+// (connections.Get), and the op's OperationDef (from the connector's
+// Meta().Operations). The connection entity is annotated with connection_status
+// so a policy may gate on it.
 func BuildRequest(tokenID string, roleIDs []string, connType, connID, connStatus string, op connector.OperationDef, params map[string]any) Request {
 	pUID, pEnts := PrincipalEntities(tokenID, roleIDs)
 	aUID, aEnts := ResolveAction(connType, op)

@@ -2,6 +2,7 @@ package iam
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -107,11 +108,33 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 	// Pass 1 — grants: the decision.
 	dec, diag := e.grants.IsAuthorized(entities, req)
 	out := Decision{Allow: bool(dec)}
+	// Fail-safe for errored RESTRICTION policies (spec §7.6 polarity). Cedar SKIPS
+	// a policy whose condition ERRORS (e.g. an agent-controlled param of the wrong
+	// type, or a missing attribute). That is fail-CLOSED for a plain permit (a
+	// skipped grant just denies), but fail-OPEN for a `forbid` or an @approval
+	// permit layered on a broader allow — the skip would silently disable the
+	// restriction. So an errored forbid forces DENY and an errored @approval permit
+	// forces APPROVAL, mirroring the guardrail set's Reasons∪Errors fail-safe. A
+	// plain (non-approval) errored permit keeps failing closed (no grant).
+	var errForbid, errApproval bool
 	for _, d := range diag.Errors {
 		out.EvalErrors = append(out.EvalErrors, EvalError{PolicyID: string(d.PolicyID), Message: d.Message})
+		p := e.grants.Get(d.PolicyID)
+		if p == nil {
+			continue
+		}
+		if p.Effect() == cedar.Forbid {
+			errForbid = true
+		} else if strings.TrimSpace(string(p.Annotations()[types.Ident(annApproval)])) == "required" {
+			errApproval = true
+		}
 	}
 	for _, reason := range diag.Reasons {
 		out.Determining = append(out.Determining, string(reason.PolicyID))
+	}
+	if errForbid {
+		// A deny rule whose condition could not be evaluated still denies.
+		return Decision{Allow: false, Reason: "denied by policy (a deny rule's condition could not be evaluated — fail-safe, spec §7.6)", Determining: out.Determining, EvalErrors: out.EvalErrors}, nil
 	}
 	if dec != cedar.Allow {
 		out.Reason = e.denyReason(diag.Reasons)
@@ -161,6 +184,11 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 		return Decision{Allow: false, Reason: err.Error(), Determining: out.Determining, EvalErrors: out.EvalErrors}, nil
 	}
 	out.Obligations = obl
+	if errApproval {
+		// An @approval permit whose condition errored: fail-safe to approval so a
+		// forced evaluation error can't skip the human gate.
+		out.Obligations.Approval = true
+	}
 	return out, nil
 }
 
@@ -292,7 +320,10 @@ func toValue(v any) (types.Value, error) {
 		if x == float64(int64(x)) {
 			return cedar.Long(int64(x)), nil
 		}
-		d, err := cedar.NewDecimalFromFloat(x)
+		// Cedar decimal is fixed-point to 4 places; round an agent-supplied number
+		// with more precision to 4dp instead of erroring the whole request (a >4dp
+		// value would otherwise hard-fail Decide — spec §4.5).
+		d, err := cedar.NewDecimalFromFloat(math.Round(x*10000) / 10000)
 		if err != nil {
 			return nil, fmt.Errorf("decimal %v: %w", x, err)
 		}
