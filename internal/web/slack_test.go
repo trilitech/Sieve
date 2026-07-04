@@ -78,6 +78,26 @@ func slackMockHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
 	case "/api/oauth.v2.access":
+		_ = r.ParseForm()
+		// A user install is distinguished by the presence of
+		// authed_user.access_token in the response. The test drives it by
+		// posting code=user-fake-code; any other code returns a bot install.
+		if r.FormValue("code") == "user-fake-code" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":          true,
+				"token_type":  "bot",
+				"scope":       "",
+				"bot_user_id": "U0KRQLJ9H",
+				"team":        map[string]any{"id": "T012", "name": "Acme"},
+				"authed_user": map[string]any{
+					"id":           "U0INSTALLER",
+					"scope":        "search:read,channels:history",
+					"access_token": "xoxp-test-user-installed",
+					"token_type":   "user",
+				},
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok":           true,
 			"access_token": "xoxb-test-installed",
@@ -595,6 +615,195 @@ func TestHandleSlackReauth_TokenPath(t *testing.T) {
 	full, _ := env.Connections.GetWithConfig("seeded")
 	if full.Config["bot_token"] != "xoxb-fresh-token" {
 		t.Fatalf("bot_token not refreshed: %v", full.Config["bot_token"])
+	}
+}
+
+// TestHandleSlackUserToken_HappyPath asserts a valid xoxp- user token is
+// validated against auth.test then persisted as a user-identity
+// connection (auth_kind=user_token), with no bot credential.
+func TestHandleSlackUserToken_HappyPath(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	rec := formPost(handler, env, "/connections/slack/user-token", url.Values{
+		"id":           {"acme-me"},
+		"display_name": {"Acme (as me)"},
+		"user_token":   {"xoxp-real-user-token"},
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	c, err := env.Connections.Get("acme-me")
+	if err != nil {
+		t.Fatalf("connection not persisted: %v", err)
+	}
+	if c.Status != connections.StatusActive {
+		t.Fatalf("status = %q, want active", c.Status)
+	}
+	full, _ := env.Connections.GetWithConfig("acme-me")
+	if full.Config["auth_kind"] != slackconn.KindUserToken {
+		t.Fatalf("auth_kind = %v, want user_token", full.Config["auth_kind"])
+	}
+	if full.Config["user_token"] != "xoxp-real-user-token" {
+		t.Fatalf("user_token not stored: %v", full.Config["user_token"])
+	}
+	if _, ok := full.Config["bot_token"]; ok {
+		t.Fatalf("user connection must not carry a bot_token: %v", full.Config["bot_token"])
+	}
+	if full.Config["team_id"] != "T012" {
+		t.Fatalf("team_id not picked up from auth.test: %v", full.Config["team_id"])
+	}
+}
+
+// TestHandleSlackUserToken_RejectsBadPrefix — a bot (xoxb-) token pasted
+// into the user path is rejected before any upstream call or persist, so
+// an operator can't silently downgrade a "user" connection to bot identity.
+func TestHandleSlackUserToken_RejectsBadPrefix(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+	rec := formPost(handler, env, "/connections/slack/user-token", url.Values{
+		"id":           {"bad-user"},
+		"display_name": {"Bad"},
+		"user_token":   {"xoxb-bot-token"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-user token, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if exists, _ := env.Connections.Exists("bad-user"); exists {
+		t.Fatal("connection persisted despite bad prefix")
+	}
+}
+
+// TestHandleSlackUserToken_RejectsAgentToken — the user-token path is an
+// admin mutation and MUST reject any request carrying an agent bearer.
+func TestHandleSlackUserToken_RejectsAgentToken(t *testing.T) {
+	handler, _, _ := slackTestServer(t)
+	form := url.Values{
+		"id":           {"agent-user"},
+		"display_name": {"Agent"},
+		"user_token":   {"xoxp-real"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/connections/slack/user-token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer sieve_tok_abc")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for agent token, got %d", rec.Code)
+	}
+}
+
+// TestHandleOAuthCallback_SlackUserInstall drives the user OAuth flow:
+// /oauth/user/start seeds pending state, then the callback with a
+// user-install code persists auth_kind=user_token with the user token
+// taken from authed_user.access_token, and no oauth_token blob.
+func TestHandleOAuthCallback_SlackUserInstall(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	startRec := formPost(handler, env, "/connections/slack/oauth/user/start", url.Values{
+		"id":           {"acme-user-oauth"},
+		"display_name": {"Acme User OAuth"},
+	})
+	if startRec.Code != http.StatusFound {
+		t.Fatalf("oauth/user/start failed: %d (body: %s)", startRec.Code, startRec.Body.String())
+	}
+	loc, _ := url.Parse(startRec.Header().Get("Location"))
+	if loc.Query().Get("user_scope") == "" {
+		t.Fatalf("user install must request user_scope; redirect was %s", startRec.Header().Get("Location"))
+	}
+	if loc.Query().Get("scope") != "" {
+		t.Fatalf("user install must not request bot scope; redirect was %s", startRec.Header().Get("Location"))
+	}
+	state := loc.Query().Get("state")
+	if state == "" {
+		t.Fatal("no state in start redirect")
+	}
+
+	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=user-fake-code&state="+state, nil)
+	if c := env.SessionCookie(); c != nil {
+		cbReq.AddCookie(c)
+	}
+	cbRec := httptest.NewRecorder()
+	handler.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 after callback, got %d (body: %s)", cbRec.Code, cbRec.Body.String())
+	}
+
+	full, err := env.Connections.GetWithConfig("acme-user-oauth")
+	if err != nil {
+		t.Fatalf("connection not persisted: %v", err)
+	}
+	if full.Config["auth_kind"] != slackconn.KindUserToken {
+		t.Fatalf("expected auth_kind=user_token, got %v", full.Config["auth_kind"])
+	}
+	if full.Config["user_token"] != "xoxp-test-user-installed" {
+		t.Fatalf("user_token not persisted from authed_user: %v", full.Config["user_token"])
+	}
+	if _, ok := full.Config["oauth_token"]; ok {
+		t.Fatalf("user install must not persist an oauth_token blob: %v", full.Config["oauth_token"])
+	}
+	if full.Config["bot_user_id"] != "U0INSTALLER" {
+		t.Fatalf("bot_user_id should be the installing user's id, got %v", full.Config["bot_user_id"])
+	}
+}
+
+// TestHandleOAuthCallback_SlackBotInstall_StillBot is the regression
+// guard: the existing bot OAuth path must still yield auth_kind=oauth
+// with an oauth_token blob and no user_token, unchanged by the user path.
+func TestHandleOAuthCallback_SlackBotInstall_StillBot(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	startRec := formPost(handler, env, "/connections/slack/oauth/start", url.Values{
+		"id":           {"acme-bot-oauth"},
+		"display_name": {"Acme Bot OAuth"},
+	})
+	if startRec.Code != http.StatusFound {
+		t.Fatalf("oauth/start failed: %d", startRec.Code)
+	}
+	loc, _ := url.Parse(startRec.Header().Get("Location"))
+	if loc.Query().Get("scope") == "" {
+		t.Fatalf("bot install must request scope; redirect was %s", startRec.Header().Get("Location"))
+	}
+	state := loc.Query().Get("state")
+
+	cbReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=fake-code&state="+state, nil)
+	if c := env.SessionCookie(); c != nil {
+		cbReq.AddCookie(c)
+	}
+	cbRec := httptest.NewRecorder()
+	handler.ServeHTTP(cbRec, cbReq)
+	if cbRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", cbRec.Code, cbRec.Body.String())
+	}
+
+	full, _ := env.Connections.GetWithConfig("acme-bot-oauth")
+	if full.Config["auth_kind"] != slackconn.KindOAuth {
+		t.Fatalf("expected auth_kind=oauth, got %v", full.Config["auth_kind"])
+	}
+	if _, ok := full.Config["user_token"]; ok {
+		t.Fatalf("bot install must not persist a user_token: %v", full.Config["user_token"])
+	}
+	tokenMap, _ := full.Config["oauth_token"].(map[string]any)
+	if tokenMap["access_token"] != "xoxb-test-installed" {
+		t.Fatalf("bot access_token not persisted: %v", tokenMap)
+	}
+}
+
+// TestConnectionsPage_SlackCard_UserForms asserts the connections page
+// renders the two user-identity install paths alongside the bot ones.
+func TestConnectionsPage_SlackCard_UserForms(t *testing.T) {
+	t.Setenv("SLACK_CLIENT_ID", "test-client-id")
+	t.Setenv("SLACK_CLIENT_SECRET", "test-client-secret")
+	handler, env := slackUITestServer(t)
+
+	rec := getRequest(handler, env, "/connections")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `action="/connections/slack/oauth/user/start"`) {
+		t.Errorf("Slack card missing user OAuth-start form")
+	}
+	if !strings.Contains(body, `action="/connections/slack/user-token"`) {
+		t.Errorf("Slack card missing user-token paste form")
 	}
 }
 

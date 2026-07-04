@@ -10,10 +10,12 @@ import (
 	"testing"
 
 	"github.com/trilitech/Sieve/internal/api"
+	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 	"github.com/trilitech/Sieve/internal/iam"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/testing/mockslack"
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 	"github.com/trilitech/Sieve/internal/tokens"
 )
@@ -412,5 +414,86 @@ func TestIAMEnforce_ScriptFilterRewritesResponse(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "[redacted-by-script]") {
 		t.Errorf("expected the script's redaction marker in the response: %s", raw)
+	}
+}
+
+// TestIAMEnforce_SlackSearchByIdentityOverGateway proves the Cedar-native
+// rework end to end: one IAM rule granting slack/search_messages authorizes
+// the op on ANY Slack connection, but the connector's runtime identity gate
+// decides availability — a user-token connection returns 200 with results,
+// while a bot-token connection with the identical grant returns HTTP 501
+// operation_not_enabled. The grant binds the operation, not the identity.
+func TestIAMEnforce_SlackSearchByIdentityOverGateway(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+
+	env := testenv.New(t)
+	env.Registry.Register(slackconn.Meta(), slackconn.Factory())
+
+	// Route both connections at the mock Slack server; the loopback dial
+	// needs the outbound allowlist httpguard enforces for non-public IPs.
+	base := map[string]any{"_base_url": mock.URL, "outbound_allowlist": []any{"127.0.0.0/8"}}
+	userCfg := map[string]any{"auth_kind": slackconn.KindUserToken, "user_token": "xoxp-user-tok", "team_id": "T012"}
+	botCfg := map[string]any{"auth_kind": slackconn.KindToken, "bot_token": "xoxb-bot-tok", "team_id": "T012"}
+	for k, v := range base {
+		userCfg[k] = v
+		botCfg[k] = v
+	}
+	if err := env.Connections.Add("slack-user", "slack", "Slack (user)", userCfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Connections.Add("slack-bot", "slack", "Slack (bot)", botCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	role, err := env.Roles.Create("searcher", []roles.Binding{
+		{ConnectionID: "slack-user"}, {ConnectionID: "slack-bot"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := env.Tokens.Create(&tokens.CreateRequest{Name: "t", RoleID: role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A single grant for slack/search_messages on both connections.
+	for _, connID := range []string{"slack-user", "slack-bot"} {
+		grant, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+			RoleID: role.ID, Effect: "allow", ConnectorType: "slack",
+			OpScope: "specific", Operations: []string{"search_messages"},
+			ConnectionIDs: []string{connID},
+		}, slackconn.Meta().Operations)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.IAM.CreatePolicy("search-"+connID, "", grant, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
+	router := api.NewRouter(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit)
+	srv := httptest.NewServer(router.Handler())
+	t.Cleanup(srv.Close)
+
+	// User connection: authorized AND runnable → 200 with results.
+	status, body := apiPost(t, srv.URL+"/api/v1/connections/slack-user/ops/search_messages", tok.PlaintextToken, `{"query":"deploy"}`)
+	if status != 200 {
+		t.Fatalf("user-token search should succeed, got %d (%s)", status, body)
+	}
+	if !strings.Contains(body, "items") {
+		t.Errorf("expected normalized items in user search response, got %s", body)
+	}
+
+	// Bot connection: authorized by the SAME rule, but refused at execution
+	// with the operation_not_enabled sentinel → HTTP 501.
+	status, body = apiPost(t, srv.URL+"/api/v1/connections/slack-bot/ops/search_messages", tok.PlaintextToken, `{"query":"deploy"}`)
+	if status != 501 {
+		t.Fatalf("bot-token search should be 501 operation_not_enabled, got %d (%s)", status, body)
+	}
+	if !strings.Contains(body, "operation_not_enabled") {
+		t.Errorf("expected operation_not_enabled in bot response, got %s", body)
 	}
 }

@@ -190,6 +190,96 @@ func TestOps_SearchMessages_NotEnabled(t *testing.T) {
 	}
 }
 
+// TestOps_SearchMessages_UserToken — on a user-token connection the op
+// runs for real against Slack's search.messages and returns the
+// normalized {items, next_cursor} shape.
+func TestOps_SearchMessages_UserToken(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+	c, _ := newUserConnectorForTest(t, mock)
+
+	got, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "deploy"})
+	if err != nil {
+		t.Fatalf("search_messages (user): %v", err)
+	}
+	m := got.(map[string]any)
+	items, ok := m["items"].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("expected non-empty items from search, got %+v", m["items"])
+	}
+	if _, ok := m["next_cursor"]; !ok {
+		t.Fatal("expected next_cursor key in response")
+	}
+	// Assert the query reached Slack.
+	var searched bool
+	for _, call := range mock.Calls() {
+		if call.Path == "/api/search.messages" {
+			searched = true
+			if q := call.Form["query"]; len(q) == 0 || q[0] != "deploy" {
+				t.Fatalf("expected query=deploy forwarded, got %v", q)
+			}
+		}
+	}
+	if !searched {
+		t.Fatal("search.messages was not invoked")
+	}
+}
+
+// TestOps_SearchMessages_UserToken_MissingQuery — a search with no query
+// is a bad request regardless of identity.
+func TestOps_SearchMessages_UserToken_MissingQuery(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+	c, _ := newUserConnectorForTest(t, mock)
+	if _, err := c.Execute(context.Background(), "search_messages", map[string]any{}); err == nil {
+		t.Fatal("expected error when query missing")
+	}
+}
+
+// TestOps_SearchMessages_UserToken_Pagination walks page→cursor
+// translation with page_size=1 over the mock's 3-item corpus: the first
+// page returns a next_cursor pointing at page 2, and following it
+// advances until the cursor empties on the last page.
+func TestOps_SearchMessages_UserToken_Pagination(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+	c, _ := newUserConnectorForTest(t, mock)
+
+	page1, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "deploy", "page_size": 1})
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	m1 := page1.(map[string]any)
+	if items, _ := m1["items"].([]any); len(items) != 1 {
+		t.Fatalf("page 1 size: got %d, want 1", len(items))
+	}
+	cursor1, _ := m1["next_cursor"].(string)
+	if cursor1 == "" {
+		t.Fatal("expected non-empty next_cursor on page 1 of 3")
+	}
+
+	page2, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "deploy", "page_size": 1, "cursor": cursor1})
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	m2 := page2.(map[string]any)
+	if items, _ := m2["items"].([]any); len(items) != 1 {
+		t.Fatalf("page 2 size: got %d, want 1", len(items))
+	}
+	// Confirm the mock actually received page=2 on the second call.
+	var sawPage2 bool
+	for _, call := range mock.Calls() {
+		if call.Path == "/api/search.messages" {
+			if p := call.Form["page"]; len(p) > 0 && p[0] == "2" {
+				sawPage2 = true
+			}
+		}
+	}
+	if !sawPage2 {
+		t.Fatal("expected the cursor to translate into page=2 on the follow-up call")
+	}
+}
+
 func TestOps_PostMessage(t *testing.T) {
 	mock := mockslack.New()
 	t.Cleanup(mock.Close)

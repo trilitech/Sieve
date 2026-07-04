@@ -13,12 +13,27 @@ This page covers the operator setup.
 | `read_user_profile` | Look up a user's profile (name, email, avatar). | `users:read`, `users.profile:read` |
 | `read_channel_history` | Read recent messages from a channel. | `channels:history`, `groups:history` |
 | `read_thread` | Read replies under a parent message. | `channels:history`, `groups:history` |
-| `search_messages` | Search workspace messages. **Not enabled in v1** — requires user-token install (see Limitations). | `search:read` |
+| `search_messages` | Search workspace messages. **User-token connections only** — bot connections return `operation_not_enabled` (see Two identities). | `search:read` (user scope) |
 | `post_message` | Post a message to a channel. | `chat:write` |
 
-All `list_*` operations follow Sieve's normalized `{items, next_cursor}` pagination shape. Agents pass `cursor` and `page_size` (default 100, max 100) into the next call to walk past the first page.
+All `list_*` operations (and `search_messages`) follow Sieve's normalized `{items, next_cursor}` pagination shape. Agents pass `cursor` and `page_size` (default 100, max 100) into the next call to walk past the first page.
 
-## Two ways to install
+## Two identities: bot or user
+
+A Slack connection authenticates as one of two identities, chosen at install time via `auth_kind`:
+
+| Identity | `auth_kind` | Token | Reach | Acts as |
+|---|---|---|---|---|
+| **Bot** (default) | `oauth` / `token` | `xoxb-…` | channels the bot is invited to; **no** search | the app's bot user |
+| **User** | `user_token` | `xoxp-…` (or `xoxe.…`) | every channel/DM the installing person can see **+ `search_messages`** | the installing human |
+
+Both identities expose the same curated operation set; they differ in reach and attribution. The bot identity is the least-privilege default — pick a user identity only when an agent workflow genuinely needs a person's full reach or workspace search.
+
+`search_messages` is grantable in the IAM rule builder against **any** Slack connection (so a role's grant survives a re-auth or an identity change), but at runtime it only executes on a user-token connection; a bot-token connection returns `operation_not_enabled` (HTTP 501 on REST, `operation_not_enabled:` tool error on MCP).
+
+## Ways to install
+
+Four paths: bot OAuth, bot token, user OAuth, user token. Options 1–2 create a **bot** identity; Options 3–4 create a **user** identity.
 
 ### Option 1 — OAuth install (recommended)
 
@@ -56,6 +71,30 @@ Best when your Slack app is already installed in your workspace and you have the
 
 The pasted token is encrypted at rest — it is never written to a plaintext column or logged.
 
+### Option 3 — User OAuth install
+
+Best when an agent needs your full personal reach or workspace search, and you want Sieve to manage the user token end to end. Requires the same one-time Slack-app OAuth setup as Option 1.
+
+1. Under your Slack app's **OAuth & Permissions → User Token Scopes**, add the user scopes you want, including `search:read` for `search_messages`. A reasonable set:
+
+   ```
+   channels:read channels:history groups:read groups:history
+   im:read im:history mpim:read mpim:history
+   users:read users:read.email users.profile:read search:read chat:write
+   ```
+
+2. On the Slack card, click **Install via OAuth (as user)**, enter a Connection Alias and Display Name, and approve the install **as yourself**. The connection lands `status: active` with `auth_kind = user_token`. The connection now acts as you, with your full reach.
+
+### Option 4 — Direct user-token entry
+
+Best when you already have a user token (`xoxp-…`) from your Slack app's **OAuth & Permissions → User OAuth Token**.
+
+1. Copy the `xoxp-…` (or Enterprise Grid `xoxe.…`) token.
+2. On the Slack card, use **Add via user token**. Paste and submit.
+3. Sieve calls `auth.test`, then persists the connection as `auth_kind = user_token`. Sieve refuses a `xoxb-` bot token on this path, so a user connection can't be silently downgraded to a bot identity.
+
+The pasted user token is encrypted at rest — never written to a plaintext column or logged.
+
 ## Multi-workspace setups
 
 Add a second Slack connection with a different alias (e.g., `acme-slack` and `engineering-slack`). Agents address each workspace by alias when there are multiple Slack connections on a token; Sieve adds a `slack_` prefix to the MCP tool names automatically (e.g., `acme-slack_post_message`).
@@ -91,10 +130,10 @@ curl -s -X POST http://localhost:19817/api/v1/connections/<conn-id>/ops/post_mes
 
 If the policy on the role allows posting only to `#bot-test`, posting to `#general` returns `{"error": "policy_denied", ...}`.
 
-## Limitations (v1)
+## Limitations
 
-- **`search_messages` is disabled.** Slack's `search.messages` API requires a *user* token (`xoxp-…`), not a bot token. Sieve v1 supports bot tokens only (classic non-rotating scopes). The operation is exposed for policy bindings but always returns the typed `connector.ErrOperationNotEnabled` sentinel. Agents see this as **HTTP 501 Not Implemented** with body `{"error":"operation_not_enabled","connection_id":...,"operation":"search_messages","message":...}` on REST, or as a tool error with the `operation_not_enabled:` text prefix on MCP. User-token install support is on the roadmap.
-- **No Slack Enterprise Grid org-level installs.** v1 supports per-workspace bot installs. If you operate across multiple workspaces, add a Sieve connection per workspace.
+- **`search_messages` needs a user connection.** Slack's `search.messages` API requires a *user* token (`xoxp-…`), not a bot token. On a user-identity connection the operation runs for real; on a bot-identity connection it returns the typed `connector.ErrOperationNotEnabled` sentinel — **HTTP 501 Not Implemented** with body `{"error":"operation_not_enabled","connection_id":...,"operation":"search_messages","message":...}` on REST, or a tool error with the `operation_not_enabled:` text prefix on MCP. The op is still grantable against either kind so a role's grant is stable across re-auth.
+- **No Slack Enterprise Grid org-level installs.** Per-workspace bot/user installs are supported. If you operate across multiple workspaces, add a Sieve connection per workspace.
 - **No inbound webhooks.** Slack Events API (real-time message ingestion) is out of scope for v1 — Sieve is outbound-only. Agents that need event-driven workflows poll the `read_channel_history` operation.
 - **No granular-scope token rotation.** v1 uses classic non-rotating bot tokens. Granular scopes with refresh-token rotation are a future feature.
 
@@ -107,7 +146,10 @@ A: Neither the encrypted `_oauth_app:slack` row nor the env-var fallback resolve
 A: Expected — the old token is now revoked. Click **Re-install** on the row (OAuth) or paste the new token via the reauth form.
 
 **Q: `auth.test` rejects my pasted token with `invalid_auth`.**
-A: Confirm the token starts with `xoxb-` (bot token) — Sieve refuses `xoxp-` (user) and `xoxa-` (legacy app) tokens because the curated operations are scoped against bot capabilities. If you re-issued the token, copy the latest value from **OAuth & Permissions**.
+A: Confirm you pasted the token into the matching form. The **bot** token form accepts only `xoxb-…`; the **user** token form accepts only `xoxp-…` / `xoxe.…`. Sieve rejects a mismatched prefix before calling Slack so an identity can't be set by the wrong token. If you re-issued the token, copy the latest value from **OAuth & Permissions**.
+
+**Q: Should I use a bot or a user connection?**
+A: Prefer **bot** (the default, least privilege) unless an agent workflow needs a person's full reach — every channel/DM they can see — or workspace search (`search_messages`), which Slack only allows with a user token. A user connection acts as, and is attributed to, the installing human.
 
 **Q: `post_message` returns "channel not found" but the channel exists.**
 A: The bot must be a member of private channels before it can post. Invite the bot user (the `bot_user_id` from `auth.test`) to the channel manually, or grant `channels:join` and call a separate join op (not yet curated).
@@ -116,4 +158,4 @@ A: The bot must be a member of private channels before it can post. Invite the b
 
 Per Sieve's [credential encryption design](./credential-encryption.md), the bot token (or OAuth-issued bearer) lives only inside the encrypted `config_ciphertext` blob on the `connections` row. The keyring KEK is derived from the operator's passphrase at startup; if the keyring is unloaded, every connector path returns HTTP 503 "service locked" rather than touching plaintext credentials.
 
-The Slack connector does **not** participate in refresh-token rotation because classic bot tokens don't expire or rotate. Linear, Jira, and Asana — when they ship — will use that path.
+The Slack connector does **not** participate in refresh-token rotation because classic Slack tokens — bot (`xoxb-`) and user (`xoxp-`) alike — don't expire or rotate. Linear, Jira, and Asana — when they ship — will use that path.
