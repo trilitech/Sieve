@@ -1074,12 +1074,48 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 
 	connID, preDecision, err := rt.resolveGmailConnection(r.Context(), tok, userId, operation, params)
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		// A missing alias, a non-gmail connection, or a token with no visible
+		// gmail connection must all be indistinguishable from a simply-ungranted
+		// one — uniform not-authorized (the reason still reaches the audit log).
+		rt.logAudit(tok, userId, operation, params, "deny", err.Error(), time.Since(start).Milliseconds())
+		rt.writeNotAuthorized(w)
 		return
 	}
 
-	// Pre-flight reauth check — short-circuit if the connection is dead.
-	if c, err := rt.connections.Get(connID); err == nil && c.Status == connections.StatusReauthRequired {
+	// The IAM decision is the SOLE gate and MUST run before anything
+	// connection-specific (the reauth pre-flight, the connector build) is
+	// revealed — otherwise an unauthorized token could distinguish a missing vs
+	// needs_reauth vs ungranted gmail connection (an existence/status oracle,
+	// mirrors executeOperation). Reuse the "me" probe's decision when present
+	// (already non-deny); otherwise decide on connection METADATA (type +
+	// status) without building the connector. Missing connection or a deny → the
+	// identical not-authorized response (see writeNotAuthorized).
+	c, cerr := rt.connections.Get(connID)
+	decision := preDecision
+	if decision == nil {
+		if cerr == nil {
+			d, derr := rt.iam.Decide(r.Context(), rt.registry, tok.ID, tok.RoleIDs, c.ConnectorType, connID, c.Status, operation, params)
+			if derr != nil {
+				rt.logAudit(tok, connID, operation, params, "policy_error", derr.Error(), time.Since(start).Milliseconds())
+				rt.writeNotAuthorized(w)
+				return
+			}
+			decision = d
+		}
+		if decision == nil || decision.Action == "deny" {
+			reason := "connection not found"
+			if decision != nil {
+				reason = decision.Reason
+			}
+			rt.logAudit(tok, connID, operation, params, "deny", reason, time.Since(start).Milliseconds())
+			rt.writeNotAuthorized(w)
+			return
+		}
+	}
+
+	// Authorized (allow / approval_required) — connection-specific handling is
+	// now safe. Reauth fast-path: short-circuit if the connection is dead.
+	if cerr == nil && c.Status == connections.StatusReauthRequired {
 		writeReauthError(w, connID, c.ReauthReason)
 		return
 	}
@@ -1087,24 +1123,6 @@ func (rt *Router) gmailExecute(w http.ResponseWriter, r *http.Request, operation
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
 		rt.writeConnectionError(w, http.StatusNotFound, "connector not available", connID, err)
-		return
-	}
-
-	// Policy check (IAM decision source when enabled, else legacy). Reuse the
-	// decision the "me" probe already computed for this connection, if any, so we
-	// don't evaluate (and re-run any script-mode condition) twice.
-	decision := preDecision
-	if decision == nil {
-		decision, err = rt.decide(r.Context(), tok, conn, connID, operation, params)
-		if err != nil {
-			writeError(w, http.StatusForbidden, "policy error: "+err.Error())
-			return
-		}
-	}
-
-	if decision.Action == "deny" {
-		rt.logAudit(tok, connID, operation, params, "deny", decision.Reason, time.Since(start).Milliseconds())
-		writeError(w, http.StatusForbidden, "policy denied: "+decision.Reason)
 		return
 	}
 
