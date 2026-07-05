@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -1430,15 +1431,18 @@ func (s *Server) createBuilderPolicy(w http.ResponseWriter, r *http.Request) {
 	// or compose roles on a token — not cloning rules.)
 	name = s.uniqueRuleName(name)
 
-	pol, err := s.iam.CreatePolicy(name, description, cedar, true)
+	// Store the compiled Cedar and the structured form-state atomically so the
+	// enforced rule and its editable form can never desync (a two-step
+	// create + SetPolicySpec could leave an enforced rule with no reloadable form).
+	pol, err := s.iam.CreatePolicyWithSpec(name, description, cedar, formStateJSON, true)
 	if err != nil {
+		if errors.Is(err, iampolicies.ErrDuplicateName) {
+			s.renderIAMError(w, r, "A rule named "+name+" already exists — choose a different name.")
+			return
+		}
 		s.renderIAMError(w, r, err.Error())
 		return
 	}
-	// Persist the structured form-state so the rule can be reloaded into the
-	// builder for edit-in-place. Best-effort: a spec write failure must not
-	// orphan the (already-created) rule, which is fully functional without it.
-	_ = s.iam.SetPolicySpec(pol.ID, formStateJSON)
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.create", pol.ID,
 		map[string]any{"name": name, "mode": "builder"}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)
@@ -1480,6 +1484,10 @@ func (s *Server) createAdvancedPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	pol, err := s.iam.CreatePolicy(name, "(raw Cedar)", cedar, true)
 	if err != nil {
+		if errors.Is(err, iampolicies.ErrDuplicateName) {
+			http.Error(w, "a policy named "+name+" already exists — choose a different name", http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1571,11 +1579,16 @@ func (s *Server) handleIAMPolicyUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// Editing keeps the rule enabled (the list has its own enable/disable
 	// toggle; edit-in-place is about the rule's content, not its on/off state).
-	if err := s.iam.UpdatePolicy(id, name, description, cedar, true); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Cedar + form-state are written atomically so the enforced rule and its
+	// editable form stay in sync.
+	if err := s.iam.UpdatePolicyWithSpec(id, name, description, cedar, formStateJSON, true); err != nil {
+		if errors.Is(err, iampolicies.ErrDuplicateName) {
+			s.renderEditPage(w, r, id, "A rule named "+name+" already exists — choose a different name.")
+			return
+		}
+		s.renderEditPage(w, r, id, err.Error())
 		return
 	}
-	_ = s.iam.SetPolicySpec(id, formStateJSON)
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "iam.policy.update", id,
 		map[string]any{"name": name, "mode": "builder"}, "success")
 	http.Redirect(w, r, "/iam", http.StatusSeeOther)

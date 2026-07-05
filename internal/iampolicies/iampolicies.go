@@ -9,15 +9,28 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	sqlite3 "github.com/mattn/go-sqlite3"
 	"github.com/trilitech/Sieve/internal/database"
 	"github.com/trilitech/Sieve/internal/iam"
 )
+
+// ErrDuplicateName is returned by CreatePolicy/UpdatePolicy when the policy name
+// collides with an existing one (the name column is UNIQUE). Handlers map it to
+// a friendly banner instead of surfacing the raw constraint error as HTTP 500.
+var ErrDuplicateName = errors.New("a policy with that name already exists")
+
+// isUniqueViolation reports whether err is a SQLite UNIQUE-constraint failure.
+func isUniqueViolation(err error) bool {
+	var se sqlite3.Error
+	return errors.As(err, &se) && se.ExtendedCode == sqlite3.ErrConstraintUnique
+}
 
 // filtersAnnRE matches an @filters("a b c") annotation in a policy's Cedar.
 var filtersAnnRE = regexp.MustCompile(`@filters\("([^"]*)"\)`)
@@ -94,23 +107,13 @@ func (s *Service) CreatePolicy(name, description, cedar string, enabled bool) (*
 		id, name, description, cedar, boolToInt(enabled), now,
 	)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: %q", ErrDuplicateName, name)
+		}
 		return nil, fmt.Errorf("insert iam policy: %w", err)
 	}
 	s.invalidate()
 	return &StoredPolicy{ID: id, Name: name, Description: description, Cedar: cedar, Enabled: enabled, CreatedAt: now}, nil
-}
-
-// UpdatePolicy modifies a policy's name, description, Cedar, and enabled flag.
-func (s *Service) UpdatePolicy(id, name, description, cedar string, enabled bool) error {
-	res, err := s.db.DB.Exec(
-		`UPDATE iam_policies SET name = ?, description = ?, cedar_text = ?, enabled = ? WHERE id = ?`,
-		name, description, cedar, boolToInt(enabled), id,
-	)
-	if err != nil {
-		return fmt.Errorf("update iam policy: %w", err)
-	}
-	s.invalidate()
-	return mustAffect(res, id)
 }
 
 // SetPolicyEnabled toggles a policy's enabled flag.
@@ -123,14 +126,43 @@ func (s *Service) SetPolicyEnabled(id string, enabled bool) error {
 	return mustAffect(res, id)
 }
 
-// SetPolicySpec stores the structured builder rule (JSON) beside the compiled
-// Cedar so the admin UI can reload it for edit-in-place. It does not touch the
-// Cedar or the engine, so no invalidate.
-func (s *Service) SetPolicySpec(id, specJSON string) error {
-	res, err := s.db.DB.Exec(`UPDATE iam_policies SET spec_json = ? WHERE id = ?`, specJSON, id)
+// CreatePolicyWithSpec stores a new policy together with its structured builder
+// form-state in a SINGLE insert, so the enforced Cedar and the reloadable spec
+// can never desync — a two-step CreatePolicy + SetPolicySpec could leave an
+// enforced rule with no reloadable form if the second write failed.
+func (s *Service) CreatePolicyWithSpec(name, description, cedar, specJSON string, enabled bool) (*StoredPolicy, error) {
+	id := generateID()
+	now := time.Now().UTC()
+	_, err := s.db.DB.Exec(
+		`INSERT INTO iam_policies (id, name, description, cedar_text, spec_json, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, name, description, cedar, specJSON, boolToInt(enabled), now,
+	)
 	if err != nil {
-		return fmt.Errorf("set policy spec: %w", err)
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: %q", ErrDuplicateName, name)
+		}
+		return nil, fmt.Errorf("insert iam policy: %w", err)
 	}
+	s.invalidate()
+	return &StoredPolicy{ID: id, Name: name, Description: description, Cedar: cedar, SpecJSON: specJSON, Enabled: enabled, CreatedAt: now}, nil
+}
+
+// UpdatePolicyWithSpec updates a policy's Cedar + metadata AND its structured
+// form-state in a SINGLE update, keeping the enforced Cedar and the reloadable
+// spec in sync (avoids the update-then-SetPolicySpec desync footgun where a
+// failed second write leaves new Cedar enforced but the old form on reload).
+func (s *Service) UpdatePolicyWithSpec(id, name, description, cedar, specJSON string, enabled bool) error {
+	res, err := s.db.DB.Exec(
+		`UPDATE iam_policies SET name = ?, description = ?, cedar_text = ?, spec_json = ?, enabled = ? WHERE id = ?`,
+		name, description, cedar, specJSON, boolToInt(enabled), id,
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: %q", ErrDuplicateName, name)
+		}
+		return fmt.Errorf("update iam policy: %w", err)
+	}
+	s.invalidate()
 	return mustAffect(res, id)
 }
 
@@ -215,54 +247,6 @@ func (s *Service) CreateGuardrail(name, description, cedar string, enabled bool)
 	return &StoredGuardrail{ID: id, Name: name, Description: description, Cedar: cedar, Enabled: enabled, CreatedAt: now}, nil
 }
 
-// UpdateGuardrail modifies a guardrail (permit-only re-validated).
-func (s *Service) UpdateGuardrail(id, name, description, cedar string, enabled bool) error {
-	if err := iam.ValidateGuardrailCedar(cedar); err != nil {
-		return err
-	}
-	res, err := s.db.DB.Exec(
-		`UPDATE iam_guardrails SET name = ?, description = ?, cedar_text = ?, enabled = ? WHERE id = ?`,
-		name, description, cedar, boolToInt(enabled), id,
-	)
-	if err != nil {
-		return fmt.Errorf("update iam guardrail: %w", err)
-	}
-	s.invalidate()
-	return mustAffect(res, id)
-}
-
-// SetGuardrailEnabled toggles a guardrail's enabled flag.
-func (s *Service) SetGuardrailEnabled(id string, enabled bool) error {
-	res, err := s.db.DB.Exec(`UPDATE iam_guardrails SET enabled = ? WHERE id = ?`, boolToInt(enabled), id)
-	if err != nil {
-		return fmt.Errorf("set guardrail enabled: %w", err)
-	}
-	s.invalidate()
-	return mustAffect(res, id)
-}
-
-// SetGuardrailSpec stores the structured builder form (JSON) for edit-in-place.
-func (s *Service) SetGuardrailSpec(id, specJSON string) error {
-	res, err := s.db.DB.Exec(`UPDATE iam_guardrails SET spec_json = ? WHERE id = ?`, specJSON, id)
-	if err != nil {
-		return fmt.Errorf("set guardrail spec: %w", err)
-	}
-	return mustAffect(res, id)
-}
-
-// GetGuardrail returns a guardrail by id.
-func (s *Service) GetGuardrail(id string) (*StoredGuardrail, error) {
-	row := s.db.DB.QueryRow(
-		`SELECT id, name, description, cedar_text, spec_json, enabled, created_at FROM iam_guardrails WHERE id = ?`, id)
-	var g StoredGuardrail
-	var enabled int
-	if err := row.Scan(&g.ID, &g.Name, &g.Description, &g.Cedar, &g.SpecJSON, &enabled, &g.CreatedAt); err != nil {
-		return nil, fmt.Errorf("get iam guardrail %q: %w", id, err)
-	}
-	g.Enabled = enabled != 0
-	return &g, nil
-}
-
 // ListGuardrails returns all stored guardrails (enabled and not).
 func (s *Service) ListGuardrails() ([]StoredGuardrail, error) {
 	rows, err := s.db.DB.Query(
@@ -344,22 +328,6 @@ func (s *Service) CreateTransform(name, description, cedar, specJSON string, ena
 	return &StoredTransform{ID: id, Name: name, Description: description, Cedar: cedar, SpecJSON: specJSON, Enabled: enabled, CreatedAt: now}, nil
 }
 
-// UpdateTransform modifies a transform in place (permit-only re-validated).
-func (s *Service) UpdateTransform(id, name, description, cedar, specJSON string, enabled bool) error {
-	if err := iam.ValidateGuardrailCedar(cedar); err != nil {
-		return err
-	}
-	res, err := s.db.DB.Exec(
-		`UPDATE iam_transforms SET name = ?, description = ?, cedar_text = ?, spec_json = ?, enabled = ? WHERE id = ?`,
-		name, description, cedar, specJSON, boolToInt(enabled), id,
-	)
-	if err != nil {
-		return fmt.Errorf("update iam transform: %w", err)
-	}
-	s.invalidate()
-	return mustAffect(res, id)
-}
-
 // SetTransformEnabled toggles a transform's enabled flag.
 func (s *Service) SetTransformEnabled(id string, enabled bool) error {
 	res, err := s.db.DB.Exec(`UPDATE iam_transforms SET enabled = ? WHERE id = ?`, boolToInt(enabled), id)
@@ -368,19 +336,6 @@ func (s *Service) SetTransformEnabled(id string, enabled bool) error {
 	}
 	s.invalidate()
 	return mustAffect(res, id)
-}
-
-// GetTransform returns a transform by id (for edit-in-place).
-func (s *Service) GetTransform(id string) (*StoredTransform, error) {
-	row := s.db.DB.QueryRow(
-		`SELECT id, name, description, cedar_text, spec_json, enabled, created_at FROM iam_transforms WHERE id = ?`, id)
-	var t StoredTransform
-	var enabled int
-	if err := row.Scan(&t.ID, &t.Name, &t.Description, &t.Cedar, &t.SpecJSON, &enabled, &t.CreatedAt); err != nil {
-		return nil, fmt.Errorf("get iam transform %q: %w", id, err)
-	}
-	t.Enabled = enabled != 0
-	return &t, nil
 }
 
 // ListTransforms returns all stored transforms (enabled and not).
