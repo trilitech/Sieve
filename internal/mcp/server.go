@@ -288,17 +288,12 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		}
 	}
 
-	// Security: verify the resolved connection is reachable by this token.
-	// This prevents an agent from accessing connections it wasn't granted,
-	// even if it crafts a tool name or "connection" argument manually.
-	if !s.tokenHasConnection(tok, connID) {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "connection not allowed for this token"},
-		}
-	}
-
+	// Reachability is enforced authoritatively by the per-operation IAM
+	// decision (s.decide) below — a token can only invoke an operation on a
+	// connection its roles grant, even if it hand-crafts a tool name or
+	// "connection" argument. (Discovery/tools-list is separately IAM-filtered
+	// via tokenConnectionIDs.) No pre-check here: a representative-read probe
+	// would wrongly reject a write-only grant; the real per-op Decide is exact.
 	conn, err := s.connections.Get(connID)
 	if err != nil {
 		return &JSONRPCResponse{
@@ -599,13 +594,6 @@ func (s *Server) resolveToolCall(tok *tokens.Token, call ToolCallParams) (connID
 	return "", "", fmt.Errorf("cannot resolve connection for tool %q; provide a 'connection' argument", call.Name)
 }
 
-// tokenHasConnection reports whether the token may reach the connection. IAM is
-// the gate: per-op Decide default-denies if no rule of any of the token's roles
-// permits this connection, so resolution itself doesn't pre-check.
-func (s *Server) tokenHasConnection(tok *tokens.Token, connID string) bool {
-	return true
-}
-
 // rolesForToken resolves every role assigned to a token (RBAC, spec §5.1).
 // Missing roles are skipped.
 func (s *Server) rolesForToken(tok *tokens.Token) []*roles.Role {
@@ -618,10 +606,12 @@ func (s *Server) rolesForToken(tok *tokens.Token) []*roles.Role {
 	return out
 }
 
-// tokenConnectionIDs lists the connections to expose as tools for this token.
-// IAM gates each tool CALL per-op (Decide default-denies if no rule permits), so
-// discovery lists all connections; calls the token can't make are denied at
-// execution rather than hidden.
+// tokenConnectionIDs lists the connections to expose (as tools / in
+// list_connections) for this token. Discovery is IAM-gated the same way the REST
+// surface gates it (api.Router.tokenVisibleConnections): a connection appears
+// only if the token has a non-deny decision for a representative read op, so
+// tools/list doesn't leak connection ids/names the token has no grant on. Per-op
+// Decide at tool-CALL time remains the authoritative gate.
 func (s *Server) tokenConnectionIDs(tok *tokens.Token) []string {
 	conns, err := s.connections.List()
 	if err != nil {
@@ -629,9 +619,42 @@ func (s *Server) tokenConnectionIDs(tok *tokens.Token) []string {
 	}
 	out := make([]string, 0, len(conns))
 	for _, c := range conns {
+		if s.iam == nil {
+			// IAM unwired (defensive): preserve prior list-everything behavior.
+			out = append(out, c.ID)
+			continue
+		}
+		op := s.representativeReadOp(c.ConnectorType)
+		if op == "" {
+			continue // no operation to probe → not discoverable
+		}
+		dec, err := s.decide(context.Background(), tok, c.ConnectorType, c.ID, c.Status, op, nil)
+		if err != nil || dec == nil || dec.Action == "deny" {
+			continue
+		}
 		out = append(out, c.ID)
 	}
 	return out
+}
+
+// representativeReadOp picks an operation to probe a connector's discoverability
+// with: the first read-only op, else the first op, else "". Mirrors
+// api.Router.representativeReadOp so REST and MCP discovery agree.
+func (s *Server) representativeReadOp(connType string) string {
+	meta, ok := s.registry.Meta(connType)
+	if !ok {
+		return ""
+	}
+	first := ""
+	for _, o := range meta.Operations {
+		if first == "" {
+			first = o.Name
+		}
+		if o.ReadOnly {
+			return o.Name
+		}
+	}
+	return first
 }
 
 // denormalizeDots reverses the dot-to-underscore normalization applied to tool

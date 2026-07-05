@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
@@ -1270,6 +1271,16 @@ func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string
 	// Response-filter obligations (filter-library names).
 	spec.Filters = r.Form["filters"]
 
+	// Authoring-time validation (restored after the legacy cutover dropped
+	// internal/policy/validate.go). The Cedar builder synthesizes a default action
+	// for an unknown op name and compiles an op-scoped condition into a guard that
+	// is vacuously true for non-matching ops — so a typo'd operation or a condition
+	// that can't apply to the rule's scope would save cleanly and then silently
+	// never match at runtime. Reject both here with a friendly banner.
+	if perr := validateRuleSpec(spec, meta); perr != nil {
+		return spec, "", "", perr
+	}
+
 	summary := iampolicies.HumanSummary(spec, s.roleName(spec.RoleID), s.connLabels(spec.ConnectionIDs))
 
 	formStateJSON := "{}"
@@ -1326,6 +1337,63 @@ func isNumberValue(v string) bool {
 	}
 	_, err := strconv.ParseFloat(v, 64)
 	return err == nil
+}
+
+// validateRuleSpec is the authoring-time validation restored after the legacy
+// cutover dropped internal/policy/validate.go. The Cedar builder is deliberately
+// permissive — it synthesizes a default action for an unknown op name and wraps
+// an op-scoped condition in a guard that is vacuously true for any op it doesn't
+// govern. Either case compiles and stores cleanly, then silently never matches
+// at runtime (discoverable only by traffic analysis). This rejects both up front:
+//   - an operation the connector does not expose (specific scope);
+//   - a declarative condition the connector does not declare;
+//   - an op-scoped condition whose ops don't intersect a specific-scoped rule.
+func validateRuleSpec(spec iampolicies.RuleSpec, meta connector.ConnectorMeta) *parseError {
+	bad := func(msg string) *parseError { return &parseError{msg: msg, code: http.StatusBadRequest} }
+
+	opNames := make(map[string]bool, len(meta.Operations))
+	valid := make([]string, 0, len(meta.Operations))
+	for _, o := range meta.Operations {
+		opNames[o.Name] = true
+		valid = append(valid, o.Name)
+	}
+	if spec.OpScope == "specific" {
+		for _, name := range spec.Operations {
+			if !opNames[name] {
+				return bad(fmt.Sprintf("Unknown operation %q for the %s connector. Valid operations: %s.",
+					name, spec.ConnectorType, strings.Join(valid, ", ")))
+			}
+		}
+	}
+
+	byPath := make(map[string]connector.RuleCondition, len(meta.RuleConditions))
+	for _, c := range meta.RuleConditions {
+		byPath[c.CtxPath] = c
+	}
+	for _, cond := range spec.Conditions {
+		decl, ok := byPath[cond.CtxPath]
+		if !ok {
+			return bad(fmt.Sprintf("The %s connector doesn't support the selected condition (%s).",
+				spec.ConnectorType, cond.CtxPath))
+		}
+		// An op-scoped condition on a specific-scoped rule must share at least one
+		// operation, else the compiled guard makes it vacuous — it never fires.
+		if len(decl.Ops) > 0 && spec.OpScope == "specific" && len(spec.Operations) > 0 {
+			intersect := false
+			for _, ruleOp := range spec.Operations {
+				for _, condOp := range decl.Ops {
+					if ruleOp == condOp {
+						intersect = true
+					}
+				}
+			}
+			if !intersect {
+				return bad(fmt.Sprintf("The %q condition only applies to operations [%s], but this rule is scoped to [%s] — it would never take effect. Scope the rule to a matching operation or remove the condition.",
+					decl.Label, strings.Join(decl.Ops, ", "), strings.Join(spec.Operations, ", ")))
+			}
+		}
+	}
+	return nil
 }
 
 // createBuilderPolicy compiles the visual rule form to Cedar and stores it with
