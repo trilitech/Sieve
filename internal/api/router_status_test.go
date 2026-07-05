@@ -45,7 +45,11 @@ func TestRouter_ReauthRequired_Returns403(t *testing.T) {
 		t.Fatalf("set status: %v", err)
 	}
 
-	resp := doRequest(t, "POST", url+"/api/v1/connections/"+connID+"/ops/test_op", tok, "{}")
+	// list_emails is granted by the read-only role: the structured reauth error
+	// is for an AUTHORIZED caller. (Decide is now the gate and runs before any
+	// status is revealed, so an ungranted op would get a uniform "policy denied"
+	// instead — status must never be an existence/state oracle.)
+	resp := doRequest(t, "POST", url+"/api/v1/connections/"+connID+"/ops/list_emails", tok, "{}")
 	body := readBody(t, resp)
 
 	if resp.StatusCode != 403 {
@@ -73,7 +77,9 @@ func TestRouter_Disabled_Returns403(t *testing.T) {
 		t.Fatalf("set status: %v", err)
 	}
 
-	resp := doRequest(t, "POST", url+"/api/v1/connections/"+connID+"/ops/test_op", tok, "{}")
+	// list_emails is granted by the read-only role: the structured disabled error
+	// is for an AUTHORIZED caller (see the reauth test's note on Decide ordering).
+	resp := doRequest(t, "POST", url+"/api/v1/connections/"+connID+"/ops/list_emails", tok, "{}")
 	body := readBody(t, resp)
 
 	if resp.StatusCode != 403 {

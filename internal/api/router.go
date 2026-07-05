@@ -247,6 +247,19 @@ func (rt *Router) listConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 // executeOperation handles both GET and POST requests to run a connector operation.
+// writeNotAuthorized emits the single uniform response used for every
+// unauthorized-or-missing outcome (missing connection, deny decision, or a
+// decision error). Keeping it identical is a security requirement: an agent
+// must not be able to use the API response as a connection existence/status
+// oracle (a missing id, a needs_reauth connection, a disabled/wrong-type
+// connection, and a simply-ungranted connection must all look the same). The
+// specific reason still reaches the audit log — just not the agent. The IAM
+// Decide is the sole gate; nothing connection-specific may be revealed before
+// an authorizing decision.
+func (rt *Router) writeNotAuthorized(w http.ResponseWriter) {
+	writeError(w, http.StatusForbidden, "policy denied")
+}
+
 func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
@@ -259,24 +272,9 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	connID := r.PathValue("conn")
 	operation := r.PathValue("operation")
 
-	// Verify the token may reach this connection. In IAM mode the rules are the
-	// gate (the engine default-denies if no rule permits); in legacy mode the
-	// connection must be bound by at least one of the token's roles.
-	if !rt.tokenConnectionAllowed(tok, connID) {
-		writeError(w, http.StatusForbidden, fmt.Sprintf("connection %q not allowed for this token", connID))
-		return
-	}
-
-	// Pre-flight: if the connection is already flagged needs_reauth, fail
-	// fast with a structured response so the agent's wrapper can surface the
-	// re-auth URL to its human. Saves us building the connector and running
-	// policy only to fail at Token inside Execute.
-	if c, err := rt.connections.Get(connID); err == nil && c.Status == connections.StatusReauthRequired {
-		writeReauthError(w, connID, c.ReauthReason)
-		return
-	}
-
-	// Parse params from body (POST) or query string (GET).
+	// Parse params from body (POST) or query string (GET). The policy decision
+	// matches conditions on these, and it must run before anything
+	// connection-specific is revealed, so parse first.
 	var params map[string]any
 	if r.Method == http.MethodPost {
 		if r.Body != nil {
@@ -300,23 +298,49 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		params = make(map[string]any)
 	}
 
-	// Get the connector instance.
+	// The IAM decision is the SOLE gate and MUST run before any
+	// connection-specific response. Look up connection metadata (type + status)
+	// WITHOUT building the connector, so a missing / needs_reauth / disabled /
+	// wrong-type / ungranted connection are all indistinguishable to an
+	// unauthorized token — no existence/status oracle (see writeNotAuthorized).
+	c, cerr := rt.connections.Get(connID)
+	var decision *policy.PolicyDecision
+	if cerr == nil {
+		d, derr := rt.iam.Decide(r.Context(), rt.registry, tok.ID, tok.RoleIDs, c.ConnectorType, connID, c.Status, operation, params)
+		if derr != nil {
+			rt.logAudit(tok, connID, operation, params, "policy_error", derr.Error(), time.Since(start).Milliseconds())
+			rt.writeNotAuthorized(w)
+			return
+		}
+		decision = d
+	}
+	// Missing connection or a deny decision → the identical not-authorized
+	// response (reason still audited, just not returned to the agent).
+	if decision == nil || decision.Action == "deny" {
+		reason := "connection not found"
+		if decision != nil {
+			reason = decision.Reason
+		}
+		rt.logAudit(tok, connID, operation, params, "deny", reason, time.Since(start).Milliseconds())
+		rt.writeNotAuthorized(w)
+		return
+	}
+
+	// Authorized (allow / approval_required). Connection-specific handling is
+	// now safe. Reauth fast-path: fail fast with the structured envelope so the
+	// agent's wrapper can surface the re-auth URL, rather than building the
+	// connector only to fail at Token inside Execute.
+	if c.Status == connections.StatusReauthRequired {
+		writeReauthError(w, connID, c.ReauthReason)
+		return
+	}
+
+	// Get the connector instance for execution.
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
 		rt.writeConnectionError(w, http.StatusNotFound, fmt.Sprintf("connector not found: %v", err), connID, err)
 		return
 	}
-
-	// Evaluate policy. The decision SOURCE is the IAM engine when enabled, else
-	// the legacy evaluator; both yield a *policy.PolicyDecision, so all
-	// downstream control flow is identical.
-	decision, err := rt.decide(r.Context(), tok, conn, connID, operation, params)
-	if err != nil {
-		writeError(w, http.StatusForbidden, fmt.Sprintf("policy error: %v", err))
-		return
-	}
-
-	durationMs := time.Since(start).Milliseconds()
 
 	switch decision.Action {
 	case "allow":
@@ -383,10 +407,6 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write(resultJSON)
-
-	case "deny":
-		rt.logAudit(tok, connID, operation, params, "deny", decision.Reason, durationMs)
-		writeError(w, http.StatusForbidden, fmt.Sprintf("policy denied: %s", decision.Reason))
 
 	case "approval_required":
 		item, err := rt.approval.Submit(&approval.SubmitRequest{
@@ -538,41 +558,6 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		proxyPath = "/" + parts[1]
 	}
 
-	if !rt.tokenConnectionAllowed(tok, connID) {
-		writeError(w, http.StatusForbidden, fmt.Sprintf("connection %q not allowed", connID))
-		return
-	}
-
-	conn, err := rt.connections.GetConnector(connID)
-	if err != nil {
-		rt.writeConnectionError(w, http.StatusNotFound, "connection not available", connID, err)
-		return
-	}
-
-	// The connector must be an http_proxy type with ProxyHTTP method.
-	// Signature: (filterSummary, queryOverridden, error). filterSummary
-	// is used to detect auth_value scrub matches; queryOverridden is
-	// true when the auth_query_param injection dropped an agent-supplied
-	// value. Both feed the audit-log policy_result selection.
-	type httpProxier interface {
-		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) (string, bool, error)
-	}
-
-	proxy, ok := conn.(httpProxier)
-	if !ok {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("connection %q is not an HTTP proxy", connID))
-		return
-	}
-
-	// Connectors that expose AuthValueScrubFilter (today: http_proxy) get a
-	// built-in scrub filter prepended to the policy decision's filter list.
-	// This forces http_proxy through the buffered (filtered) path of
-	// ProxyHTTP, so the configured auth_value cannot reach the agent — even
-	// in 4xx/5xx error bodies that would otherwise stream through unfiltered.
-	type authValueFilterer interface {
-		AuthValueScrubFilter() *policy.ResponseFilter
-	}
-
 	start := time.Now()
 	operation := "proxy:" + r.Method + ":" + proxyPath
 
@@ -598,23 +583,32 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Policy evaluation — proxy requests go through the IAM pipeline: the action
-	// is the connector's `proxy_request` op and the HTTP method/path land in
-	// context (rules gate via context.http_method / context.param.path).
+	// Policy evaluation is the SOLE gate and runs BEFORE we reveal whether the
+	// connection exists, its type, or its status — otherwise a missing id, a
+	// non-proxy connection, or a status error would be an existence/type oracle
+	// (see writeNotAuthorized). Read connection metadata (status) without
+	// building the connector. Proxy requests use the connector's `proxy_request`
+	// op; the HTTP method/path land in context.
+	c, cerr := rt.connections.Get(connID)
 	var decision *policy.PolicyDecision
-	connStatus := ""
-	if c, e := rt.connections.Get(connID); e == nil {
-		connStatus = c.Status
+	if cerr == nil {
+		d, derr := rt.iam.Decide(r.Context(), rt.registry, tok.ID, tok.RoleIDs, "http_proxy", connID, c.Status, "proxy_request", policyParams)
+		if derr != nil {
+			rt.logAudit(tok, connID, operation, nil, "policy_error", derr.Error(), time.Since(start).Milliseconds())
+			rt.writeNotAuthorized(w)
+			return
+		}
+		decision = d
 	}
-	decision, err = rt.iam.Decide(r.Context(), rt.registry, tok.ID, tok.RoleIDs, "http_proxy", connID, connStatus, "proxy_request", policyParams)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "policy evaluation failed")
-		return
-	}
-
-	if decision.Action == "deny" {
-		rt.logAudit(tok, connID, operation, nil, "deny", decision.Reason, time.Since(start).Milliseconds())
-		writeError(w, http.StatusForbidden, "policy denied: "+decision.Reason)
+	// Missing connection or a deny decision → the identical not-authorized
+	// response (reason still audited, just not returned to the agent).
+	if decision == nil || decision.Action == "deny" {
+		reason := "connection not found"
+		if decision != nil {
+			reason = decision.Reason
+		}
+		rt.logAudit(tok, connID, operation, nil, "deny", reason, time.Since(start).Milliseconds())
+		rt.writeNotAuthorized(w)
 		return
 	}
 
@@ -647,10 +641,40 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	if decision.Action != "allow" {
 		rt.logAudit(tok, connID, operation, nil, "deny", "unknown action", time.Since(start).Milliseconds())
-		writeError(w, http.StatusForbidden, "policy denied")
+		rt.writeNotAuthorized(w)
 		return
 	}
 
+	// Authorized. NOW resolve the connector and require it be an http_proxy —
+	// revealing availability/type only to a token that already holds a grant.
+	conn, err := rt.connections.GetConnector(connID)
+	if err != nil {
+		rt.writeConnectionError(w, http.StatusNotFound, "connection not available", connID, err)
+		return
+	}
+
+	// The connector must be an http_proxy type with ProxyHTTP method.
+	// Signature: (filterSummary, queryOverridden, error). filterSummary
+	// is used to detect auth_value scrub matches; queryOverridden is
+	// true when the auth_query_param injection dropped an agent-supplied
+	// value. Both feed the audit-log policy_result selection.
+	type httpProxier interface {
+		ProxyHTTP(w http.ResponseWriter, r *http.Request, path string, filters []policy.ResponseFilter) (string, bool, error)
+	}
+	proxy, ok := conn.(httpProxier)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("connection %q is not an HTTP proxy", connID))
+		return
+	}
+
+	// Connectors that expose AuthValueScrubFilter (today: http_proxy) get a
+	// built-in scrub filter prepended to the policy decision's filter list.
+	// This forces http_proxy through the buffered (filtered) path of
+	// ProxyHTTP, so the configured auth_value cannot reach the agent — even
+	// in 4xx/5xx error bodies that would otherwise stream through unfiltered.
+	type authValueFilterer interface {
+		AuthValueScrubFilter() *policy.ResponseFilter
+	}
 	// Auto-attach the auth_value scrub filter for http_proxy connections that
 	// have it enabled. Prepended (not appended) so it runs before any
 	// operator-attached redact pattern; operator filters never see the
@@ -735,17 +759,6 @@ func (rt *Router) tokenConnectionIDs(tok *tokens.Token) []string {
 		}
 	}
 	return out
-}
-
-// tokenConnectionAllowed gates connection access for a token. In IAM mode the
-// rules are the gate — an IAM role need not carry a legacy binding, and the
-// engine default-denies if no rule of any assigned role permits the op on this
-// connection (spec §10) — so we do NOT pre-check here. In legacy mode the
-// connection must be bound by at least one of the token's roles.
-func (rt *Router) tokenConnectionAllowed(tok *tokens.Token, connID string) bool {
-	// IAM is the gate: the per-op Decide default-denies if no rule of any of the
-	// token's roles permits this connection. No separate binding pre-check.
-	return true
 }
 
 // tokenCandidateConnections lists connections to consider for Gmail alias
@@ -995,11 +1008,8 @@ func (rt *Router) approvalStatus(w http.ResponseWriter, r *http.Request) {
 // single account, or fallback) and gmailExecute performs the authoritative Decide.
 func (rt *Router) resolveGmailConnection(ctx context.Context, tok *tokens.Token, userId, operation string, params map[string]any) (string, *policy.PolicyDecision, error) {
 	if userId != "me" {
-		// Treat userId as a connection alias — verify it's allowed and is gmail.
-		// (IAM: per-op Decide is the real gate; this only resolves the alias.)
-		if !rt.tokenConnectionAllowed(tok, userId) {
-			return "", nil, fmt.Errorf("connection %q not allowed for this token", userId)
-		}
+		// Treat userId as a connection alias. The per-op Decide in gmailExecute is
+		// the authoritative gate; this only resolves the alias to a connection id.
 		conn, err := rt.connections.Get(userId)
 		if err != nil {
 			return "", nil, fmt.Errorf("connection %q not found", userId)
