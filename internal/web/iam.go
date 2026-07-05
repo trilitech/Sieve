@@ -1403,6 +1403,13 @@ func (s *Server) createAdvancedPolicy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "role groups are not supported — scope the policy to a role (Sieve::Role::\"…\") instead", http.StatusBadRequest)
 		return
 	}
+	// Enforce the invariants the visual builder guarantees implicitly, so the raw
+	// escape hatch can't author a permit that grants to every token, or an
+	// @approval value that silently drops the approval gate.
+	if err := iam.ValidateRawCedarInvariants(cedar); err != nil {
+		http.Error(w, "policy did not validate: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 	pol, err := s.iam.CreatePolicy(name, "(raw Cedar)", cedar, true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -30,6 +30,12 @@ func (s *Service) Decide(
 	tokenID string, roleIDs []string, connType, connID, connStatus, op string,
 	params map[string]any,
 ) (*policy.PolicyDecision, error) {
+	// A token with no roles has no grants — default-deny before touching the
+	// engine. Belt-and-suspenders with the role-scoped-permit invariant: even a
+	// legacy unconstrained-principal permit can't authorize a revoked token.
+	if len(roleIDs) == 0 {
+		return &policy.PolicyDecision{Action: "deny", Reason: "token has no roles"}, nil
+	}
 	eng, err := s.Engine()
 	if err != nil {
 		return nil, err
@@ -127,6 +133,11 @@ func (s *Service) Explain(
 	tokenID string, roleIDs []string, connType, connID, connStatus, op string,
 	params map[string]any,
 ) (*ExplainResult, error) {
+	// A role-less token default-denies (mirror of Decide) — reflect it in the
+	// dry run instead of evaluating an empty grant set.
+	if len(roleIDs) == 0 {
+		return &ExplainResult{Action: "deny", DefaultDeny: true, Reason: "token has no roles"}, nil
+	}
 	eng, err := s.Engine()
 	if err != nil {
 		return nil, err

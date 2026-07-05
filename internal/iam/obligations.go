@@ -53,7 +53,10 @@ func collectObligations(perPermit []map[string]string, lib FilterLibrary) (Oblig
 	seenLabel := map[string]bool{}
 
 	for _, anns := range perPermit {
-		if strings.TrimSpace(anns[annApproval]) == "required" {
+		// Case-INSENSITIVE: raw-Cedar authoring could write @approval("Required");
+		// an exact-string match would silently drop the human approval gate. Save
+		// time rejects non-"required" values, but fold here as the fail-safe backstop.
+		if strings.EqualFold(strings.TrimSpace(anns[annApproval]), "required") {
 			obl.Approval = true
 		}
 		if lbl := strings.TrimSpace(anns[annAuditLabel]); lbl != "" && !seenLabel[lbl] {

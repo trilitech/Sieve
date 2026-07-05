@@ -85,6 +85,69 @@ func ValidateGuardrailCedar(cedarText string) error {
 	return nil
 }
 
+// ValidateRawCedarInvariants enforces, on the raw-Cedar "advanced" authoring
+// escape hatch, the invariants the visual builder guarantees implicitly — so the
+// escape hatch can't author a policy the builder never could (reviewer b, c):
+//
+//   - a PERMIT must scope its principal to a role (`principal in Sieve::Role::"…"`).
+//     A bare, unconstrained `principal` permit grants to EVERY token — including a
+//     token whose roles were all revoked (empty role set) — instead of only the
+//     intended role. Forbids may be broad (a broad deny is fail-safe).
+//   - an `@approval` annotation, if present, must be "required" (any casing). An
+//     unrecognized value like @approval("sometime") is otherwise silently ignored,
+//     dropping the human approval gate.
+//
+// It assumes the text already parsed (call after the normal parse/validate).
+func ValidateRawCedarInvariants(cedarText string) error {
+	list, err := cedar.NewPolicyListFromBytes("_advanced", []byte(cedarText))
+	if err != nil {
+		return err
+	}
+	for _, p := range list {
+		if v := strings.TrimSpace(string(p.Annotations()[types.Ident(annApproval)])); v != "" && !strings.EqualFold(v, "required") {
+			return fmt.Errorf("@approval only supports the value \"required\" (got %q)", v)
+		}
+		if p.Effect() == cedar.Permit && !permitPrincipalRoleScoped(p) {
+			return fmt.Errorf("a permit must scope its principal to a role (principal in %s::\"…\") — an unconstrained principal would grant to every token, including one whose roles were revoked", TypeRole)
+		}
+	}
+	return nil
+}
+
+// permitPrincipalRoleScoped reports whether a permit's principal is scoped to a
+// role. It reads the canonical marshaled form (one policy → one fixed scope block:
+// `permit ( principal <scope>, action, resource … )`), so it's robust to the
+// input's whitespace/comments.
+func permitPrincipalRoleScoped(p *cedar.Policy) bool {
+	// Drop leading @annotation lines (each on its own line in the canonical form)
+	// so a "permit"/paren inside an annotation value can't be mistaken for the head.
+	body := string(p.MarshalCedar())
+	for {
+		body = strings.TrimLeft(body, " \t\r\n")
+		if !strings.HasPrefix(body, "@") {
+			break
+		}
+		nl := strings.IndexByte(body, '\n')
+		if nl < 0 {
+			return false
+		}
+		body = body[nl+1:]
+	}
+	// body now starts with `permit (` — the principal is the first scope element,
+	// up to the first comma.
+	open := strings.IndexByte(body, '(')
+	if open < 0 {
+		return false
+	}
+	rest := body[open+1:]
+	comma := strings.IndexByte(rest, ',')
+	if comma < 0 {
+		return false
+	}
+	clause := strings.TrimSpace(rest[:comma]) // e.g. `principal in Sieve::Role::"r1"` or `principal`
+	return strings.HasPrefix(clause, "principal in "+TypeRole+"::")
+}
+
 // Decide runs the two-pass evaluation (spec §7.3). Pass 1 (grants) yields the
 // allow/deny decision. Pass 2 (guardrails, only on allow) collects obligations
 // from EVERY guardrail that matched or errored — independent of which grant
@@ -125,7 +188,7 @@ func (e *Engine) Decide(r Request) (Decision, error) {
 		}
 		if p.Effect() == cedar.Forbid {
 			errForbid = true
-		} else if strings.TrimSpace(string(p.Annotations()[types.Ident(annApproval)])) == "required" {
+		} else if strings.EqualFold(strings.TrimSpace(string(p.Annotations()[types.Ident(annApproval)])), "required") {
 			errApproval = true
 		}
 	}

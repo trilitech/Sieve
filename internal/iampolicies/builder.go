@@ -445,7 +445,12 @@ func conditionExpr(c ConditionInput) (string, error) {
 		}
 		quoted := make([]string, 0, len(items))
 		for _, it := range items {
-			quoted = append(quoted, cedarString(it))
+			// Connector enrichment lowercases the runtime domains this compares
+			// against (e.g. gmail's domainOf()), and Cedar string equality is
+			// case-SENSITIVE — so fold the literals to lower case. Otherwise
+			// `Example.COM` never matches `example.com`, silently denying legit
+			// sends on an allowlist and silently bypassing a blocklist.
+			quoted = append(quoted, cedarString(strings.ToLower(it)))
 		}
 		return fmt.Sprintf("[%s].containsAll(%s)", strings.Join(quoted, ", "), c.CtxPath), nil
 	default:
