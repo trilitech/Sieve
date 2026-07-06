@@ -85,7 +85,13 @@ var (
 
 // cedarString renders a Go string as a quoted Cedar string literal.
 func cedarString(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+	r := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		"\n", `\n`,
+		"\r", `\r`,
+		"\t", `\t`,
+	)
 	return `"` + r.Replace(s) + `"`
 }
 
