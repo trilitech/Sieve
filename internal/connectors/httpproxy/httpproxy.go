@@ -451,14 +451,38 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 		}
 	}
 
-	url := p.targetURL + path
+	// Build the upstream URL via proper URL parsing, NOT string concatenation.
+	// `p.targetURL + path` lets a crafted agent path reparent the authority:
+	// "https://api.example.com" + "@evil.com/x" parses to Host=evil.com, so the
+	// credential injected below would be sent to the attacker (httpguard only
+	// blocks private ranges, not public hosts). Mirror ProxyHTTP: validate the
+	// path, JoinPath it onto the parsed base (which cannot change the host), and
+	// assert the resolved host/scheme still match the configured target before
+	// attaching any credential.
+	rawPath, query := path, ""
+	if i := strings.IndexByte(rawPath, '?'); i >= 0 {
+		rawPath, query = rawPath[:i], rawPath[i+1:]
+	}
+	cleaned, err := validateProxyPath(rawPath)
+	if err != nil {
+		return nil, fmt.Errorf("http_proxy: invalid path: %w", err)
+	}
+	targetBase, err := url.Parse(p.targetURL)
+	if err != nil {
+		return nil, fmt.Errorf("http_proxy: invalid target URL: %w", err)
+	}
+	reqURL := targetBase.JoinPath(cleaned)
+	reqURL.RawQuery = query
+	if reqURL.Scheme != targetBase.Scheme || reqURL.Host != targetBase.Host {
+		return nil, fmt.Errorf("http_proxy: refusing to proxy to unexpected host %q", reqURL.Host)
+	}
 
 	var bodyReader io.Reader
 	if body, ok := params["body"].(string); ok && body != "" {
 		bodyReader = strings.NewReader(body)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, reqURL.String(), bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("http_proxy: create request: %w", err)
 	}
