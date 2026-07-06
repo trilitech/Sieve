@@ -207,11 +207,13 @@ func (s *Server) handleToolsList(id any, tok *tokens.Token) *JSONRPCResponse {
 	var tools []ToolDef
 
 	connIDs := s.tokenConnectionIDs(tok)
-	// Determine if there are multiple connections (affects tool naming).
+	// Determine if there are multiple connections (affects tool naming). A
+	// connection appears in connIDs iff the token may call ≥1 of its ops, so this
+	// matches the set of connections that will contribute ≥1 tool below.
 	multiConn := len(connIDs) > 1
 
 	for _, connID := range connIDs {
-		_, err := s.connections.Get(connID)
+		md, err := s.connections.Get(connID)
 		if err != nil {
 			continue // skip connections we can't load
 		}
@@ -222,6 +224,19 @@ func (s *Server) handleToolsList(id any, tok *tokens.Token) *JSONRPCResponse {
 		}
 
 		for _, op := range c.Operations() {
+			// Advertise a tool only if the token may actually call this op — a
+			// non-deny dry-run Decide (nil params). This surfaces write-only
+			// grants (a single representative-read probe would hide them) and
+			// hides ops the token can't call; the per-op Decide at call time
+			// stays authoritative. (A script-mode condition would run here per op
+			// with nil params — acceptable for infrequent discovery.)
+			if s.iam != nil {
+				dec, derr := s.decide(context.Background(), tok, md.ConnectorType, connID, md.Status, op.Name, nil)
+				if derr != nil || dec == nil || dec.Action == "deny" {
+					continue
+				}
+			}
+
 			// Normalize dots to underscores in tool names. Operations like
 			// "drive.list_files" become "drive_list_files" since dots in
 			// tool names can confuse LLM tool callers.
@@ -259,6 +274,29 @@ func (s *Server) handleToolsList(id any, tok *tokens.Token) *JSONRPCResponse {
 	}
 }
 
+// errUnknownConnection is returned by resolveToolCall when an explicit
+// "connection" argument names a connection that doesn't exist. handleToolsCall
+// maps it to the uniform not-authorized response so a missing connection can't
+// be distinguished from an ungranted one (existence-oracle closure).
+var errUnknownConnection = errors.New("unknown connection")
+
+// notAuthorized is the single uniform tool-call response for every
+// unauthorized-or-missing outcome (missing/unknown connection, a deny decision,
+// or a needs_reauth connection the token isn't granted). Keeping it
+// byte-identical is a security requirement: the MCP response must not be usable
+// as a connection existence/status oracle. The specific reason reaches the audit
+// log only, never the agent.
+func (s *Server) notAuthorized(id any) *JSONRPCResponse {
+	return &JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: ToolCallResult{
+			Content: []ContentBlock{{Type: "text", Text: "Policy denied"}},
+			IsError: true,
+		},
+	}
+}
+
 // handleToolsCall executes a tool through the policy pipeline.
 func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token, params json.RawMessage) *JSONRPCResponse {
 	var call ToolCallParams
@@ -278,35 +316,55 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		return s.handleListConnections(id, tok, start)
 	}
 
-	// Resolve connection and operation from the tool name.
-	connID, opName, err := s.resolveToolCall(tok, call)
-	if err != nil {
+	// Resolve the connection id + operation from the tool name. A failure that
+	// names a specific (missing) connection is funneled to the uniform
+	// not-authorized response below so it can't be used as an existence oracle;
+	// a genuinely ambiguous tool name (which reveals no connection) keeps its
+	// grammar hint.
+	connID, opName, rerr := s.resolveToolCall(tok, call)
+	if rerr != nil && !errors.Is(rerr, errUnknownConnection) {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      id,
-			Error:   &JSONRPCError{Code: -32602, Message: err.Error()},
+			Error:   &JSONRPCError{Code: -32602, Message: rerr.Error()},
 		}
 	}
 
-	// Reachability is enforced authoritatively by the per-operation IAM
-	// decision (s.decide) below — a token can only invoke an operation on a
-	// connection its roles grant, even if it hand-crafts a tool name or
-	// "connection" argument. (Discovery/tools-list is separately IAM-filtered
-	// via tokenConnectionIDs.) No pre-check here: a representative-read probe
-	// would wrongly reject a write-only grant; the real per-op Decide is exact.
-	conn, err := s.connections.Get(connID)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "connection not found: " + err.Error()},
+	// The IAM decision is the SOLE gate and MUST run before anything
+	// connection-specific is revealed (the reauth envelope, the connector build).
+	// Look up connection METADATA (type + status) without building the connector,
+	// so a missing / needs_reauth / disabled / ungranted connection are all
+	// indistinguishable to an unauthorized token — no existence/status oracle
+	// (mirrors the REST fix in 73af5f2).
+	var conn *connections.Connection
+	var decision *policy.PolicyDecision
+	if rerr == nil {
+		if c, err := s.connections.Get(connID); err == nil {
+			conn = c
+			d, derr := s.decide(ctx, tok, c.ConnectorType, connID, c.Status, opName, call.Arguments)
+			if derr != nil {
+				s.logAudit(tok, connID, opName, call.Arguments, "policy_error", derr.Error(), time.Since(start).Milliseconds())
+				return s.notAuthorized(id)
+			}
+			decision = d
 		}
 	}
+	// Missing/unknown connection or a deny decision → the identical uniform
+	// not-authorized response. The specific reason is audited, never returned.
+	if conn == nil || decision == nil || decision.Action == "deny" {
+		reason := "unknown connection"
+		if decision != nil {
+			reason = decision.Reason
+		}
+		s.logAudit(tok, connID, opName, call.Arguments, "deny", reason, time.Since(start).Milliseconds())
+		return s.notAuthorized(id)
+	}
 
-	// Pre-flight reauth check — skip policy and Execute if the connection's
-	// credentials are already known to be dead. The text content uses the
-	// canonical "reauth_required:" prefix so agent SDKs branch on the
-	// prefix without parsing the prose.
+	// Authorized (allow / approval_required); connection-specific handling is now
+	// safe to reveal.
+	//
+	// Reauth fast-path — surface the structured reauth envelope (the
+	// "reauth_required:" prefix lets agent SDKs branch without parsing prose).
 	if conn.Status == connections.StatusReauthRequired {
 		durationMs := time.Since(start).Milliseconds()
 		s.logAudit(tok, connID, opName, call.Arguments, "reauth_required", conn.ReauthReason, durationMs)
@@ -320,33 +378,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		}
 	}
 
-	// Pre-execution policy check — the primary access-control gate. The
-	// decision SOURCE is the IAM engine when enabled, else the legacy
-	// evaluator; both return a *policy.PolicyDecision so deny/approval_required
-	// handling below is identical.
-	decision, err := s.decide(ctx, tok, conn.ConnectorType, connID, conn.Status, opName, call.Arguments)
-	if err != nil {
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Error:   &JSONRPCError{Code: -32000, Message: "policy evaluation error: " + err.Error()},
-		}
-	}
-
-	switch decision.Action {
-	case "deny":
-		durationMs := time.Since(start).Milliseconds()
-		s.logAudit(tok, connID, opName, call.Arguments, "deny", decision.Reason, durationMs)
-		return &JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      id,
-			Result: ToolCallResult{
-				Content: []ContentBlock{{Type: "text", Text: "Policy denied: " + decision.Reason}},
-				IsError: true,
-			},
-		}
-
-	case "approval_required":
+	if decision.Action == "approval_required" {
 		item, err := s.approval.Submit(&approval.SubmitRequest{
 			TokenID:      tok.ID,
 			ConnectionID: connID,
@@ -374,17 +406,16 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 				)}},
 			},
 		}
+	}
 
-	case "allow":
-		// Proceed to execute.
-
-	default:
+	if decision.Action != "allow" {
 		return &JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      id,
 			Error:   &JSONRPCError{Code: -32000, Message: "unexpected policy action: " + decision.Action},
 		}
 	}
+	// allow → fall through to execute.
 
 	// Execute via connector. Map connection-state sentinels to structured
 	// IsError tool-call results so agents see a stable, non-secret error
@@ -564,7 +595,9 @@ func (s *Server) resolveToolCall(tok *tokens.Token, call ToolCallParams) (connID
 		// The tool name may be prefixed with connector type; strip it.
 		conn, err := s.connections.Get(connID)
 		if err != nil {
-			return "", "", fmt.Errorf("connection %q not found", connID)
+			// Don't leak existence — the caller maps this sentinel to the uniform
+			// not-authorized response (existence-oracle closure).
+			return "", "", errUnknownConnection
 		}
 		prefix := conn.ConnectorType + "_"
 		opName = call.Name
@@ -606,12 +639,12 @@ func (s *Server) rolesForToken(tok *tokens.Token) []*roles.Role {
 	return out
 }
 
-// tokenConnectionIDs lists the connections to expose (as tools / in
-// list_connections) for this token. Discovery is IAM-gated the same way the REST
-// surface gates it (api.Router.tokenVisibleConnections): a connection appears
-// only if the token has a non-deny decision for a representative read op, so
-// tools/list doesn't leak connection ids/names the token has no grant on. Per-op
-// Decide at tool-CALL time remains the authoritative gate.
+// tokenConnectionIDs lists the connections visible to this token for discovery
+// (list_connections + tool-name resolution). A connection is visible iff the
+// token has a non-deny IAM decision for AT LEAST ONE of its operations — not
+// merely a representative read op — so a write-only grant (e.g. only send_email)
+// keeps the connection discoverable while connections the token has no grant on
+// stay hidden. Per-op Decide at tool-CALL time remains the authoritative gate.
 func (s *Server) tokenConnectionIDs(tok *tokens.Token) []string {
 	conns, err := s.connections.List()
 	if err != nil {
@@ -624,37 +657,30 @@ func (s *Server) tokenConnectionIDs(tok *tokens.Token) []string {
 			out = append(out, c.ID)
 			continue
 		}
-		op := s.representativeReadOp(c.ConnectorType)
-		if op == "" {
-			continue // no operation to probe → not discoverable
+		if s.hasAllowedOp(tok, c.ConnectorType, c.ID, c.Status) {
+			out = append(out, c.ID)
 		}
-		dec, err := s.decide(context.Background(), tok, c.ConnectorType, c.ID, c.Status, op, nil)
-		if err != nil || dec == nil || dec.Action == "deny" {
-			continue
-		}
-		out = append(out, c.ID)
 	}
 	return out
 }
 
-// representativeReadOp picks an operation to probe a connector's discoverability
-// with: the first read-only op, else the first op, else "". Mirrors
-// api.Router.representativeReadOp so REST and MCP discovery agree.
-func (s *Server) representativeReadOp(connType string) string {
+// hasAllowedOp reports whether the token has a non-deny IAM decision for at
+// least one operation of the connection (short-circuits on the first). Ops come
+// from the registry metadata (no keyring / connector build). A script-mode
+// condition would run here per op with nil params until the first allow —
+// acceptable for infrequent discovery.
+func (s *Server) hasAllowedOp(tok *tokens.Token, connType, connID, connStatus string) bool {
 	meta, ok := s.registry.Meta(connType)
 	if !ok {
-		return ""
+		return false
 	}
-	first := ""
-	for _, o := range meta.Operations {
-		if first == "" {
-			first = o.Name
-		}
-		if o.ReadOnly {
-			return o.Name
+	for _, op := range meta.Operations {
+		dec, err := s.decide(context.Background(), tok, connType, connID, connStatus, op.Name, nil)
+		if err == nil && dec != nil && dec.Action != "deny" {
+			return true
 		}
 	}
-	return first
+	return false
 }
 
 // denormalizeDots reverses the dot-to-underscore normalization applied to tool
