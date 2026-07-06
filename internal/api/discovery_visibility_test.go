@@ -86,3 +86,62 @@ func TestDiscoveryFilteredByIAM(t *testing.T) {
 		t.Errorf("granted account should be listed via /gmail/v1/users: %s", usersBody)
 	}
 }
+
+// TestDiscoveryAdvertisesWriteOnlyGrant proves REST discovery surfaces a
+// connection the token can only WRITE to. A grant for send_email (a write op)
+// with reads denied must still make the connection discoverable — matching the
+// MCP surface. Before the per-op discovery gate, tokenVisibleConnections probed
+// only a representative READ op (list_emails), so a send-only grant was hidden
+// and the agent never saw the connection it was allowed to use.
+func TestDiscoveryAdvertisesWriteOnlyGrant(t *testing.T) {
+	env := testenv.New(t)
+
+	gmock := mockconn.New("google")
+	env.Registry.Register(gmock.Meta(), gmock.Factory())
+
+	if err := env.Connections.Add("g1", "google", "First", map[string]any{"email": "first@x.com"}); err != nil {
+		t.Fatal(err)
+	}
+	role, err := env.Roles.Create("sender", []roles.Binding{{ConnectionID: "g1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := env.Tokens.Create(&tokens.CreateRequest{Name: "t", RoleID: role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Grant ONLY send_email (write); reads remain default-denied.
+	grant, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: role.ID, Effect: "allow", ConnectorType: "google",
+		OpScope: "specific", Operations: []string{"send_email"},
+		ConnectionIDs: []string{"g1"},
+	}, gmock.Meta().Operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.IAM.CreatePolicy("g1-send", "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
+
+	router := api.NewRouter(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit)
+	srv := httptest.NewServer(router.Handler())
+	t.Cleanup(srv.Close)
+
+	body := readBody(t, doRequest(t, http.MethodGet, srv.URL+"/api/v1/connections", tok.PlaintextToken, ""))
+	var conns []map[string]any
+	if err := json.Unmarshal([]byte(body), &conns); err != nil {
+		t.Fatalf("decode connections: %v (%s)", err, body)
+	}
+	found := false
+	for _, c := range conns {
+		if c["id"] == "g1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("g1 (write-only send_email grant) must appear in discovery: %s", body)
+	}
+}

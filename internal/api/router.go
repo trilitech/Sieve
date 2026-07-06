@@ -798,36 +798,31 @@ func (rt *Router) tokenVisibleConnections(ctx context.Context, tok *tokens.Token
 			out = append(out, c.ID)
 			continue
 		}
-		op := rt.representativeReadOp(c.ConnectorType)
-		if op == "" {
-			continue // no operation to probe → not discoverable
+		if rt.tokenHasAnyAllowedOp(ctx, tok, c.ConnectorType, c.ID, c.Status) {
+			out = append(out, c.ID)
 		}
-		dec, err := rt.iam.Decide(ctx, rt.registry, tok.ID, tok.RoleIDs, c.ConnectorType, c.ID, c.Status, op, nil)
-		if err != nil || dec == nil || dec.Action == "deny" {
-			continue
-		}
-		out = append(out, c.ID)
 	}
 	return out
 }
 
-// representativeReadOp picks an operation name to probe a connector's
-// discoverability with: the first read-only op, else the first op, else "".
-func (rt *Router) representativeReadOp(connType string) string {
+// tokenHasAnyAllowedOp reports whether the token has a non-deny IAM decision for
+// ANY operation of the connection — the discovery gate. Probing every op (not
+// just a representative read) means a write-only grant (e.g. send_email with
+// reads denied) still makes the connection discoverable, matching the MCP
+// surface (server.go tokenConnectionIDs/hasAllowedOp). Dry run: nil params, so a
+// script-mode condition runs per op — acceptable for infrequent discovery.
+func (rt *Router) tokenHasAnyAllowedOp(ctx context.Context, tok *tokens.Token, connType, connID, status string) bool {
 	meta, ok := rt.registry.Meta(connType)
 	if !ok {
-		return ""
+		return false
 	}
-	first := ""
 	for _, o := range meta.Operations {
-		if first == "" {
-			first = o.Name
-		}
-		if o.ReadOnly {
-			return o.Name
+		dec, err := rt.iam.Decide(ctx, rt.registry, tok.ID, tok.RoleIDs, connType, connID, status, o.Name, nil)
+		if err == nil && dec != nil && dec.Action != "deny" {
+			return true
 		}
 	}
-	return first
+	return false
 }
 
 // tokenFromContext extracts the validated token from the request context.
