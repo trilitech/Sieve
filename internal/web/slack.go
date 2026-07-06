@@ -300,7 +300,7 @@ func (s *Server) handleSlackUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !strings.HasPrefix(token, "xoxp-") && !strings.HasPrefix(token, "xoxe.") {
-		http.Error(w, "user_token must start with xoxp- (Slack user token format)", http.StatusBadRequest)
+		http.Error(w, "user_token must start with xoxp- or xoxe. (Slack user token format)", http.StatusBadRequest)
 		return
 	}
 	if exists, _ := s.connections.Exists(id); exists {
@@ -332,13 +332,18 @@ func (s *Server) handleSlackUserToken(w http.ResponseWriter, r *http.Request) {
 // user-identity Slack connection (auth_kind=user_token). Used by reauth
 // to re-run the matching OAuth flow (user vs bot) so an identity is never
 // silently swapped on re-authorization.
-func (s *Server) slackConnIsUserIdentity(id string) bool {
+// It surfaces the underlying error (e.g. secrets.ErrKeyringNotLoaded when the
+// keyring is locked) instead of defaulting to "bot": reading the stored
+// auth_kind requires the keyring, and silently treating an unreadable config as
+// a bot identity would let a locked keyring drive the wrong reauth flow (and
+// risk swapping a user connection to bot). Callers fail closed on the error.
+func (s *Server) slackConnIsUserIdentity(id string) (bool, error) {
 	full, err := s.connections.GetWithConfig(id)
 	if err != nil {
-		return false
+		return false, err
 	}
 	kind, _ := full.Config["auth_kind"].(string)
-	return kind == slackconn.KindUserToken
+	return kind == slackconn.KindUserToken, nil
 }
 
 // handleSlackReauth lets an admin clear a `reauth_required` row by
@@ -361,15 +366,35 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Determine the stored identity up front and fail closed. Reauth must
+	// PRESERVE identity — a bot connection stays bot, a user connection stays
+	// user — because roles/IAM grants bind to the connection id: silently
+	// upgrading a bot connection to a user token would hand agents the
+	// installing human's full reach + search under the same alias. Reading the
+	// identity needs the keyring, so a locked keyring is a 503, never a
+	// default-to-bot.
+	isUser, err := s.slackConnIsUserIdentity(id)
+	if err != nil {
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	// Reuse the OAuth-start path: kick a fresh flow with the same id +
 	// display name. On callback success we'll UpdateConfig instead of
 	// Add (the existing pendingOAuth + handleOAuthCallback flow handles
 	// this — see slackOAuthExchange in server.go).
 	if newToken := strings.TrimSpace(r.FormValue("user_token")); newToken != "" {
-		// User-token reauth: validate + UpdateConfig + reset status. Keeps
-		// the connection's user identity.
+		// User-token reauth: validate + UpdateConfig + reset status. Only
+		// permitted on a connection that is ALREADY a user identity.
+		if !isUser {
+			http.Error(w, "this is a bot-identity Slack connection; reauthorize it with a bot token or bot OAuth, not a user token", http.StatusBadRequest)
+			return
+		}
 		if !strings.HasPrefix(newToken, "xoxp-") && !strings.HasPrefix(newToken, "xoxe.") {
-			http.Error(w, "user_token must start with xoxp-", http.StatusBadRequest)
+			http.Error(w, "user_token must start with xoxp- or xoxe. (Slack user token format)", http.StatusBadRequest)
 			return
 		}
 		teamID, teamName, userID, err := slackAuthTest(r.Context(), newToken)
@@ -396,7 +421,12 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if newToken := strings.TrimSpace(r.FormValue("bot_token")); newToken != "" {
-		// Token-path reauth: validate + UpdateConfig + reset status.
+		// Token-path reauth: validate + UpdateConfig + reset status. Only
+		// permitted on a connection that is ALREADY a bot identity.
+		if isUser {
+			http.Error(w, "this is a user-identity Slack connection; reauthorize it with a user token or user OAuth, not a bot token", http.StatusBadRequest)
+			return
+		}
 		if !strings.HasPrefix(newToken, "xoxb-") {
 			http.Error(w, "bot_token must start with xoxb-", http.StatusBadRequest)
 			return
@@ -429,7 +459,7 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 	// completion through UpdateConfig + SetStatus(active) instead of Add.
 	// Preserve the connection's identity: a user connection re-authorizes
 	// as a user, a bot connection as a bot.
-	if s.slackConnIsUserIdentity(id) {
+	if isUser {
 		s.beginSlackUserOAuth(w, r, id, existing.DisplayName)
 		return
 	}

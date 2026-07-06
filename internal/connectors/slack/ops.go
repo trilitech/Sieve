@@ -229,9 +229,15 @@ func (c *Connector) opSearchMessages(ctx context.Context, params map[string]any)
 	v.Set("count", strconv.Itoa(pageSizeFrom(params)))
 	page := 1
 	if cur := cursorFrom(params); cur != "" {
-		if n, err := strconv.Atoi(cur); err == nil && n > 0 {
-			page = n
+		// search.messages uses a numeric page-as-cursor. Reject a malformed
+		// cursor rather than silently resetting to page 1 — a client that
+		// mispassed the cursor would otherwise loop over the first page forever
+		// instead of learning it sent a bad value.
+		n, err := strconv.Atoi(cur)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("slack: search_messages invalid cursor %q (expected a positive page number from a previous response's next_cursor)", cur)
 		}
+		page = n
 	}
 	v.Set("page", strconv.Itoa(page))
 

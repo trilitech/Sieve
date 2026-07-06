@@ -236,6 +236,23 @@ func TestOps_SearchMessages_UserToken_MissingQuery(t *testing.T) {
 	}
 }
 
+// TestOps_SearchMessages_UserToken_InvalidCursor — a non-numeric cursor is
+// rejected with a clear error rather than silently resetting to page 1 (which
+// would make a client loop the first page forever).
+func TestOps_SearchMessages_UserToken_InvalidCursor(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+	c, _ := newUserConnectorForTest(t, mock)
+
+	_, err := c.Execute(context.Background(), "search_messages", map[string]any{"query": "deploy", "cursor": "not-a-number"})
+	if err == nil {
+		t.Fatal("expected error for a non-numeric cursor")
+	}
+	if !strings.Contains(err.Error(), "invalid cursor") {
+		t.Fatalf("expected an invalid-cursor error, got %v", err)
+	}
+}
+
 // TestOps_SearchMessages_UserToken_Pagination walks page→cursor
 // translation with page_size=1 over the mock's 3-item corpus: the first
 // page returns a next_cursor pointing at page 2, and following it

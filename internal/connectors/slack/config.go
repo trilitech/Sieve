@@ -124,7 +124,7 @@ func (c *Config) validate() error {
 		// xoxb- here so an operator can't silently downgrade a "user"
 		// connection to a bot identity by pasting the wrong token.
 		if !strings.HasPrefix(c.UserToken, "xoxp-") && !strings.HasPrefix(c.UserToken, "xoxe.") {
-			return fmt.Errorf("slack: user_token must start with xoxp- (Slack user token format)")
+			return fmt.Errorf("slack: user_token must start with xoxp- or xoxe. (Slack user token format)")
 		}
 	default:
 		return fmt.Errorf("slack: unknown auth_kind %q (want %q, %q, or %q)", c.AuthKind, KindOAuth, KindToken, KindUserToken)

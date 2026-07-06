@@ -618,6 +618,52 @@ func TestHandleSlackReauth_TokenPath(t *testing.T) {
 	}
 }
 
+// TestHandleSlackReauth_RejectsIdentitySwap asserts reauth PRESERVES identity:
+// a bot connection cannot be re-authorized with a user token (which would upgrade
+// it to the installing human's full reach + search under the same alias, inheriting
+// its IAM grants), and a user connection cannot be re-authorized with a bot token.
+func TestHandleSlackReauth_RejectsIdentitySwap(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	if err := env.Connections.Add("botconn", "slack", "Bot", map[string]any{
+		"auth_kind": slackconn.KindToken, "bot_token": "xoxb-original", "team_id": "T012",
+	}); err != nil {
+		t.Fatalf("seed bot: %v", err)
+	}
+	if err := env.Connections.Add("userconn", "slack", "User", map[string]any{
+		"auth_kind": slackconn.KindUserToken, "user_token": "xoxp-original", "team_id": "T012",
+	}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	// Bot connection + user token → 400, and the stored identity is untouched.
+	rec := formPost(handler, env, "/connections/slack/botconn/reauth", url.Values{
+		"user_token": {"xoxp-attacker"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bot conn + user token: expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	full, _ := env.Connections.GetWithConfig("botconn")
+	if full.Config["auth_kind"] != slackconn.KindToken {
+		t.Fatalf("bot connection identity was swapped: %v", full.Config["auth_kind"])
+	}
+	if _, ok := full.Config["user_token"]; ok {
+		t.Fatalf("bot connection must not have gained a user_token")
+	}
+
+	// User connection + bot token → 400, identity untouched.
+	rec = formPost(handler, env, "/connections/slack/userconn/reauth", url.Values{
+		"bot_token": {"xoxb-attacker"},
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("user conn + bot token: expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	full, _ = env.Connections.GetWithConfig("userconn")
+	if full.Config["auth_kind"] != slackconn.KindUserToken {
+		t.Fatalf("user connection identity was swapped: %v", full.Config["auth_kind"])
+	}
+}
+
 // TestHandleSlackUserToken_HappyPath asserts a valid xoxp- user token is
 // validated against auth.test then persisted as a user-identity
 // connection (auth_kind=user_token), with no bot credential.
