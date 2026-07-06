@@ -21,8 +21,25 @@ func New(path string) (*DB, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Restrict DB file permissions to owner only.
-	os.Chmod(path, 0600)
+	// Secure the DB file to owner-only (0600) BEFORE SQLite writes any
+	// encrypted config blobs or crypto_meta into it. sql.Open is lazy (the file
+	// doesn't exist yet), and SQLite would otherwise create it under the process
+	// umask — commonly 0644, i.e. group/world-readable. So create the file 0600
+	// up front and tighten an already-existing file explicitly. Errors are fatal:
+	// a credential database must never be used with permissions we couldn't
+	// confirm. (Skipped for the in-memory sentinel, which has no backing file.)
+	if path != ":memory:" {
+		if f, ferr := os.OpenFile(path, os.O_CREATE, 0o600); ferr != nil {
+			sqlDB.Close()
+			return nil, fmt.Errorf("create database file: %w", ferr)
+		} else {
+			f.Close()
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			sqlDB.Close()
+			return nil, fmt.Errorf("secure database file permissions: %w", err)
+		}
+	}
 
 	// Enable WAL mode for better concurrent read performance.
 	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL"); err != nil {

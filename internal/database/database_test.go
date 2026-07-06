@@ -1,11 +1,34 @@
 package database_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/trilitech/Sieve/internal/database"
 )
+
+// TestNewSecuresDBFilePerms asserts the credential DB file is created 0600
+// (owner-only) — SQLite would otherwise create it under the process umask
+// (commonly 0644), leaving the encrypted config blobs + crypto_meta
+// group/world-readable.
+func TestNewSecuresDBFilePerms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "perms.db")
+	db, err := database.New(path)
+	if err != nil {
+		t.Fatalf("create db: %v", err)
+	}
+	defer db.Close()
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat db file: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("db file permissions = %o, want 600", perm)
+	}
+}
 
 func TestNewCreatesDB(t *testing.T) {
 	dir := t.TempDir()
