@@ -664,6 +664,31 @@ func TestHandleSlackReauth_RejectsIdentitySwap(t *testing.T) {
 	}
 }
 
+// TestHandleSlackReauth_RejectsWorkspaceSwap asserts reauth won't silently
+// repoint a connection at a different Slack workspace: the pasted token's
+// team_id must match the stored one. The mock auth.test always reports team
+// "T012", so a connection stored under a different team must be rejected.
+func TestHandleSlackReauth_RejectsWorkspaceSwap(t *testing.T) {
+	handler, _, env := slackTestServer(t)
+
+	if err := env.Connections.Add("otherws", "slack", "Other WS", map[string]any{
+		"auth_kind": slackconn.KindToken, "bot_token": "xoxb-original", "team_id": "T-OLD-WS",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rec := formPost(handler, env, "/connections/slack/otherws/reauth", url.Values{
+		"bot_token": {"xoxb-fresh-token"}, // mock auth.test returns team_id=T012 ≠ T-OLD-WS
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on workspace mismatch, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	full, _ := env.Connections.GetWithConfig("otherws")
+	if full.Config["team_id"] != "T-OLD-WS" || full.Config["bot_token"] != "xoxb-original" {
+		t.Fatalf("connection was repointed despite workspace mismatch: %+v", full.Config)
+	}
+}
+
 // TestHandleSlackUserToken_HappyPath asserts a valid xoxp- user token is
 // validated against auth.test then persisted as a user-identity
 // connection (auth_kind=user_token), with no bot credential.

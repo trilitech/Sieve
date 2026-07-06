@@ -328,22 +328,24 @@ func (s *Server) handleSlackUserToken(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
-// slackConnIsUserIdentity reports whether the stored connection is a
-// user-identity Slack connection (auth_kind=user_token). Used by reauth
-// to re-run the matching OAuth flow (user vs bot) so an identity is never
-// silently swapped on re-authorization.
+// slackConnStoredIdentity returns the stored connection's identity
+// (isUser == auth_kind is user_token) and its workspace team_id. Used by reauth
+// to (a) re-run/accept only the matching identity so an identity is never
+// silently swapped on re-authorization, and (b) assert workspace continuity so a
+// pasted token can't silently repoint the connection at a different workspace.
 // It surfaces the underlying error (e.g. secrets.ErrKeyringNotLoaded when the
-// keyring is locked) instead of defaulting to "bot": reading the stored
-// auth_kind requires the keyring, and silently treating an unreadable config as
-// a bot identity would let a locked keyring drive the wrong reauth flow (and
-// risk swapping a user connection to bot). Callers fail closed on the error.
-func (s *Server) slackConnIsUserIdentity(id string) (bool, error) {
+// keyring is locked) instead of defaulting to "bot": reading the stored config
+// requires the keyring, and silently treating an unreadable config as a bot
+// identity would let a locked keyring drive the wrong reauth flow. Callers fail
+// closed on the error.
+func (s *Server) slackConnStoredIdentity(id string) (isUser bool, teamID string, err error) {
 	full, err := s.connections.GetWithConfig(id)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	kind, _ := full.Config["auth_kind"].(string)
-	return kind == slackconn.KindUserToken, nil
+	teamID, _ = full.Config["team_id"].(string)
+	return kind == slackconn.KindUserToken, teamID, nil
 }
 
 // handleSlackReauth lets an admin clear a `reauth_required` row by
@@ -373,7 +375,7 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 	// installing human's full reach + search under the same alias. Reading the
 	// identity needs the keyring, so a locked keyring is a 503, never a
 	// default-to-bot.
-	isUser, err := s.slackConnIsUserIdentity(id)
+	isUser, existingTeamID, err := s.slackConnStoredIdentity(id)
 	if err != nil {
 		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
 			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
@@ -400,6 +402,10 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 		teamID, teamName, userID, err := slackAuthTest(r.Context(), newToken)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Slack auth.test failed: %v", err), http.StatusBadRequest)
+			return
+		}
+		if existingTeamID != "" && teamID != existingTeamID {
+			http.Error(w, fmt.Sprintf("token is for a different Slack workspace (team %s, expected %s); reauth must stay on the same workspace", teamID, existingTeamID), http.StatusBadRequest)
 			return
 		}
 		cfg := map[string]any{
@@ -434,6 +440,10 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 		teamID, teamName, botUserID, err := slackAuthTest(r.Context(), newToken)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Slack auth.test failed: %v", err), http.StatusBadRequest)
+			return
+		}
+		if existingTeamID != "" && teamID != existingTeamID {
+			http.Error(w, fmt.Sprintf("token is for a different Slack workspace (team %s, expected %s); reauth must stay on the same workspace", teamID, existingTeamID), http.StatusBadRequest)
 			return
 		}
 		cfg := map[string]any{
