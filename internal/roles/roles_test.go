@@ -297,8 +297,8 @@ func TestStory35_DeleteRoleTokenSurvives(t *testing.T) {
 	if tok.ID != result.Token.ID {
 		t.Fatalf("story 35: token ID mismatch: expected %q, got %q", result.Token.ID, tok.ID)
 	}
-	if tok.RoleID != role.ID {
-		t.Fatalf("story 35: token still references deleted role ID %q, got %q", role.ID, tok.RoleID)
+	if tok.RoleIDs[0] != role.ID {
+		t.Fatalf("story 35: token still references deleted role ID %q, got %q", role.ID, tok.RoleIDs[0])
 	}
 
 	// Token Validate should also still work (it doesn't check role existence).
@@ -306,7 +306,7 @@ func TestStory35_DeleteRoleTokenSurvives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("story 35: validate should succeed for token with deleted role: %v", err)
 	}
-	if validated.RoleID != role.ID {
+	if validated.RoleIDs[0] != role.ID {
 		t.Fatalf("story 35: validated token role ID mismatch")
 	}
 }

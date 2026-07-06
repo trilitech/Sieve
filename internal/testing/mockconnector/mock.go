@@ -19,12 +19,12 @@ type Call struct {
 
 // Mock implements connector.Connector with configurable behavior.
 type Mock struct {
-	ConnType   string
-	Ops        []connector.OperationDef
-	Responses  map[string]any   // operation -> response
-	Errors     map[string]error // operation -> error
-	Calls      []Call
-	mu         sync.Mutex
+	ConnType  string
+	Ops       []connector.OperationDef
+	Responses map[string]any   // operation -> response
+	Errors    map[string]error // operation -> error
+	Calls     []Call
+	mu        sync.Mutex
 }
 
 // New creates a Mock with the given type and default Google-like operations
@@ -353,8 +353,8 @@ func (m *Mock) Execute(_ context.Context, op string, params map[string]any) (any
 				},
 				map[string]any{
 					"id": "file-002", "name": "Budget 2026.xlsx",
-					"mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-					"size": float64(51200),
+					"mime_type":    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+					"size":         float64(51200),
 					"created_time": "2026-02-20T08:00:00Z", "modified_time": "2026-03-10T11:00:00Z",
 					"owners": []string{"bob@company.com"},
 				},
@@ -545,5 +545,8 @@ func (m *Mock) Meta() connector.ConnectorMeta {
 		Name:        "Mock " + m.ConnType,
 		Description: "Mock connector for testing",
 		Category:    "Test",
+		// Expose the op catalog so the IAM rule-builder's "specific operations"
+		// list is populated for mock connections in tests/e2e.
+		Operations: m.Ops,
 	}
 }

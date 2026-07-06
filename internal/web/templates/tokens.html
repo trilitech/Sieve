@@ -15,7 +15,7 @@
   <main class="ml-64 p-8">
     <div class="max-w-6xl">
       <h1 class="text-2xl font-bold text-white mb-2">API Tokens</h1>
-      <p class="text-sm text-slate-400 mb-6">Tokens authenticate agents. Each token is bound to a role that defines what it can access.</p>
+      <p class="text-sm text-slate-400 mb-6">Tokens authenticate agents. Each token is assigned <strong>one or more roles</strong>; the agent can do the <strong>union</strong> of everything those roles allow. Build reusable roles (e.g. "email-access", "llm-access") and compose them per token — no need to cram unrelated permissions onto one role.</p>
 
       <!-- Plaintext Token Alert -->
       {{if .PlaintextToken}}
@@ -50,24 +50,36 @@
                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
             </div>
             <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Role</label>
-              <select name="role_id" required
-                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                <option value="">Select a role...</option>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Roles <span class="text-slate-500 font-normal">(select one or more)</span></label>
+              <div class="max-h-40 overflow-y-auto rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 space-y-1">
                 {{range .Roles}}
-                <option value="{{.ID}}">{{.Name}} ({{len .Bindings}} connections)</option>
+                <label class="flex items-center gap-2 text-sm text-slate-200">
+                  <input type="checkbox" name="role_id" value="{{.ID}}" class="rounded border-slate-600 bg-slate-800 text-indigo-500">
+                  <span>{{.Name}}</span>
+                </label>
+                {{else}}
+                <p class="text-xs text-slate-500">No roles yet — create one under IAM → Roles.</p>
                 {{end}}
-              </select>
+              </div>
+              <p class="text-xs text-slate-500 mt-1">The agent gets the union of every selected role.</p>
             </div>
             <div>
-              <label class="block text-sm font-medium text-slate-400 mb-1.5">Expires In</label>
-              <select name="expires_in"
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Expires</label>
+              <select name="expires_preset"
                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <option value="">Never</option>
                 <option value="24h">24 hours</option>
                 <option value="168h">7 days</option>
                 <option value="720h">30 days</option>
+                <option value="2160h">90 days</option>
               </select>
+              <div class="flex gap-2 mt-2">
+                <input type="text" name="expires_custom" placeholder="or e.g. 45d, 12h"
+                       class="w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <input type="date" name="expires_date"
+                       class="w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <p class="text-xs text-slate-500 mt-1">A picked date wins, else the custom duration, else the preset.</p>
             </div>
           </div>
           <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">
@@ -102,7 +114,18 @@
             {{range .Tokens}}
             <tr class="hover:bg-slate-700/30 transition-colors">
               <td class="px-6 py-4 text-sm font-medium text-white">{{.Name}}</td>
-              <td class="px-6 py-4 text-sm text-slate-300">{{mapGet $.RoleNames .RoleID}}</td>
+              <td class="px-6 py-4 text-sm text-slate-300">
+                {{joinNames $.RoleNames .RoleIDs}}
+                {{$caps := index $.Caps .ID}}
+                {{if $caps}}
+                <details class="mt-1">
+                  <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-300">what it can do ({{len $caps}})</summary>
+                  <ul class="mt-1 space-y-0.5 text-xs text-slate-400 list-disc list-inside max-w-md">
+                    {{range $caps}}<li>{{.}}</li>{{end}}
+                  </ul>
+                </details>
+                {{end}}
+              </td>
               <td class="px-6 py-4 text-sm text-slate-400">{{timeAgo .CreatedAt}}</td>
               <td class="px-6 py-4 text-sm text-slate-400">
                 {{if .ExpiresAt}}{{timeUntil (derefTime .ExpiresAt)}}{{else}}<span class="text-slate-600">Never</span>{{end}}
@@ -118,8 +141,9 @@
               </td>
               <td class="px-6 py-4 text-right">
                 {{if not .Revoked}}
+                <a href="/tokens/{{.ID}}/edit" class="text-sm text-indigo-400 hover:text-indigo-300 font-medium mr-3">Edit roles</a>
                 <form method="POST" action="/tokens/{{.ID}}/revoke"
-                      onsubmit="return confirm('Revoke token \'{{.Name}}\'?')"
+                      data-token-name="{{.Name}}" onsubmit="return confirmRevoke(this)"
                       class="inline">
                   <button type="submit" class="text-sm text-red-400 hover:text-red-300 font-medium">Revoke</button>
                 </form>
@@ -138,6 +162,14 @@
       </div>
     </div>
   </main>
+  <script>
+    // confirmRevoke reads the token name from a data-attribute (never inlined into
+    // the JS-string context) and confirms before the POST.
+    function confirmRevoke(form) {
+      const name = form.dataset.tokenName || '';
+      return confirm('Revoke token "' + name + '"?');
+    }
+  </script>
 </body>
 </html>
 {{end}}

@@ -19,7 +19,7 @@ import (
 // Service generates Python policy scripts via LLM.
 type Service struct {
 	connections *connections.Service
-	settings   *settings.Service
+	settings    *settings.Service
 }
 
 // NewService creates a new script generation service.

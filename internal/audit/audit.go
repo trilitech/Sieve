@@ -217,22 +217,22 @@ func (l *Logger) LogOperator(operatorDisplayName, operation, entityID string, pa
 // tokens, OAuth secrets, installation keys, and the like never reach
 // the audit row.
 var sensitiveKeys = map[string]struct{}{
-	"token":             {},
-	"plaintext_token":   {},
-	"bearer_token":      {},
-	"bot_token":         {},
-	"client_secret":     {},
-	"slack_client_secret": {},
-	"oauth_secret":      {},
-	"installation_key":  {},
-	"private_key":       {},
-	"private_key_pem":   {},
-	"credential":        {},
-	"confirm_credential": {},
-	"current_passphrase": {},
-	"new_passphrase":    {},
+	"token":                  {},
+	"plaintext_token":        {},
+	"bearer_token":           {},
+	"bot_token":              {},
+	"client_secret":          {},
+	"slack_client_secret":    {},
+	"oauth_secret":           {},
+	"installation_key":       {},
+	"private_key":            {},
+	"private_key_pem":        {},
+	"credential":             {},
+	"confirm_credential":     {},
+	"current_passphrase":     {},
+	"new_passphrase":         {},
 	"new_passphrase_confirm": {},
-	"password":          {},
+	"password":               {},
 }
 
 // RedactSensitive returns a shallow copy of params with values for

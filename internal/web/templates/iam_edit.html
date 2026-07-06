@@ -1,0 +1,455 @@
+{{define "iam_edit"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edit rule - Sieve</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>body { font-family: 'Inter', sans-serif; }</style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  {{template "nav" .}}
+
+  <main class="ml-64 p-8">
+    <div class="max-w-5xl">
+      <div class="mb-6">
+        <a href="/iam" class="text-sm text-slate-400 hover:text-slate-200">&larr; Back to IAM</a>
+        <h1 class="text-2xl font-bold text-white mt-2">Edit rule</h1>
+      </div>
+
+      {{if .Error}}
+      <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-6">
+        <p class="text-sm text-red-300">{{.Error}}</p>
+      </div>
+      {{end}}
+
+      {{if not .HasSpec}}
+      <!-- Rules without a stored structured form (raw Cedar / migrated) can't be
+           reloaded into the builder — there's nothing to prefill. -->
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6">
+        <p class="text-sm text-slate-300">This rule has no structured form — recreate it via the builder, or edit the raw Cedar in Advanced.</p>
+        <a href="/iam" class="inline-block mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Back to IAM</a>
+      </div>
+      {{else}}
+
+      <!-- Rule builder (mirrors iam.html's #rule-form, action points at update) -->
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
+        <p class="text-xs text-slate-500 mb-5">Edit this rule visually — no Cedar required. Saving recompiles and replaces it in place.</p>
+        <form method="POST" action="/iam/policies/{{.PolicyID}}/update" id="rule-form">
+          <input type="hidden" name="mode" value="builder">
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <!-- Role -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Role</label>
+              <select name="role_id" required
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="" disabled selected>Select a role…</option>
+                {{range .Roles}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+              </select>
+            </div>
+
+            <!-- Effect: three-valued decision (spec §3.2) — deny < require_approval
+                 < allow, most-restrictive wins. Hidden in script mode (the script
+                 returns the decision). -->
+            <div id="rb-effect-wrap">
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Effect</label>
+              <select name="effect" required
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="allow">Allow</option>
+                <option value="require_approval">Require approval</option>
+                <option value="deny">Deny</option>
+              </select>
+              <p class="text-xs text-slate-500 mt-1">Allow grants; Require approval grants but needs human sign-off; Deny blocks (deny wins). Response transforms live on guardrails, not rules.</p>
+            </div>
+
+            <!-- Connector -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Connector</label>
+              <select name="connector_type" id="rb-connector" required
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="" disabled selected>Select a connector…</option>
+                {{range .Connectors}}<option value="{{.Type}}">{{.Name}} ({{.Type}})</option>{{end}}
+              </select>
+            </div>
+
+            <!-- Operation scope -->
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Operations</label>
+              <select name="op_scope" id="rb-opscope"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="all">All operations</option>
+                <option value="read">All read-only operations</option>
+                <option value="write">All write operations</option>
+                <option value="specific">Specific operations…</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Specific operations (JS-populated) -->
+          <div id="rb-ops" class="mt-4 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-2">Choose operations</label>
+            <div id="rb-ops-list" class="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-56 overflow-y-auto rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+          </div>
+
+          <!-- Connection scope -->
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Applies to</label>
+            <select name="conn_scope" id="rb-connscope"
+                    class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="any">Any connection of this connector</option>
+              <option value="specific">Specific connections…</option>
+            </select>
+            <div id="rb-conns" class="mt-3 hidden">
+              <div id="rb-conns-list" class="grid grid-cols-2 md:grid-cols-3 gap-2 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+            </div>
+          </div>
+
+          <!-- Resource scope (connector-tailored, JS-populated). Gated on a single
+               specific connection (the scope id is connection-prefixed). -->
+          <div id="rb-scope-wrap" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Resource scope <span class="text-slate-600">(optional)</span></label>
+            <p id="rb-scope-hint" class="text-xs text-amber-500/80 mt-1 hidden">Pick a single specific connection under “Applies to” above to scope by org / repo.</p>
+            <div id="rb-scope-controls">
+              <select name="scope_key" id="rb-scope"
+                      class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="">No resource scope (whole connection)</option>
+              </select>
+              <p id="rb-scope-help" class="text-xs text-slate-500 mt-1"></p>
+              <div id="rb-scope-fields" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3"></div>
+              <p class="text-xs text-amber-500/80 mt-2">Applies to the single connection selected above.</p>
+            </div>
+          </div>
+
+          <!-- Condition: declarative builder OR a decision script (spec §5.4) — one. -->
+          <div id="rb-conds-wrap" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-2">Condition <span class="text-slate-600">(optional)</span></label>
+            <div class="flex gap-4 mb-3 text-sm text-slate-200">
+              <label class="flex items-center gap-1.5"><input type="radio" name="condition_mode" value="declarative" checked class="border-slate-600 bg-slate-800 text-indigo-500"> Build conditions</label>
+              <label class="flex items-center gap-1.5"><input type="radio" name="condition_mode" value="script" class="border-slate-600 bg-slate-800 text-indigo-500"> Use a script</label>
+            </div>
+            <div id="rb-conds" class="space-y-3 rounded-lg bg-slate-900 border border-slate-700 p-3"></div>
+            <div id="rb-cond-script" class="hidden space-y-2 rounded-lg bg-slate-900 border border-slate-700 p-3">
+              <p class="text-xs text-slate-400">A program that reads the request on stdin and returns <code class="text-slate-300">{"action":"allow|deny|approval_required"}</code>. It decides this grant only.</p>
+              <div class="flex gap-3 flex-wrap items-center">
+                <select name="condition_script_language" class="rounded bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">
+                  <option value="python">Python</option>
+                  <option value="javascript">JavaScript</option>
+                </select>
+                <input type="text" name="condition_script_path" placeholder="/opt/sieve-py/guards/my_check.py"
+                       class="flex-1 min-w-[16rem] rounded bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500">
+              </div>
+              <p class="text-xs text-slate-500">Path must be under the allowlisted scripts directory.</p>
+            </div>
+          </div>
+
+          <!-- A rule is a pure DECISION. Transforms are guardrail-only (spec §7). -->
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
+            <input type="text" name="description" value="{{.Description}}" placeholder="why this rule exists, in your words"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-xs text-slate-500 mt-1">Your own note. A plain-English summary of what the rule does is generated automatically and shown in the list.</p>
+          </div>
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Rule name <span class="text-slate-600">(optional)</span></label>
+            <input type="text" name="name" value="{{.Name}}" placeholder="auto-generated from the rule if blank"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+
+          <p class="text-xs text-slate-500 mt-6">To reuse this rule's bundle elsewhere, assign its <strong>role</strong> to another token (Tokens page) — a token can compose several roles. No need to copy rules between roles.</p>
+          <div class="mt-2 flex items-center gap-3">
+            <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Save changes</button>
+            <a href="/iam" class="text-sm text-slate-400 hover:text-slate-200">Cancel</a>
+          </div>
+        </form>
+      </div>
+
+      <!-- Catalog + stored form-state, both read client-side via JSON.parse of a
+           data-attribute (never template.JS / innerHTML) so operator-entered
+           strings can't inject markup or script. -->
+      <div id="iam-catalog" data-catalog="{{jsonAttr .Catalog}}" class="hidden"></div>
+      <div id="iam-spec" data-spec="{{jsonAttr .Spec}}" class="hidden"></div>
+      <script>
+        const IAM_CATALOG = JSON.parse(document.getElementById('iam-catalog').dataset.catalog || '{}');
+
+        function el(id) { return document.getElementById(id); }
+
+        // --- Rule builder dynamic fields (identical to iam.html) ---
+        // All dynamic values (connection ids/names, op names) are set via
+        // element properties + textContent — never innerHTML — so an
+        // operator-entered connection name can't inject markup.
+        function checkboxRow(name, value, labelText, badge) {
+          const lbl = document.createElement('label');
+          lbl.className = 'flex items-center gap-2 text-sm text-slate-200';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.name = name; cb.value = value;
+          cb.className = 'rounded border-slate-600 bg-slate-800 text-indigo-500';
+          const span = document.createElement('span');
+          span.textContent = labelText; // textContent — payload renders as text
+          lbl.appendChild(cb); lbl.appendChild(span);
+          if (badge) {
+            const b = document.createElement('span');
+            b.className = 'text-emerald-500/70 text-xs'; b.textContent = badge;
+            lbl.appendChild(b);
+          }
+          return lbl;
+        }
+        function emptyNote(box, text) {
+          const p = document.createElement('p');
+          p.className = 'text-xs text-slate-500 col-span-full';
+          p.textContent = text; // textContent — static, but kept safe
+          box.appendChild(p);
+        }
+        function rbRefresh() {
+          const t = el('rb-connector').value;
+          const cat = IAM_CATALOG[t] || {};
+          const ops = cat.operations || [], conns = cat.connections || [];
+
+          const opsBox = el('rb-ops-list');
+          opsBox.textContent = '';
+          if (!ops.length) emptyNote(opsBox, 'This connector has no enumerated operations — use All / read / write.');
+          for (const o of ops) opsBox.appendChild(checkboxRow('operations', o.name, o.name, o.readOnly ? '(read)' : ''));
+
+          const connBox = el('rb-conns-list');
+          connBox.textContent = '';
+          if (!conns.length) emptyNote(connBox, 'No connections of this connector type yet.');
+          for (const c of conns) connBox.appendChild(checkboxRow('connections', c.id, c.name, ''));
+
+          // resource scopes (connector-tailored)
+          const scopeSel = el('rb-scope');
+          scopeSel.textContent = '';
+          const none = document.createElement('option');
+          none.value = ''; none.textContent = 'No resource scope (whole connection)';
+          scopeSel.appendChild(none);
+          for (const sc of (cat.scopes || [])) {
+            const o = document.createElement('option');
+            o.value = sc.key; o.textContent = sc.label;
+            scopeSel.appendChild(o);
+          }
+          rbScopeVis();
+
+          // conditions (connector-tailored)
+          const conds = el('rb-conds');
+          conds.textContent = '';
+          for (const c of (cat.conditions || [])) conds.appendChild(condRow(c));
+          rbCondVisibility();
+        }
+
+        function rbCondVisibility() {
+          const effect = document.querySelector('#rule-form select[name="effect"]');
+          const isDeny = effect && effect.value === 'deny';
+          // The script-mode option is always available, so show the wrap whenever
+          // the effect isn't a deny (even if the connector declares no conditions).
+          el('rb-conds-wrap').classList.toggle('hidden', isDeny);
+          const obl = el('rb-obligations');
+          if (obl) obl.classList.toggle('hidden', isDeny);
+          rbSyncCondMode();
+        }
+        // rbSyncCondMode shows either the declarative builder or the script pane.
+        function rbSyncCondMode() {
+          const sel = document.querySelector('#rule-form input[name="condition_mode"]:checked');
+          const script = sel && sel.value === 'script';
+          const decl = el('rb-conds'), sc = el('rb-cond-script');
+          if (decl) decl.classList.toggle('hidden', !!script);
+          if (sc) sc.classList.toggle('hidden', !script);
+          // A script condition returns the decision; hide Effect + force allow (the
+          // permit the script gates).
+          const eff = document.querySelector('#rule-form select[name="effect"]');
+          const ew = el('rb-effect-wrap');
+          if (script && eff) eff.value = 'allow';
+          if (ew) ew.classList.toggle('hidden', !!script);
+        }
+
+        function rbScopeFields() {
+          const cat = IAM_CATALOG[el('rb-connector').value] || {};
+          const sc = (cat.scopes || []).find(s => s.key === el('rb-scope').value);
+          const box = el('rb-scope-fields'); box.textContent = '';
+          el('rb-scope-help').textContent = sc ? (sc.help || '') : '';
+          if (!sc) return;
+          for (const f of (sc.fields || [])) {
+            const wrap = document.createElement('div');
+            const lbl = document.createElement('label');
+            lbl.className = 'block text-xs text-slate-400 mb-1'; lbl.textContent = f.label;
+            const inp = document.createElement('input');
+            inp.type = 'text'; inp.name = 'scope_' + f.key; inp.placeholder = f.placeholder || '';
+            inp.className = 'w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500';
+            wrap.appendChild(lbl); wrap.appendChild(inp); box.appendChild(wrap);
+          }
+        }
+
+        function rbSelectedConnCount() {
+          const box = el('rb-conns-list');
+          return box ? box.querySelectorAll('input[name="connections"]:checked').length : 0;
+        }
+        // rbScopeVis gates the resource-scope controls on a SINGLE specific
+        // connection (the scope id is connection-prefixed). Otherwise it shows a
+        // hint and clears any stale scope selection.
+        function rbScopeVis() {
+          const cat = IAM_CATALOG[el('rb-connector').value] || {};
+          const hasScopes = !!(cat.scopes && cat.scopes.length);
+          el('rb-scope-wrap').classList.toggle('hidden', !hasScopes);
+          const single = hasScopes && el('rb-connscope').value === 'specific' && rbSelectedConnCount() === 1;
+          el('rb-scope-hint').classList.toggle('hidden', !hasScopes || single);
+          el('rb-scope-controls').classList.toggle('hidden', !single);
+          if (!single) el('rb-scope').value = '';
+          rbScopeFields();
+        }
+
+        function condRow(c) {
+          const row = document.createElement('div');
+          row.className = 'flex items-center gap-2 flex-wrap';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.name = 'cond_' + c.key; cb.value = 'on';
+          cb.className = 'rounded border-slate-600 bg-slate-800 text-indigo-500';
+          const lbl = document.createElement('span');
+          lbl.className = 'text-sm text-slate-200 min-w-[12rem]'; lbl.textContent = c.label;
+          row.appendChild(cb); row.appendChild(lbl);
+          if (c.kind === 'number') {
+            const op = document.createElement('select');
+            op.name = 'cond_' + c.key + '_op';
+            op.className = 'rounded bg-slate-900 border border-slate-600 px-2 py-1 text-sm text-white';
+            for (const pair of [['lte', '≤'], ['lt', '<'], ['gte', '≥'], ['gt', '>'], ['eq', '=']]) {
+              const o = document.createElement('option'); o.value = pair[0]; o.textContent = pair[1]; op.appendChild(o);
+            }
+            row.appendChild(op);
+          }
+          let val;
+          if (c.kind === 'bool') {
+            val = document.createElement('select');
+            for (const b of ['true', 'false']) {
+              const o = document.createElement('option'); o.value = b; o.textContent = b; val.appendChild(o);
+            }
+          } else {
+            val = document.createElement('input');
+            val.type = 'text';
+            val.placeholder = c.kind === 'domain_allowlist' ? 'example.com, trilitech.com' : (c.kind === 'number' ? '1000' : 'value');
+          }
+          val.name = 'cond_' + c.key + '_val';
+          val.className = 'rounded bg-slate-900 border border-slate-600 px-2 py-1 text-sm text-white flex-1 min-w-[8rem]';
+          row.appendChild(val);
+          if (c.help) {
+            const h = document.createElement('p');
+            h.className = 'text-xs text-slate-500 w-full'; h.textContent = c.help;
+            row.appendChild(h);
+          }
+          return row;
+        }
+        function rbToggleOps() { el('rb-ops').classList.toggle('hidden', el('rb-opscope').value !== 'specific'); }
+        function rbToggleConns() { el('rb-conns').classList.toggle('hidden', el('rb-connscope').value !== 'specific'); rbScopeVis(); }
+
+        el('rb-connector').addEventListener('change', rbRefresh);
+        el('rb-opscope').addEventListener('change', rbToggleOps);
+        el('rb-connscope').addEventListener('change', rbToggleConns);
+        el('rb-scope').addEventListener('change', rbScopeFields);
+        // Re-gate scope controls when the checked-connection set changes
+        // (delegated — checkboxes are rebuilt dynamically).
+        el('rb-conns-list').addEventListener('change', rbScopeVis);
+        document.querySelector('#rule-form select[name="effect"]').addEventListener('change', rbCondVisibility);
+        document.querySelectorAll('#rule-form input[name="condition_mode"]').forEach(r => r.addEventListener('change', rbSyncCondMode));
+
+        // --- Prefill from the stored form-state ---
+        // The spec is read from a data-attribute via JSON.parse (XSS-safe: no
+        // template.JS, no innerHTML with dynamic data). Set the top-level
+        // selects, render the connector-dependent controls (rbRefresh), then
+        // tick/fill the dynamic inputs whose values are in the spec.
+        (function prefill() {
+          let spec = {};
+          try { spec = JSON.parse(el('iam-spec').dataset.spec || '{}') || {}; } catch (e) { spec = {}; }
+
+          function setSelect(name, value) {
+            const s = document.querySelector('#rule-form select[name="' + name + '"]');
+            if (s && value != null) s.value = value;
+          }
+
+          setSelect('role_id', spec.role_id);
+          // Effect is the three-valued decision; restore it directly (require_approval
+          // is now its own option, not a separate checkbox).
+          setSelect('effect', spec.effect);
+          setSelect('connector_type', spec.connector_type);
+
+          // Render connector-dependent controls (ops list, connections list,
+          // scope select, condition rows) for the chosen connector.
+          rbRefresh();
+
+          setSelect('op_scope', spec.op_scope);
+          rbToggleOps();
+          setSelect('conn_scope', spec.conn_scope);
+          rbToggleConns();
+
+          // Tick specific operations.
+          const ops = spec.operations || [];
+          for (const name of ops) {
+            const cb = document.querySelector('#rb-ops-list input[name="operations"][value="' + cssEsc(name) + '"]');
+            if (cb) cb.checked = true;
+          }
+          // Tick specific connections.
+          const conns = spec.connections || [];
+          for (const id of conns) {
+            const cb = document.querySelector('#rb-conns-list input[name="connections"][value="' + cssEsc(id) + '"]');
+            if (cb) cb.checked = true;
+          }
+          // Now that connections are ticked, re-gate the scope controls (a
+          // single-connection scoped rule should show its controls on load).
+          rbScopeVis();
+
+          // Resource scope + its fields.
+          if (spec.scope_key) {
+            setSelect('scope_key', spec.scope_key);
+            rbScopeFields();
+            const sf = spec.scope_fields || {};
+            for (const k in sf) {
+              const inp = document.querySelector('#rb-scope-fields input[name="scope_' + cssEsc(k) + '"]');
+              if (inp) inp.value = sf[k];
+            }
+          }
+
+          // Condition mode: a stored script condition restores the Script pane +
+          // its language/path; otherwise the declarative rows below are filled.
+          if (spec.condition_mode === 'script') {
+            const r = document.querySelector('#rule-form input[name="condition_mode"][value="script"]');
+            if (r) r.checked = true;
+            setSelect('condition_script_language', spec.condition_script_language || 'python');
+            const pathInp = document.querySelector('#rule-form input[name="condition_script_path"]');
+            if (pathInp && spec.condition_script_path) pathInp.value = spec.condition_script_path;
+          }
+          rbSyncCondMode();
+
+          // Conditions: check the box, set op + value for each stored condition.
+          for (const c of (spec.conditions || [])) {
+            const cb = document.querySelector('#rb-conds input[name="cond_' + cssEsc(c.key) + '"]');
+            if (cb) cb.checked = true;
+            const opSel = document.querySelector('#rb-conds select[name="cond_' + cssEsc(c.key) + '_op"]');
+            if (opSel && c.op) opSel.value = c.op;
+            // [name] (not input[name]) so a bool condition's <select> is matched too.
+            const valInp = document.querySelector('#rb-conds [name="cond_' + cssEsc(c.key) + '_val"]');
+            if (valInp && c.value != null) valInp.value = c.value;
+          }
+
+          // Tick the attached library filters (the rule's obligations).
+          for (const name of (spec.filters || [])) {
+            const cb = document.querySelector('#rb-obligations input[name="filters"][value="' + cssEsc(name) + '"]');
+            if (cb) cb.checked = true;
+          }
+
+          // Re-evaluate condition + obligation visibility now that effect is set.
+          rbCondVisibility();
+        })();
+
+        // cssEsc escapes a value for safe use inside a CSS attribute selector.
+        function cssEsc(v) {
+          v = String(v);
+          if (window.CSS && CSS.escape) return CSS.escape(v);
+          return v.replace(/["\\\]]/g, '\\$&');
+        }
+      </script>
+
+      {{end}}
+    </div>
+  </main>
+</body>
+</html>
+{{end}}

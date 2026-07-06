@@ -9,16 +9,36 @@ export interface ServerInfo {
   seed_token_id: string;
   seed_role_id: string;
   read_only_policy_id: string;
+  operator_credential: string;
   process: ChildProcess;
 }
 
 /**
- * Starts the Go test server (web UI + API) and returns connection info.
+ * Logs the operator in by POSTing the credential to /login. The session +
+ * CSRF cookies land in the page's context cookie jar (page.request shares it),
+ * so subsequent page.goto admin navigations are authenticated. Required because
+ * the testserver wires operator auth and requireOperatorSession fails closed.
  */
-export async function startTestServer(): Promise<ServerInfo> {
+export async function loginOperator(page: import('@playwright/test').Page, s: ServerInfo): Promise<void> {
+  const resp = await page.request.post(`${s.web_url}/login`, {
+    form: { credential: s.operator_credential },
+    maxRedirects: 0,
+  });
+  // 303 redirect to / on success.
+  if (resp.status() !== 303 && resp.status() !== 200) {
+    throw new Error(`operator login failed: status ${resp.status()}`);
+  }
+}
+
+/**
+ * Starts the Go test server (web UI + API) and returns connection info.
+ * extraEnv merges into the child environment (e.g. { SIEVE_IAM: '1' } to run
+ * the harness on the new IAM engine).
+ */
+export async function startTestServer(extraEnv: Record<string, string> = {}): Promise<ServerInfo> {
   const proc = spawn('go', ['run', './e2e/testserver/'], {
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PATH: `${process.env.HOME}/go/bin:${process.env.PATH}` },
+    env: { ...process.env, PATH: `${process.env.HOME}/go/bin:${process.env.PATH}`, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

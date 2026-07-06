@@ -8,13 +8,13 @@
 // works with ANY HTTP API (Anthropic, OpenAI, Gemini, Stripe, Twilio, etc.)
 // without provider-specific code.
 // Connection config:
-//{
-//"target_url": "https://api.anthropic.com",
-//"auth_header": "x-api-key",
-//"auth_value": "sk-ant-api03-...",
-//"allowed_paths": ["/v1/messages", "/v1/models"], // optional whitelist
-//"extra_headers": {"anthropic-version": "2023-06-01"} // optional
-//}
+// {
+// "target_url": "https://api.anthropic.com",
+// "auth_header": "x-api-key",
+// "auth_value": "sk-ant-api03-...",
+// "allowed_paths": ["/v1/messages", "/v1/models"], // optional whitelist
+// "extra_headers": {"anthropic-version": "2023-06-01"} // optional
+// }
 // The agent accesses this via: GET/POST http://localhost:19817/proxy/{connection}/{path}
 // Sieve strips the Sieve bearer token, injects the real auth, forwards to target.
 package httpproxy
@@ -163,6 +163,16 @@ var Meta = connector.ConnectorMeta{
 		{Name: "outbound_allowlist", Label: "Outbound allow-list (CIDRs)", Type: "textarea", EditOnly: true, Editable: true,
 			HelpText: "Opt CIDRs into httpguard's outbound-host allow-list. Empty = block private / loopback / link-local. Set to 127.0.0.0/8 for a local mock; the operator's actual production allow-list otherwise. One entry per line."},
 	},
+	Operations: operations,
+	RuleConditions: []connector.RuleCondition{
+		{
+			Key:     "http_method",
+			Label:   "HTTP method",
+			Kind:    "string",
+			CtxPath: "context.http_method",
+			Help:    "e.g. GET, POST",
+		},
+	},
 }
 
 // ProxyConnector implements connector.Connector for generic HTTP proxying.
@@ -172,12 +182,12 @@ var Meta = connector.ConnectorMeta{
 type ProxyConnector struct {
 	targetURL              string
 	authHeader             string
-	authHeaderLower        string   // lowercased once at construction; used by header deny-check
+	authHeaderLower        string // lowercased once at construction; used by header deny-check
 	authValue              string
-	authValueScrub         bool     // when true (default), upstream response bodies are scrubbed of literal authValue
-	additionalDenied       []string // operator-supplied extras the connector ALSO denies (lowercased; never reduces the baseline)
+	authValueScrub         bool                // when true (default), upstream response bodies are scrubbed of literal authValue
+	additionalDenied       []string            // operator-supplied extras the connector ALSO denies (lowercased; never reduces the baseline)
 	additionalDeniedLookup map[string]struct{} // O(1) lookup over additionalDenied
-	authQueryParam         string   // empty = legacy header-only auth; non-empty = inject auth_value as URL query param under this name
+	authQueryParam         string              // empty = legacy header-only auth; non-empty = inject auth_value as URL query param under this name
 	extraHeaders           map[string]string
 	client                 *http.Client
 }
@@ -375,24 +385,49 @@ func (p *ProxyConnector) AuthValueScrubFilter() *policy.ResponseFilter {
 	}
 	return &policy.ResponseFilter{
 		Label:          "auth_value_scrubbed",
-		RedactPatterns: []string{regexp.QuoteMeta(p.authValue)},
+		RedactPatterns: authScrubPatterns(p.authValue),
+		Match:          "regex",
 	}
+}
+
+// authScrubPatterns returns the literal (QuoteMeta'd) redaction patterns for a
+// configured auth value. The configured value may carry a scheme — for an
+// Authorization header a bare token is stored as "Bearer <token>" — but an
+// upstream that echoes the credential back in an error body often prints the
+// RAW token with no scheme (e.g. `invalid key sk-...`). So we scrub BOTH the
+// full value and, when a scheme prefix is present, the bare credential, so an
+// echoed "Bearer sk-..." and a bare "sk-..." are both masked.
+func authScrubPatterns(authValue string) []string {
+	pats := []string{regexp.QuoteMeta(authValue)}
+	for _, scheme := range []string{"Bearer ", "Basic "} {
+		if len(authValue) > len(scheme) && strings.EqualFold(authValue[:len(scheme)], scheme) {
+			if bare := strings.TrimSpace(authValue[len(scheme):]); bare != "" {
+				pats = append(pats, regexp.QuoteMeta(bare))
+			}
+		}
+	}
+	return pats
 }
 
 // Operations returns a single "proxy" operation. The real routing happens
 // at the HTTP level via the proxy handler in the API router.
 func (p *ProxyConnector) Operations() []connector.OperationDef {
-	return []connector.OperationDef{
-		{
-			Name:        "proxy_request",
-			Description: "Forward an HTTP request to the target API",
-			Params: map[string]connector.ParamDef{
-				"method": {Type: "string", Description: "HTTP method", Required: true},
-				"path":   {Type: "string", Description: "URL path", Required: true},
-				"body":   {Type: "string", Description: "Request body", Required: false},
-			},
+	return operations
+}
+
+// operations is the static catalog of supported operations. It is the single
+// source of truth shared by the runtime Operations() method and the
+// Meta.Operations field consumed by IAM taxonomy/schema generation.
+var operations = []connector.OperationDef{
+	{
+		Name:        "proxy_request",
+		Description: "Forward an HTTP request to the target API",
+		Params: map[string]connector.ParamDef{
+			"method": {Type: "string", Description: "HTTP method", Required: true},
+			"path":   {Type: "string", Description: "URL path", Required: true},
+			"body":   {Type: "string", Description: "Request body", Required: false},
 		},
-	}
+	},
 }
 
 // Execute proxies a single HTTP request. Params must include "method" and "path".
@@ -416,14 +451,38 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 		}
 	}
 
-	url := p.targetURL + path
+	// Build the upstream URL via proper URL parsing, NOT string concatenation.
+	// `p.targetURL + path` lets a crafted agent path reparent the authority:
+	// "https://api.example.com" + "@evil.com/x" parses to Host=evil.com, so the
+	// credential injected below would be sent to the attacker (httpguard only
+	// blocks private ranges, not public hosts). Mirror ProxyHTTP: validate the
+	// path, JoinPath it onto the parsed base (which cannot change the host), and
+	// assert the resolved host/scheme still match the configured target before
+	// attaching any credential.
+	rawPath, query := path, ""
+	if i := strings.IndexByte(rawPath, '?'); i >= 0 {
+		rawPath, query = rawPath[:i], rawPath[i+1:]
+	}
+	cleaned, err := validateProxyPath(rawPath)
+	if err != nil {
+		return nil, fmt.Errorf("http_proxy: invalid path: %w", err)
+	}
+	targetBase, err := url.Parse(p.targetURL)
+	if err != nil {
+		return nil, fmt.Errorf("http_proxy: invalid target URL: %w", err)
+	}
+	reqURL := targetBase.JoinPath(cleaned)
+	reqURL.RawQuery = query
+	if reqURL.Scheme != targetBase.Scheme || reqURL.Host != targetBase.Host {
+		return nil, fmt.Errorf("http_proxy: refusing to proxy to unexpected host %q", reqURL.Host)
+	}
 
 	var bodyReader io.Reader
 	if body, ok := params["body"].(string); ok && body != "" {
 		bodyReader = strings.NewReader(body)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, reqURL.String(), bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("http_proxy: create request: %w", err)
 	}
@@ -477,13 +536,17 @@ func (p *ProxyConnector) Execute(ctx context.Context, op string, params map[stri
 	// curated Execute path bypasses handleProxy.
 	if p.authValueScrub && p.authValue != "" {
 		scrubFilter := policy.ResponseFilter{
-			RedactPatterns: []string{regexp.QuoteMeta(p.authValue)},
+			RedactPatterns: authScrubPatterns(p.authValue),
+			Match:          "regex",
 		}
 		// Regex-only scrub — no script command, so ApplyResponseFilters
 		// cannot return ResponseFilterError here. A construction error from
 		// a future script-based scrub would propagate as a fatal Execute
 		// error, since returning the raw response would leak the auth value.
-		scrubbed, _, err := policy.ApplyResponseFilters(respBody, []policy.ResponseFilter{scrubFilter})
+		// nil content fields ⇒ whole-response scrub: the auth value must be
+		// redacted wherever it appears (incl. error bodies), not just in named
+		// fields.
+		scrubbed, _, err := policy.ApplyResponseFilters(respBody, []policy.ResponseFilter{scrubFilter}, nil)
 		if err != nil {
 			return nil, fmt.Errorf("http_proxy: scrub filter failed: %w", err)
 		}
@@ -695,7 +758,9 @@ func (p *ProxyConnector) ProxyHTTP(w http.ResponseWriter, r *http.Request, proxy
 		return "", false, fmt.Errorf("response exceeds %d byte filter limit", maxFilteredBodySize)
 	}
 
-	respBody, filterSummary, filterErr := policy.ApplyResponseFilters(respBody, filters)
+	// http_proxy responses are arbitrary bodies (no declared content fields), so
+	// filters apply whole-response.
+	respBody, filterSummary, filterErr := policy.ApplyResponseFilters(respBody, filters, nil)
 	if filterErr != nil {
 		// A response filter failed to construct or run — surface as a 502
 		// rather than return the un-redacted body. The caller's audit log

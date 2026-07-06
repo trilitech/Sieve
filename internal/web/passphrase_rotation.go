@@ -33,15 +33,15 @@ func SetRotateLockoutCooldownForTest(d time.Duration) (restore func()) {
 // online rotation against the running keyring and re-renders the Settings
 // page with a success card (303 PRG redirect) or a typed error chip.
 // Order of validation gates:
-// 1. requireOperatorSession (upstream middleware) — verifies the session
-//    cookie + CSRF token and rejects any agent bearer token with 403.
-// 2. checkRotationOrigin — Origin/Referer allow-list (defence-in-depth).
-// 3. checkRotationLockout — per-process brute-force lockout.
-// 4. Field presence.
-// 5. Confirmation match.
-// 6. New != current.
-// 7. keyring.Rotate (verifies current passphrase, runs the SQL tx and the
-//    in-memory KEK swap, writes the audit row inside the same tx).
+//  1. requireOperatorSession (upstream middleware) — verifies the session
+//     cookie + CSRF token and rejects any agent bearer token with 403.
+//  2. checkRotationOrigin — Origin/Referer allow-list (defence-in-depth).
+//  3. checkRotationLockout — per-process brute-force lockout.
+//  4. Field presence.
+//  5. Confirmation match.
+//  6. New != current.
+//  7. keyring.Rotate (verifies current passphrase, runs the SQL tx and the
+//     in-memory KEK swap, writes the audit row inside the same tx).
 func (s *Server) handleRotatePassphrase(w http.ResponseWriter, r *http.Request) {
 	if !s.checkRotationOrigin(r) {
 		http.Error(w, "rotation requires same-origin admin UI submission", http.StatusForbidden)

@@ -80,7 +80,7 @@ func GmailReadEmail(messageID string) map[string]any {
 		"labels":         []string{"INBOX", "project-x"},
 		"snippet":        "Revenue for Q3 was $4.2M...",
 		"date":           "2026-03-15T10:30:00Z",
-		"has_attachment":  false,
+		"has_attachment": false,
 	}
 }
 

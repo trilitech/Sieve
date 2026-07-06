@@ -12,7 +12,6 @@ import (
 	"github.com/trilitech/Sieve/internal/session"
 )
 
-
 // mockVerifier matches the signature session.Manager.VerifyCSRF expects.
 // Used to drive Check tests without standing up a DB.
 func mockVerifier(expected string) func(*session.Session, string) bool {

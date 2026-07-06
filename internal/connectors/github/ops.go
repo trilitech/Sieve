@@ -55,9 +55,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "github_list_repos",
-		Description: "List repositories for an org or for the authenticated user.",
-		ReadOnly:    true,
+		Name:         "github_list_repos",
+		Description:  "List repositories for an org or for the authenticated user.",
+		ReadOnly:     true,
+		ResourceType: "Sieve::Github::Owner",
+		Resource:     githubOwnerResource,
 		Params: map[string]connector.ParamDef{
 			"owner":    {Type: "string", Required: false, Description: "Org login. Omit to list the authenticated user's repos."},
 			"per_page": {Type: "int", Required: false},
@@ -65,9 +67,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "github_get_file",
-		Description: "Get a file's contents from a repo.",
-		ReadOnly:    true,
+		Name:         "github_get_file",
+		Description:  "Get a file's contents from a repo.",
+		ReadOnly:     true,
+		ResourceType: "Sieve::Github::Repo",
+		Resource:     githubRepoResource,
 		Params: map[string]connector.ParamDef{
 			"owner": {Type: "string", Required: true},
 			"repo":  {Type: "string", Required: true},
@@ -76,9 +80,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "github_put_file",
-		Description: "Create or update a file in a repo.",
-		ReadOnly:    false,
+		Name:         "github_put_file",
+		Description:  "Create or update a file in a repo.",
+		ReadOnly:     false,
+		ResourceType: "Sieve::Github::Repo",
+		Resource:     githubRepoResource,
 		Params: map[string]connector.ParamDef{
 			"owner":   {Type: "string", Required: true},
 			"repo":    {Type: "string", Required: true},
@@ -90,9 +96,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "github_list_issues",
-		Description: "List issues in a repo.",
-		ReadOnly:    true,
+		Name:         "github_list_issues",
+		Description:  "List issues in a repo.",
+		ReadOnly:     true,
+		ResourceType: "Sieve::Github::Repo",
+		Resource:     githubRepoResource,
 		Params: map[string]connector.ParamDef{
 			"owner":    {Type: "string", Required: true},
 			"repo":     {Type: "string", Required: true},
@@ -103,9 +111,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "github_create_issue",
-		Description: "Open a new issue in a repo.",
-		ReadOnly:    false,
+		Name:         "github_create_issue",
+		Description:  "Open a new issue in a repo.",
+		ReadOnly:     false,
+		ResourceType: "Sieve::Github::Repo",
+		Resource:     githubRepoResource,
 		Params: map[string]connector.ParamDef{
 			"owner":     {Type: "string", Required: true},
 			"repo":      {Type: "string", Required: true},
@@ -116,9 +126,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "github_comment_issue",
-		Description: "Post a comment on an issue or pull request.",
-		ReadOnly:    false,
+		Name:         "github_comment_issue",
+		Description:  "Post a comment on an issue or pull request.",
+		ReadOnly:     false,
+		ResourceType: "Sieve::Github::Repo",
+		Resource:     githubRepoResource,
 		Params: map[string]connector.ParamDef{
 			"owner":  {Type: "string", Required: true},
 			"repo":   {Type: "string", Required: true},
@@ -127,9 +139,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "github_list_prs",
-		Description: "List pull requests in a repo.",
-		ReadOnly:    true,
+		Name:         "github_list_prs",
+		Description:  "List pull requests in a repo.",
+		ReadOnly:     true,
+		ResourceType: "Sieve::Github::Repo",
+		Resource:     githubRepoResource,
 		Params: map[string]connector.ParamDef{
 			"owner":    {Type: "string", Required: true},
 			"repo":     {Type: "string", Required: true},
@@ -139,9 +153,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "github_get_pr",
-		Description: "Get a pull request, including diff stats and merge state.",
-		ReadOnly:    true,
+		Name:         "github_get_pr",
+		Description:  "Get a pull request, including diff stats and merge state.",
+		ReadOnly:     true,
+		ResourceType: "Sieve::Github::Repo",
+		Resource:     githubRepoResource,
 		Params: map[string]connector.ParamDef{
 			"owner":  {Type: "string", Required: true},
 			"repo":   {Type: "string", Required: true},
@@ -149,9 +165,11 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:        "github_create_pr",
-		Description: "Open a new pull request.",
-		ReadOnly:    false,
+		Name:         "github_create_pr",
+		Description:  "Open a new pull request.",
+		ReadOnly:     false,
+		ResourceType: "Sieve::Github::Repo",
+		Resource:     githubRepoResource,
 		Params: map[string]connector.ParamDef{
 			"owner": {Type: "string", Required: true},
 			"repo":  {Type: "string", Required: true},
@@ -172,6 +190,32 @@ var operations = []connector.OperationDef{
 			"page":     {Type: "int", Required: false},
 		},
 	},
+}
+
+// --- IAM resource mappers ---
+
+// githubOwnerResource maps a request to its owner entity. Used by
+// github_list_repos: the owner param identifies an org/user; when omitted the
+// op lists the authenticated user's repos, so we use the "~viewer" sentinel.
+func githubOwnerResource(connID string, p map[string]any) []connector.ResourceRef {
+	owner := getString(p, "owner")
+	if owner == "" {
+		owner = "~viewer"
+	}
+	return []connector.ResourceRef{
+		{Type: "Sieve::Github::Owner", ID: connID + "/" + owner},
+	}
+}
+
+// githubRepoResource maps a request to its repo entity plus the owning Owner
+// (leaf-first). Used by the repo-scoped ops that take owner+repo params.
+func githubRepoResource(connID string, p map[string]any) []connector.ResourceRef {
+	owner := getString(p, "owner")
+	repo := getString(p, "repo")
+	return []connector.ResourceRef{
+		{Type: "Sieve::Github::Repo", ID: connID + "/" + owner + "/" + repo},
+		{Type: "Sieve::Github::Owner", ID: connID + "/" + owner},
+	}
 }
 
 // --- handlers ---

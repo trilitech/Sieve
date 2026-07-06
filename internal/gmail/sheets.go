@@ -84,11 +84,11 @@ func (c *SheetsClient) WriteRange(ctx context.Context, spreadsheetID, writeRange
 	}
 
 	return map[string]any{
-		"spreadsheet_id": resp.SpreadsheetId,
-		"updated_range":  resp.UpdatedRange,
-		"updated_rows":   resp.UpdatedRows,
+		"spreadsheet_id":  resp.SpreadsheetId,
+		"updated_range":   resp.UpdatedRange,
+		"updated_rows":    resp.UpdatedRows,
 		"updated_columns": resp.UpdatedColumns,
-		"updated_cells":  resp.UpdatedCells,
+		"updated_cells":   resp.UpdatedCells,
 	}, nil
 }
 

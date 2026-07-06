@@ -109,6 +109,115 @@ type OperationDef struct {
 	Description string              `json:"description"`
 	Params      map[string]ParamDef `json:"params"`
 	ReadOnly    bool                `json:"read_only"`
+
+	// Disabled marks an operation that exists in the contract but is NOT usable
+	// in this build (e.g. Slack search_messages needs a user-token install). The
+	// rule/guardrail builders render it greyed-out and unselectable so an operator
+	// can't scope a rule to an op that will only ever 501 at runtime.
+	// DisabledReason is the short operator-facing explanation.
+	Disabled       bool   `json:"disabled,omitempty"`
+	DisabledReason string `json:"disabled_reason,omitempty"`
+
+	// --- IAM taxonomy (internal/iam) ---
+
+	// Action overrides the Cedar action leaf id. Empty ⇒ the taxonomy derives
+	// "<connectorType>/<Name>". Rarely set; the derived form is canonical.
+	Action string `json:"-"`
+
+	// ResourceType is the SINGLE Cedar entity type this op targets (review M1:
+	// one type per op, never "finest available"). Empty ⇒ the op targets the
+	// connection itself (Sieve::Connection). Used by schema appliesTo and as the
+	// invariant the Resource mapper must satisfy.
+	ResourceType string `json:"-"`
+
+	// Resource maps a request to the concrete resource entity (leaf + any
+	// object-level ancestors above the connection), e.g. a GitHub repo with its
+	// owner. Nil ⇒ the resource is the connection. The leaf's Type MUST equal
+	// ResourceType (enforced by a taxonomy test). Pure; no I/O.
+	Resource ResourceMapper `json:"-"`
+}
+
+// ResourceRef is one entity in a request's resource chain, in IAM terms.
+type ResourceRef struct {
+	Type string // namespaced entity type, e.g. "Sieve::Github::Repo"
+	ID   string // entity id, e.g. "<conn>/<owner>/<repo>"
+}
+
+// ResourceMapper derives the resource a request targets: the leaf entity plus
+// any object-level ancestors ABOVE the connection (leaf-first). The taxonomy
+// appends the connection and connector. An empty/nil result ⇒ the connection is
+// the resource. Example (GitHub get-file): returns [Repo, Owner].
+type ResourceMapper func(connID string, params map[string]any) []ResourceRef
+
+// ResourceType declares a connector's object entity type for schema generation:
+// its namespaced name and the type it is `in` (its parent). Parent "" ⇒ the
+// parent is Sieve::Connection.
+type ResourceType struct {
+	Name   string // "Sieve::Github::Repo"
+	Parent string // "Sieve::Github::Owner"; "" ⇒ Sieve::Connection
+}
+
+// RuleScope declares a connector-specific resource the admin rule-builder can
+// scope a rule to (e.g. a GitHub owner or repo). The builder constructs the
+// Cedar entity id from the selected connection id + the user-entered field
+// values via IDFormat — "{conn}" plus one "{<field.Key>}" per Field — and emits
+// `resource in <EntityType>::"<id>"`. IDFormat MUST match the connector's
+// runtime ResourceMapper so a scoped rule and a live request agree.
+type RuleScope struct {
+	Key        string       // form key
+	Label      string       // UI label, e.g. "Repository"
+	EntityType string       // namespaced entity type, e.g. "Sieve::Github::Repo"
+	Fields     []ScopeField // inputs needed to build the id
+	IDFormat   string       // e.g. "{conn}/{owner}/{repo}"
+	Help       string
+}
+
+// ScopeField is one text input contributing to a RuleScope entity id.
+type ScopeField struct {
+	Key         string // substituted as {Key} in RuleScope.IDFormat
+	Label       string
+	Placeholder string
+}
+
+// RuleCondition declares a connector-specific predicate the rule-builder can add
+// to a rule. The builder turns (operator, value) into a Cedar boolean over
+// CtxPath and ANDs it into the rule's `when` clause. Kinds:
+//   - "number":           CtxPath <op> <value>           (op: <=,<,>=,>,==)
+//   - "string":           CtxPath == "<value>"
+//   - "one_of":           ["<v1>","<v2>"].contains(CtxPath)       (scalar in a set
+//     — e.g. allow only listed models)
+//   - "domain_allowlist": ["<v1>","<v2>"].containsAll(CtxPath)  (every actual
+//     value must be in the allowed set — e.g. send only to listed domains)
+//   - "bool":             CtxPath == true|false                  (a flag param)
+//
+// Ops restricts the condition to specific operation NAMES (empty ⇒ every op). The
+// rule-builder only OFFERS a condition when one of its ops is in the selected op
+// scope, and the compiler guards it so it binds ONLY those ops — so e.g. a
+// recipient_count cap scoped to send ops does not fail-close reads on an
+// all-operations rule.
+type RuleCondition struct {
+	Key     string // form key
+	Label   string
+	Help    string
+	Kind    string   // "number" | "string" | "one_of" | "domain_allowlist" | "bool"
+	CtxPath string   // Cedar path, e.g. "context.param.amount", "context.recipient_domains"
+	Ops     []string // operation names this condition applies to; empty ⇒ all ops
+}
+
+// ContentField names a response text field that is safe/intended for content
+// filtering (redact/exclude). Key is the JSON field name as it appears in the
+// connector's response (e.g. "body", "subject"); Label is the operator-facing
+// name shown as a checkbox in the filter UI.
+type ContentField struct {
+	Key   string
+	Label string
+}
+
+// ContextEnricher optionally adds derived context attributes to a request
+// (recipient domains for sends, http method for escape hatches, estimated cost).
+// Declared here; invoked by the PEP/PIP in PR-D. Pure; no I/O.
+type ContextEnricher interface {
+	EnrichContext(op string, params map[string]any) map[string]any
 }
 
 // ParamDef describes a parameter for an operation.
@@ -123,11 +232,45 @@ type Factory func(config map[string]any) (Connector, error)
 
 // ConnectorMeta describes a connector type for the UI catalog.
 type ConnectorMeta struct {
-	Type        string   `json:"type"`         // e.g. "google", "http_proxy"
-	Name        string   `json:"name"`         // e.g. "Gmail"
-	Description string   `json:"description"`  // e.g. "Read, draft, and send email"
-	Category    string   `json:"category"`     // e.g. "Google", "AWS", "Communication"
-	SetupFields []Field  `json:"setup_fields"` // fields needed to create a connection
+	Type        string  `json:"type"`         // e.g. "google", "http_proxy"
+	Name        string  `json:"name"`         // e.g. "Gmail"
+	Description string  `json:"description"`  // e.g. "Read, draft, and send email"
+	Category    string  `json:"category"`     // e.g. "Google", "AWS", "Communication"
+	SetupFields []Field `json:"setup_fields"` // fields needed to create a connection
+
+	// Operations is the STATIC op catalog for IAM taxonomy + schema generation
+	// (the policy-bindable surface). For connectors whose runtime Operations()
+	// is dynamic (mcp_proxy discovers tools), this is the fixed taxonomy op(s)
+	// policies bind to — not the discovered set. Empty is allowed (the schema
+	// generator skips a connector with no declared ops).
+	Operations []OperationDef `json:"-"`
+
+	// ResourceTypes declares this connector's object entity types for schema
+	// generation (their names + parent edges). The connection/connector
+	// container types are generic and added by the generator.
+	ResourceTypes []ResourceType `json:"-"`
+
+	// RuleScopes / RuleConditions drive the admin rule-builder's
+	// connector-tailored controls (resource scoping + conditions). Empty ⇒ the
+	// builder offers only operation + connection scoping for this connector.
+	RuleScopes     []RuleScope     `json:"-"`
+	RuleConditions []RuleCondition `json:"-"`
+
+	// ContentFields declares the response's text fields safe/intended for content
+	// filtering (redact/exclude) — e.g. an email's subject + body, NOT its id,
+	// labels, or base64 attachment data. Response filters apply ONLY within these
+	// fields' string values (matched by key name, anywhere in the response), so a
+	// 16-digit run inside a base64 MIME part is never redacted and metadata is
+	// never dropped. Empty ⇒ filters fall back to whole-response matching (e.g.
+	// the http_proxy auth-value scrub, which must catch the secret anywhere).
+	ContentFields []ContentField `json:"-"`
+
+	// EnrichContext optionally derives extra request-context attributes (e.g.
+	// recipient_domains for a send) that connector RuleConditions reference via
+	// their CtxPath. Pure; no I/O. Exposed as a Meta func (not the instance
+	// ContextEnricher interface) so the PDP can enrich without constructing a
+	// configured connector / touching the keyring. Nil ⇒ no enrichment.
+	EnrichContext func(op string, params map[string]any) map[string]any `json:"-"`
 }
 
 // Field describes a form field for connection setup and editing.
@@ -150,7 +293,7 @@ type ConnectorMeta struct {
 type Field struct {
 	Name        string `json:"name"`
 	Label       string `json:"label"`
-	Type        string `json:"type"` // "text", "password", "oauth", "select", "checkbox", "textarea", "number", "json"
+	Type        string `json:"type"` // "text", "password", "oauth", "select", "checkbox", "textarea", "number", "json" (object), "json_array"
 	Required    bool   `json:"required"`
 	Placeholder string `json:"placeholder,omitempty"`
 	HelpText    string `json:"help_text,omitempty"`
@@ -219,6 +362,24 @@ func (r *Registry) HasType(connectorType string) bool {
 func (r *Registry) Meta(connectorType string) (ConnectorMeta, bool) {
 	m, ok := r.metas[connectorType]
 	return m, ok
+}
+
+// ContentFieldKeys returns the response content-field JSON keys for a connector
+// type (for field-aware response filtering), or nil if it declares none — in
+// which case filters fall back to whole-response matching.
+func (r *Registry) ContentFieldKeys(connectorType string) []string {
+	if r == nil {
+		return nil
+	}
+	m, ok := r.metas[connectorType]
+	if !ok || len(m.ContentFields) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m.ContentFields))
+	for _, c := range m.ContentFields {
+		keys = append(keys, c.Key)
+	}
+	return keys
 }
 
 // Catalog returns all connector metadata grouped by category.

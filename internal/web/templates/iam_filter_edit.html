@@ -1,0 +1,203 @@
+{{define "iam_filter_edit"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edit filter - Sieve</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>body { font-family: 'Inter', sans-serif; }</style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  {{template "nav" .}}
+
+  <main class="ml-64 p-8">
+    <div class="max-w-3xl">
+      <div class="mb-6">
+        <a href="/iam?section=filters" class="text-sm text-slate-400 hover:text-slate-200">&larr; Back to Filters</a>
+        <h1 class="text-2xl font-bold text-white mt-2">Edit filter — {{.Name}}</h1>
+      </div>
+
+      {{if .Error}}
+      <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mb-6">
+        <p class="text-sm text-red-300">{{.Error}}</p>
+      </div>
+      {{end}}
+
+      <div class="bg-slate-800 rounded-xl border border-slate-700 p-6">
+        <p class="text-xs text-slate-500 mb-5">Edit this filter in place. The <strong>name</strong> is fixed — rules and guardrails reference it by name, so renaming would silently detach them.</p>
+        <form method="POST" action="/iam/filters/{{.Name}}/update" id="filter-form">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Name</label>
+              <input type="text" value="{{.Name}}" disabled
+                     class="w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-sm text-slate-400 cursor-not-allowed">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-slate-400 mb-1.5">Kind</label>
+              <select name="kind" id="filter-kind"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="redact" {{if eq .Kind "redact"}}selected{{end}}>Redact (mask matching text in the response)</option>
+                <option value="exclude_items" {{if eq .Kind "exclude_items"}}selected{{end}}>Exclude items (drop list items containing text)</option>
+                <option value="script_filter" {{if eq .Kind "script_filter"}}selected{{end}}>Script filter (transforms the response after it runs)</option>
+                <option value="script_guard" {{if eq .Kind "script_guard"}}selected{{end}}>Script guard (may deny before execution)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Description <span class="text-slate-600">(optional)</span></label>
+            <input type="text" name="description" value="{{.Description}}" placeholder="what this filter does"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+
+          <div class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Order / rank</label>
+            <input type="number" name="order" value="{{.Order}}" placeholder="e.g. 20"
+                   class="w-full md:w-1/2 rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p class="text-xs text-slate-500 mt-1">When several transforms apply to one response they run in ascending order — <strong>lower runs first</strong> (e.g. excludes 10, redactions 20, scripts 30).</p>
+          </div>
+
+          <!-- redact / exclude_items config -->
+          <div id="filter-cfg-patterns" class="mt-5">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Patterns</label>
+            <textarea name="patterns" id="filter-patterns" rows="4" placeholder="One per line, e.g.&#10;confidential&#10;\b\d{16}\b"
+                      class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">{{.Patterns}}</textarea>
+            <div class="mt-2 flex items-center gap-3">
+              <label class="text-sm text-slate-400">Match</label>
+              <select name="match" id="filter-match" class="rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <option value="contains" {{if eq .Match "contains"}}selected{{end}}>Contains — literal text, case-insensitive</option>
+                <option value="regex" {{if eq .Match "regex"}}selected{{end}}>Regex — RE2 pattern</option>
+              </select>
+            </div>
+            <p class="text-xs text-slate-500 mt-2">Runs <strong>after</strong> the operation, only within the <strong>content fields</strong> of whichever connector you attach it to — never ids, metadata, or base64 attachments. One pattern per line; a field matches if it matches <strong>any</strong> line.</p>
+            <div class="mt-3 rounded-lg bg-slate-900/60 border border-slate-700 p-3">
+              <label class="block text-xs font-medium text-slate-400 mb-1">Test against sample text <span class="text-slate-600">(optional — not saved)</span></label>
+              <textarea id="filter-sample" rows="2" placeholder="Paste a sample value to see what your patterns match…"
+                        class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+              <div id="filter-preview" class="mt-2 text-xs space-y-1"></div>
+            </div>
+          </div>
+
+          <!-- script_guard / script_filter config — shared inputs; help differs by kind. -->
+          <div id="filter-cfg-script" class="mt-5 hidden">
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Language</label>
+            <select name="language" class="mb-3 rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="python" {{if eq .Language "python"}}selected{{end}}>Python</option>
+              <option value="javascript" {{if eq .Language "javascript"}}selected{{end}}>JavaScript (Node)</option>
+            </select>
+            <label class="block text-sm font-medium text-slate-400 mb-1.5">Script path</label>
+            <input type="text" name="script_path" value="{{.ScriptPath}}" placeholder="/opt/sieve-py/guards/biz_hours.py"
+                   class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white font-mono placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <p id="filter-help-guard" class="text-xs text-slate-500 mt-2">Runs <strong>before</strong> the operation under the allowed scripts directory (<code>/opt/sieve-py</code>; no <code>..</code>). Reads a JSON request on stdin, writes a JSON decision (<code>allow</code>/<code>deny</code>/<code>approval_required</code>) on stdout; anything else is treated as deny.</p>
+            <p id="filter-help-filter" class="hidden text-xs text-slate-500 mt-2">Runs <strong>after</strong> the operation under the allowed scripts directory (<code>/opt/sieve-py</code>; no <code>..</code>) and <strong>rewrites the response</strong>. Reads the response on stdin as <code>metadata.response</code>; writes <code>{"rewrite": "&lt;new response&gt;"}</code> on stdout. Stacks with other transforms in rank order.</p>
+          </div>
+
+          <div class="mt-6 flex items-center gap-3">
+            <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">Save changes</button>
+            <a href="/iam?section=filters" class="text-sm text-slate-400 hover:text-slate-200">Cancel</a>
+          </div>
+        </form>
+      </div>
+
+      <script>
+        // Show only the selected kind's config block. Pure show/hide keyed off a
+        // fixed <select> value (no dynamic data, no markup injection). On a user
+        // kind CHANGE we reset the match to the per-kind default; on initial load
+        // we leave the stored match selection intact.
+        (function () {
+          const kindSel = document.getElementById('filter-kind');
+          function sync(setDefaults) {
+            const v = kindSel.value;
+            const usesPatterns = (v === 'redact' || v === 'exclude_items');
+            const usesScript = (v === 'script_guard' || v === 'script_filter');
+            const patterns = document.getElementById('filter-cfg-patterns');
+            const script = document.getElementById('filter-cfg-script');
+            if (patterns) patterns.classList.toggle('hidden', !usesPatterns);
+            if (script) script.classList.toggle('hidden', !usesScript);
+            const hg = document.getElementById('filter-help-guard');
+            const hf = document.getElementById('filter-help-filter');
+            if (hg) hg.classList.toggle('hidden', v !== 'script_guard');
+            if (hf) hf.classList.toggle('hidden', v !== 'script_filter');
+            if (setDefaults && usesPatterns) {
+              const matchSel = document.getElementById('filter-match');
+              if (matchSel) matchSel.value = (v === 'redact') ? 'regex' : 'contains';
+            }
+          }
+          kindSel.addEventListener('change', function () { sync(true); });
+          sync(false);
+        })();
+
+        // Live regex/contains preview (XSS-safe: textContent / createTextNode only;
+        // browser regex engine ≈ Go RE2, not identical for exotic syntax).
+        (function () {
+          const el = (id) => document.getElementById(id);
+          const patternsEl = el('filter-patterns'), sampleEl = el('filter-sample');
+          const matchEl = el('filter-match'), out = el('filter-preview');
+          if (!patternsEl || !sampleEl || !out) return;
+          function compile(line, mode) {
+            const src = (mode === 'regex') ? line : line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return new RegExp(src, 'gi');
+          }
+          function update() {
+            out.textContent = '';
+            const mode = matchEl ? matchEl.value : 'contains';
+            const lines = patternsEl.value.split('\n').map(s => s.trim()).filter(Boolean);
+            const regexes = [];
+            for (const line of lines) {
+              try { regexes.push(compile(line, mode)); }
+              catch (e) {
+                const p = document.createElement('p');
+                p.className = 'text-red-400';
+                p.textContent = '✗ invalid pattern: ' + line + ' — ' + e.message;
+                out.appendChild(p);
+              }
+            }
+            const sample = sampleEl.value;
+            if (!sample || !regexes.length) return;
+            const ranges = [];
+            for (const re of regexes) {
+              re.lastIndex = 0;
+              let m, guard = 0;
+              while ((m = re.exec(sample)) !== null && guard++ < 10000) {
+                if (m[0] === '') { re.lastIndex++; continue; }
+                ranges.push([m.index, m.index + m[0].length]);
+              }
+            }
+            const box = document.createElement('div');
+            box.className = 'bg-slate-900 border border-slate-700 rounded-lg p-2 whitespace-pre-wrap break-words text-slate-300';
+            if (!ranges.length) {
+              const s = document.createElement('span');
+              s.className = 'text-slate-500'; s.textContent = 'No matches in the sample.';
+              box.appendChild(s); out.appendChild(box); return;
+            }
+            ranges.sort((a, b) => a[0] - b[0]);
+            const merged = [];
+            for (const r of ranges) {
+              const last = merged[merged.length - 1];
+              if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+              else merged.push(r.slice());
+            }
+            let pos = 0;
+            for (const pair of merged) {
+              if (pair[0] > pos) box.appendChild(document.createTextNode(sample.slice(pos, pair[0])));
+              const mark = document.createElement('mark');
+              mark.className = 'bg-amber-400/40 text-amber-100 rounded px-0.5';
+              mark.textContent = sample.slice(pair[0], pair[1]);
+              box.appendChild(mark);
+              pos = pair[1];
+            }
+            if (pos < sample.length) box.appendChild(document.createTextNode(sample.slice(pos)));
+            out.appendChild(box);
+          }
+          patternsEl.addEventListener('input', update);
+          sampleEl.addEventListener('input', update);
+          if (matchEl) matchEl.addEventListener('change', update);
+        })();
+      </script>
+    </div>
+  </main>
+</body>
+</html>
+{{end}}

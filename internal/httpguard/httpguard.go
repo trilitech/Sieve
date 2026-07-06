@@ -238,17 +238,43 @@ func Client(opts ClientOptions) *http.Client {
 				}
 				return err
 			}
-			// Cross-origin credential strip : if the redirect target's
-			// origin differs from the original request's, drop Authorization
-			// and Cookie before the redirected request fires.
+			// Cross-origin credential strip: if the redirect target's origin
+			// differs from the original request's, drop every header that
+			// isn't on a minimal safe allowlist before the redirected request
+			// fires. Stripping only Authorization/Cookie was insufficient —
+			// connectors authenticate with custom headers (e.g. Anthropic's
+			// x-api-key), and a 3xx to an attacker origin would otherwise
+			// forward the credential onward. Allowlist-drop is connector-
+			// agnostic and future-proof.
 			if len(via) > 0 && !sameOrigin(via[0].URL, req.URL) {
-				req.Header.Del("Authorization")
-				req.Header.Del("Cookie")
+				stripToSafeHeaders(req.Header)
 			}
 			return nil
 		},
 	}
 	return c
+}
+
+// safeCrossOriginHeaders is the allowlist of request headers preserved across a
+// cross-origin redirect. Anything not here — Authorization, Cookie, x-api-key,
+// and any other custom auth header — is dropped so a redirect to a foreign
+// origin can never carry a credential. Keys are canonical MIME header form.
+var safeCrossOriginHeaders = map[string]bool{
+	"Accept":          true,
+	"Accept-Encoding": true,
+	"Accept-Language": true,
+	"User-Agent":      true,
+	"Content-Type":    true,
+	"Content-Length":  true,
+}
+
+// stripToSafeHeaders removes every header not on safeCrossOriginHeaders.
+func stripToSafeHeaders(h http.Header) {
+	for k := range h {
+		if !safeCrossOriginHeaders[http.CanonicalHeaderKey(k)] {
+			h.Del(k)
+		}
+	}
 }
 
 // validateIP returns nil if ip is acceptable under the deny rules.

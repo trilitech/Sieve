@@ -10,7 +10,6 @@ import (
 	"testing"
 )
 
-
 func TestTLSPairEnabled_NeitherSet(t *testing.T) {
 	on, err := tlsPair{}.enabled()
 	if err != nil {

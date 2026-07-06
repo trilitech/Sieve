@@ -8,7 +8,7 @@ import (
 
 	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/database"
-	"github.com/trilitech/Sieve/internal/policies"
+	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/secrets"
 )
 
@@ -172,12 +172,11 @@ func TestResetKeyring_DeletesCredentialsAndPreservesEverythingElse(t *testing.T)
 		}
 	}
 
-	// Insert a policy so we can verify it survives.
-	policiesSvc := policies.NewService(db)
-	if _, err := policiesSvc.Create("preserved-policy", "rules", map[string]any{
-		"default_action": "deny",
-	}); err != nil {
-		t.Fatalf("create policy: %v", err)
+	// Insert an IAM rule so we can verify it survives.
+	iamSvc := iampolicies.NewService(db)
+	if _, err := iamSvc.CreatePolicy("preserved-policy", "",
+		`permit(principal, action, resource);`, true); err != nil {
+		t.Fatalf("create iam rule: %v", err)
 	}
 
 	// Drive the SAME deletes runResetKeyring performs, in the SAME
@@ -243,7 +242,7 @@ func TestResetKeyring_DeletesCredentialsAndPreservesEverythingElse(t *testing.T)
 	}
 
 	// Policy preserved — proves "everything else survives".
-	all, err := policiesSvc.List()
+	all, err := iamSvc.ListPolicies()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,4 +322,3 @@ func TestResetKeyring_AbortsWithoutDestruction(t *testing.T) {
 		t.Fatalf("keyring should still load after refused reset, got %v", err)
 	}
 }
-

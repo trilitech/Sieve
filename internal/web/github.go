@@ -243,10 +243,10 @@ func (s *Server) handleGitHubAppStart(w http.ResponseWriter, r *http.Request) {
 	setupURL := base + "/connections/github/app/installed"
 
 	manifest := map[string]any{
-		"name":         displayName + " (Sieve)",
-		"url":          base,
-		"redirect_url": redirectURL,
-		"setup_url":    setupURL,
+		"name":          displayName + " (Sieve)",
+		"url":           base,
+		"redirect_url":  redirectURL,
+		"setup_url":     setupURL,
 		"callback_urls": []string{redirectURL},
 		"hook_attributes": map[string]any{
 			"url":    base + "/connections/github/app/webhook-unused",

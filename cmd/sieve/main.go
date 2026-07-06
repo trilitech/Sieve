@@ -25,15 +25,15 @@
 // reset, run --setup to choose a new passphrase, then re-add
 // connections.
 // Exit codes (rotation/reset modes):
-//0 — success
-//1 — generic / unexpected failure
-//2 — wrong current passphrase
-//3 — new-passphrase confirmation mismatch (caught by intake layer)
-//4 — new passphrase identical to current
-//5 — keyring not initialized (run --setup first)
-//6 — DB lock conflict (another Sieve process is holding the DB,
-//or another rotation is already in progress)
-//7 — reset aborted (operator did not type RESET, or no TTY)
+// 0 — success
+// 1 — generic / unexpected failure
+// 2 — wrong current passphrase
+// 3 — new-passphrase confirmation mismatch (caught by intake layer)
+// 4 — new passphrase identical to current
+// 5 — keyring not initialized (run --setup first)
+// 6 — DB lock conflict (another Sieve process is holding the DB,
+// or another rotation is already in progress)
+// 7 — reset aborted (operator did not type RESET, or no TTY)
 package main
 
 import (
@@ -58,23 +58,16 @@ import (
 	"github.com/trilitech/Sieve/internal/audit"
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
-	anthropicconn "github.com/trilitech/Sieve/internal/connectors/anthropic"
-	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
-	gitlabconn "github.com/trilitech/Sieve/internal/connectors/gitlab"
-	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
-	"github.com/trilitech/Sieve/internal/connectors/gmail"
-	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
-	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
 	"github.com/trilitech/Sieve/internal/database"
+	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/mcp"
 	"github.com/trilitech/Sieve/internal/operator"
-	"github.com/trilitech/Sieve/internal/policies"
 	"github.com/trilitech/Sieve/internal/policy"
 	"github.com/trilitech/Sieve/internal/ratelimit"
-	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/roles"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/secrets"
+	"github.com/trilitech/Sieve/internal/session"
 	"github.com/trilitech/Sieve/internal/settings"
 	"github.com/trilitech/Sieve/internal/tokens"
 	"github.com/trilitech/Sieve/internal/web"
@@ -459,29 +452,18 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	}
 
 	// --- Connector registry ---
-	registry := connector.NewRegistry()
-	registry.Register(gmail.Meta, gmail.Factory)
-	registry.Register(httpproxy.Meta, httpproxy.Factory)
-	registry.Register(mcpproxy.Meta, mcpproxy.Factory)
-	registry.Register(githubconn.Meta(), githubconn.Factory())
-	registry.Register(slackconn.Meta(), slackconn.Factory())
-	registry.Register(anthropicconn.Meta(), anthropicconn.Factory())
-	registry.Register(gitlabconn.Meta(), gitlabconn.Factory())
+	registry := buildConnectorRegistry()
 
 	// --- Services ---
 	connSvc := connections.NewService(db, registry, keyring)
 	tokenSvc := tokens.NewService(db)
-	policiesSvc := policies.NewService(db)
+	iamSvc := iampolicies.NewService(db)
 	rolesSvc := roles.NewService(db)
 	approvalQ := approval.NewQueue(db)
 	auditLog := audit.NewLogger(db)
 	settingsSvc := settings.NewService(db)
 
 	scriptgenSvc := scriptgen.NewService(connSvc, settingsSvc)
-
-	if err := policiesSvc.SeedPresets(); err != nil {
-		return fmt.Errorf("seed policy presets: %w", err)
-	}
 
 	// Resolve Google OAuth credentials path (optional).
 	if googleCredsPath == "" {
@@ -496,10 +478,11 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 
 	// --- Web UI server (port 19816, human admin only) ---
 	webSrv := web.NewServer(
-		tokenSvc, connSvc, policiesSvc, rolesSvc, registry,
+		tokenSvc, connSvc, rolesSvc, registry,
 		approvalQ, auditLog, googleCredsPath, settingsSvc, scriptgenSvc,
 		keyring, db, webAddr,
 	)
+	webSrv.SetIAM(iamSvc, registry, settingsSvc)
 	defer webSrv.Close()
 
 	// Operator + session services drive the admin-authentication path.
@@ -549,7 +532,7 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 	// else to the API router. Per CLAUDE.md the two-port split (web vs
 	// agent) is structural, not cosmetic — admin endpoints stay on 19816,
 	// agent endpoints stay on 19817.
-	apiRouter := api.NewRouter(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
+	apiRouter := api.NewRouter(tokenSvc, connSvc, iamSvc, registry, rolesSvc, approvalQ, auditLog)
 	// Per-IP token-bucket on the bearer-token validation path:
 	// failed auth depletes the bucket, success refunds, 429 + Retry-After
 	// on refusal. Settings-tuned; defaults: 10 failures per 60s window.
@@ -558,7 +541,14 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 		settingsSvc.RateLimitWindow()/time.Duration(max(settingsSvc.RateLimitFailures(), 1)),
 		0, // documented LRU bound
 	))
-	mcpSrv := mcp.NewServer(tokenSvc, connSvc, policiesSvc, rolesSvc, approvalQ, auditLog)
+	mcpSrv := mcp.NewServer(tokenSvc, connSvc, iamSvc, registry, rolesSvc, approvalQ, auditLog)
+
+	// IAM (internal/iam) is the sole authorization engine. The iam_enabled
+	// setting is retained only for the admin "engine status" display; default it
+	// to "true" so a fresh DB reads consistently.
+	if v, _ := settingsSvc.Get("iam_enabled"); v == "" {
+		_ = settingsSvc.Set("iam_enabled", "true")
+	}
 
 	agentMux := http.NewServeMux()
 	agentMux.Handle("/mcp", mcpSrv.Handler())
@@ -680,13 +670,13 @@ const reauthSweepInterval = time.Hour
 
 // reauthSweeper runs Validate against every connection on a periodic
 // loop. The loop honors ctx so a SIGTERM during shutdown stops it.
-//connector returns ErrNeedsReauth → SetStatusWithReason(reauth_required)
-//(idempotent if status already reauth_required).
-//connector returns nil but status==reauth_required → SetStatus(active)
-//(auto-recover from blips).
-//connector returns some other error → leave the status alone (could be a
-//transient network blip; not our
-//place to declare it dead).
+// connector returns ErrNeedsReauth → SetStatusWithReason(reauth_required)
+// (idempotent if status already reauth_required).
+// connector returns nil but status==reauth_required → SetStatus(active)
+// (auto-recover from blips).
+// connector returns some other error → leave the status alone (could be a
+// transient network blip; not our
+// place to declare it dead).
 // First sweep runs after one interval, not at startup, so the server isn't
 // hammering external APIs in its first second of life.
 func reauthSweeper(ctx context.Context, connSvc *connections.Service) {

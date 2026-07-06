@@ -16,7 +16,7 @@ import (
 func TestAgentAPIResponseHeaders(t *testing.T) {
 	env := testenv.New(t)
 	auditLog := audit.NewLogger(env.DB)
-	rt := NewRouter(env.Tokens, env.Connections, env.Policies, env.Roles, env.Approval, auditLog)
+	rt := NewRouter(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, auditLog)
 	ts := httptest.NewServer(rt.Handler())
 	defer ts.Close()
 

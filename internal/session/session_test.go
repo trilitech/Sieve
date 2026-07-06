@@ -12,7 +12,6 @@ import (
 	"github.com/trilitech/Sieve/internal/session"
 )
 
-
 func newTestManager(t *testing.T, idle time.Duration) *session.Manager {
 	t.Helper()
 	db, err := database.New(filepath.Join(t.TempDir(), "test.db"))

@@ -29,7 +29,7 @@ func TestValidateScriptFilename(t *testing.T) {
 		{"../../etc/passwd", true, ""},
 		{"..", true, ""},
 		{".", true, "start with"},
-		{"..py", true, ""},  // caught by leading-"." rule before "'..'"
+		{"..py", true, ""}, // caught by leading-"." rule before "'..'"
 		{"a..b", true, "'..'"},
 
 		// Hidden files

@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
+	"github.com/trilitech/Sieve/internal/secrets"
 )
 
 // authQueryParamPattern is the validation regex enforced by the
@@ -109,6 +111,14 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 	id := r.PathValue("id")
 	conn, err := s.connections.GetWithConfig(id)
 	if err != nil {
+		// The keyring being locked is a transient service state, not a
+		// missing resource — surface it as 503 per the CLAUDE.md contract
+		// (mirrors handleSlackOAuthConfigure / passphrase rotation), rather
+		// than masking it as a 404.
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "connection not found", http.StatusNotFound)
 		return
 	}
@@ -145,6 +155,14 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	id := r.PathValue("id")
 	conn, err := s.connections.GetWithConfig(id)
 	if err != nil {
+		// The keyring being locked is a transient service state, not a
+		// missing resource — surface it as 503 per the CLAUDE.md contract
+		// (mirrors handleSlackOAuthConfigure / passphrase rotation), rather
+		// than masking it as a 404.
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "connection not found", http.StatusNotFound)
 		return
 	}
@@ -309,6 +327,11 @@ func fieldViewFromStored(f connector.Field, cfg map[string]any) editFieldView {
 	case "json":
 		if obj, ok := cfg[f.Name].(map[string]any); ok && len(obj) > 0 {
 			b, _ := json.MarshalIndent(obj, "", "  ")
+			v.StringValue = string(b)
+		}
+	case "json_array":
+		if arr, ok := cfg[f.Name].([]any); ok && len(arr) > 0 {
+			b, _ := json.MarshalIndent(arr, "", "  ")
 			v.StringValue = string(b)
 		}
 	default:

@@ -22,9 +22,9 @@ import (
 // outdated connector still produces a workable schema.
 func TestBuildInputSchema_TypeMapping(t *testing.T) {
 	cases := []struct {
-		paramType  string
-		wantType   string
-		wantItems  string // "" = no items key expected
+		paramType string
+		wantType  string
+		wantItems string // "" = no items key expected
 	}{
 		{"string", "string", ""},
 		{"int", "integer", ""},
