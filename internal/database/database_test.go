@@ -224,3 +224,26 @@ func TestRejectsLegacySchema(t *testing.T) {
 		t.Fatal("expected New to refuse a legacy-schema database, got nil error")
 	}
 }
+
+// TestRejectsLegacyTokensRoleID guards the mixed-state case: a database from
+// the base cutover build has tokens.role_id (NOT NULL) alongside role_ids. A
+// role_ids-only check would let it through, and the first tokens.Create()
+// would then fail on the NOT NULL role_id constraint. The guard must reject it.
+func TestRejectsLegacyTokensRoleID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mixed.db")
+
+	db1, err := database.New(path)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	// Reintroduce the legacy single-role column the cutover schema carried.
+	if _, err := db1.Exec(`ALTER TABLE tokens ADD COLUMN role_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatalf("seed legacy role_id column: %v", err)
+	}
+	db1.Close()
+
+	if _, err := database.New(path); err == nil {
+		t.Fatal("expected New to refuse a tokens table carrying the legacy role_id column, got nil error")
+	}
+}

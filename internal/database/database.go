@@ -242,14 +242,26 @@ func (db *DB) rejectLegacySchema() error {
 	} else if ok {
 		return fmt.Errorf("incompatible database: plaintext `connections.config` column present — %s", remedy)
 	}
-	// A tokens table that exists but predates role_ids is the single-role legacy shape.
+	// Reject any pre-fresh-schema tokens shape. Two markers:
+	//   - a legacy `role_id` column — present (and NOT NULL) on the cutover
+	//     schema, which also carries role_ids; such a DB would pass a
+	//     role_ids-only check but then break tokens.Create() (whose INSERT
+	//     omits role_id) with a NOT NULL constraint violation.
+	//   - a tokens table predating role_ids entirely (older single-role /
+	//     connections+policy_ids shapes).
+	// The fresh schema's tokens table has role_ids and NO role_id.
 	if ok, err := tableExists(db, "tokens"); err != nil {
 		return err
 	} else if ok {
+		if has, err := columnExists(db, "tokens", "role_id"); err != nil {
+			return err
+		} else if has {
+			return fmt.Errorf("incompatible database: legacy `tokens.role_id` column present — %s", remedy)
+		}
 		if has, err := columnExists(db, "tokens", "role_ids"); err != nil {
 			return err
 		} else if !has {
-			return fmt.Errorf("incompatible database: legacy single-role `tokens` table (no role_ids) — %s", remedy)
+			return fmt.Errorf("incompatible database: legacy `tokens` table (no role_ids) — %s", remedy)
 		}
 	}
 	return nil
