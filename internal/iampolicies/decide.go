@@ -2,6 +2,7 @@ package iampolicies
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -309,7 +310,13 @@ func (s *Service) resolveDecisionDetail(ctx context.Context, d iam.Decision, req
 	}
 
 	merged := mergePost(post)
-	pd := &policy.PolicyDecision{Action: "allow", Filters: obligationsToFilters(merged)}
+	filters, ferr := obligationsToFilters(merged)
+	if ferr != nil {
+		// A post-obligation we can't translate must withhold the response, not
+		// pass it through unfiltered.
+		return &policy.PolicyDecision{Action: "deny", Reason: "denied by policy: " + ferr.Error()}, decisionExtra{scriptRuns: runs}
+	}
+	pd := &policy.PolicyDecision{Action: "allow", Filters: filters}
 	if approval {
 		pd.Action = "approval_required"
 		pd.Reason = "approval required"
@@ -393,7 +400,11 @@ func ScriptCommandFor(language string) string {
 
 // obligationsToFilters bridges IAM post-obligations to the existing
 // policy.ResponseFilter applier (which already supports redact/exclude/script).
-func obligationsToFilters(post []iam.Filter) []policy.ResponseFilter {
+// An unrecognized post-obligation kind FAILS CLOSED (returns an error so the
+// caller denies) rather than being silently dropped — dropping it would let the
+// response go out unfiltered while the decision stayed "allow" (mirrors the deny
+// on an unresolvable @filters name).
+func obligationsToFilters(post []iam.Filter) ([]policy.ResponseFilter, error) {
 	var out []policy.ResponseFilter
 	for _, f := range post {
 		switch f.Kind {
@@ -407,9 +418,11 @@ func obligationsToFilters(post []iam.Filter) []policy.ResponseFilter {
 				ScriptCommand: str(f.Config["command"]),
 				ScriptPath:    str(f.Config["path"]),
 			})
+		default:
+			return nil, fmt.Errorf("unknown post-obligation filter kind %q (filter %q)", f.Kind, f.Name)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func str(v any) string {

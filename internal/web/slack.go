@@ -276,7 +276,7 @@ func (s *Server) handleSlackToken(w http.ResponseWriter, r *http.Request) {
 		"bot_user_id": botUserID,
 	}
 	if err := s.connections.Add(id, "slack", displayName, cfg); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 		return
 	}
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
@@ -322,7 +322,7 @@ func (s *Server) handleSlackUserToken(w http.ResponseWriter, r *http.Request) {
 		"bot_user_id": userID, // for a user token this is the authenticated user's id
 	}
 	if err := s.connections.Add(id, "slack", displayName, cfg); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 		return
 	}
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
@@ -377,11 +377,7 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 	// default-to-bot.
 	isUser, existingTeamID, err := s.slackConnStoredIdentity(id)
 	if err != nil {
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 		return
 	}
 	// Reuse the OAuth-start path: kick a fresh flow with the same id +
@@ -416,7 +412,7 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 			"bot_user_id": userID,
 		}
 		if err := s.connections.UpdateConfig(id, cfg); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 			return
 		}
 		if err := s.connections.SetStatus(id, connections.StatusActive); err != nil {
@@ -454,7 +450,7 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 			"bot_user_id": botUserID,
 		}
 		if err := s.connections.UpdateConfig(id, cfg); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 			return
 		}
 		if err := s.connections.SetStatus(id, connections.StatusActive); err != nil {
@@ -539,11 +535,7 @@ func (s *Server) handleSlackOAuthConfigure(w http.ResponseWriter, r *http.Reques
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 	}); err != nil {
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, "save Slack OAuth credentials: "+err.Error(), http.StatusInternalServerError)
+		s.writeConnectionError(w, http.StatusInternalServerError, "save Slack OAuth credentials: "+err.Error(), err)
 		return
 	}
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
@@ -576,8 +568,25 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 	// Reauth path: connection already exists, UpdateConfig + reset
 	// status to active. Fresh-install path: Add a new row.
 	if exists, _ := s.connections.Exists(pending.ID); exists {
+		// Workspace continuity: reauth must stay on the same Slack workspace.
+		// IAM/role grants bind to the connection id, so silently rewriting the
+		// row to a different team_id (by completing OAuth against another
+		// workspace) would repoint every grant at that workspace under the same
+		// alias. The token-paste reauth path already guards this; the OAuth path
+		// previously did not. Reading the stored config needs the keyring.
+		full, ferr := s.connections.GetWithConfig(pending.ID)
+		if ferr != nil {
+			s.writeConnectionError(w, http.StatusInternalServerError, ferr.Error(), ferr)
+			return
+		}
+		storedTeamID, _ := full.Config["team_id"].(string)
+		newTeamID, _ := cfg["team_id"].(string)
+		if storedTeamID != "" && newTeamID != storedTeamID {
+			http.Error(w, fmt.Sprintf("token is for a different Slack workspace (team %s, expected %s); reauth must stay on the same workspace", newTeamID, storedTeamID), http.StatusBadRequest)
+			return
+		}
 		if err := s.connections.UpdateConfig(pending.ID, cfg); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 			return
 		}
 		if err := s.connections.SetStatus(pending.ID, connections.StatusActive); err != nil {
@@ -586,7 +595,7 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 		}
 	} else {
 		if err := s.connections.Add(pending.ID, "slack", pending.DisplayName, cfg); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 			return
 		}
 	}

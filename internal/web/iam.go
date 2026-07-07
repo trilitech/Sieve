@@ -1269,8 +1269,12 @@ func (s *Server) parseBuilderForm(r *http.Request) (iampolicies.RuleSpec, string
 	spec.ExemptConditions = exConds
 	state.ExemptConditions = exSt
 
-	// Response-filter obligations (filter-library names).
-	spec.Filters = r.Form["filters"]
+	// NOTE: a rule (RuleSpec) never carries response-filter obligations —
+	// BuildRuleCedar ignores spec.Filters; transforms attach separately via the
+	// Transforms UI (attachmentSpecFromForm → @filters). We deliberately do NOT
+	// capture r.Form["filters"] here: doing so would let a future rule-form edit
+	// silently accept an operator's redaction intent that the rule path never
+	// enforces (a silent fail-open). Leave spec.Filters nil on the rule path.
 
 	// Authoring-time validation (restored after the legacy cutover dropped
 	// internal/policy/validate.go). The Cedar builder synthesizes a default action

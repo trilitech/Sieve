@@ -111,15 +111,9 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 	id := r.PathValue("id")
 	conn, err := s.connections.GetWithConfig(id)
 	if err != nil {
-		// The keyring being locked is a transient service state, not a
-		// missing resource — surface it as 503 per the CLAUDE.md contract
-		// (mirrors handleSlackOAuthConfigure / passphrase rotation), rather
-		// than masking it as a 404.
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, "connection not found", http.StatusNotFound)
+		// A locked/rotating keyring is a transient service state (503), not a
+		// missing resource — see writeConnectionError.
+		s.writeConnectionError(w, http.StatusNotFound, "connection not found", err)
 		return
 	}
 
@@ -155,15 +149,9 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	id := r.PathValue("id")
 	conn, err := s.connections.GetWithConfig(id)
 	if err != nil {
-		// The keyring being locked is a transient service state, not a
-		// missing resource — surface it as 503 per the CLAUDE.md contract
-		// (mirrors handleSlackOAuthConfigure / passphrase rotation), rather
-		// than masking it as a 404.
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, "connection not found", http.StatusNotFound)
+		// A locked/rotating keyring is a transient service state (503), not a
+		// missing resource — see writeConnectionError.
+		s.writeConnectionError(w, http.StatusNotFound, "connection not found", err)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -214,6 +202,12 @@ func (s *Server) handleConnectionEditSave(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.connections.UpdateConfig(id, cfg); err != nil {
+		// A locked/rotating keyring is a transient service state — surface it as
+		// 503 rather than re-rendering a "save failed" form the operator can't act on.
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) || errors.Is(err, secrets.ErrKeyringRotating) {
+			s.writeConnectionError(w, http.StatusServiceUnavailable, "save failed: "+err.Error(), err)
+			return
+		}
 		// Render from cfg so the operator's attempted values are
 		// preserved on the retry.
 		s.renderEditErrorWithConfig(w, r, conn, cfg, "save failed: "+err.Error())
