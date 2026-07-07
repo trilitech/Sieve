@@ -1,11 +1,34 @@
 package database_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/trilitech/Sieve/internal/database"
 )
+
+// TestNewSecuresDBFilePerms asserts the credential DB file is created 0600
+// (owner-only) — SQLite would otherwise create it under the process umask
+// (commonly 0644), leaving the encrypted config blobs + crypto_meta
+// group/world-readable.
+func TestNewSecuresDBFilePerms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "perms.db")
+	db, err := database.New(path)
+	if err != nil {
+		t.Fatalf("create db: %v", err)
+	}
+	defer db.Close()
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat db file: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("db file permissions = %o, want 600", perm)
+	}
+}
 
 func TestNewCreatesDB(t *testing.T) {
 	dir := t.TempDir()
@@ -16,7 +39,12 @@ func TestNewCreatesDB(t *testing.T) {
 	defer db.Close()
 
 	// Verify tables exist by querying them.
-	tables := []string{"connections", "policies", "roles", "tokens", "approval_queue", "audit_log", "crypto_meta"}
+	tables := []string{
+		"connections", "roles", "tokens", "approval_queue", "audit_log", "crypto_meta",
+		"iam_policies", "iam_filters", "iam_guardrails", "iam_transforms",
+		"iam_role_groups", "iam_role_group_members",
+		"operator_credential", "operator_session",
+	}
 	for _, table := range tables {
 		var count int
 		err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count)
@@ -197,67 +225,48 @@ func TestMigrate_StatusColumn_FreshDB(t *testing.T) {
 	}
 }
 
-// TestMigrate_StatusColumn_PreExistingRowsDefaultActive simulates an existing
-// install whose connections table predates the status column: opens a DB and
-// manually drops the column to mimic the pre-migration shape, inserts a row,
-// reopens (which triggers the idempotent ALTER TABLE), and asserts the row
-// has status='active' (existing connections migrate cleanly).
-func TestMigrate_StatusColumn_PreExistingRowsDefaultActive(t *testing.T) {
+// TestRejectsLegacySchema asserts the fresh-schema build refuses to open a
+// database created by an older build (here: one carrying the legacy `policies`
+// table) rather than silently mis-operating on it. Pre-alpha has no migration
+// path — the remedy is to delete the DB file.
+func TestRejectsLegacySchema(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "preexisting.db")
+	path := filepath.Join(dir, "legacy.db")
 
-	// First open: creates the table WITH status (since fresh DB).
 	db1, err := database.New(path)
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
-	// Mimic the pre-migration shape by rebuilding the table without status.
-	steps := []string{
-		`CREATE TABLE connections_old (
-			id                TEXT PRIMARY KEY,
-			connector_type    TEXT NOT NULL,
-			display_name      TEXT NOT NULL,
-			config_ciphertext BLOB NOT NULL,
-			config_nonce      BLOB NOT NULL,
-			dek_wrapped       BLOB NOT NULL,
-			dek_nonce         BLOB NOT NULL,
-			enc_version       INTEGER NOT NULL,
-			created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
-		`INSERT INTO connections_old (id, connector_type, display_name,
-			config_ciphertext, config_nonce, dek_wrapped, dek_nonce, enc_version)
-			VALUES ('legacy', 'mock', 'Legacy', X'00', X'00', X'00', X'00', 1)`,
-		`DROP TABLE connections`,
-		`ALTER TABLE connections_old RENAME TO connections`,
-	}
-	for _, stmt := range steps {
-		if _, err := db1.Exec(stmt); err != nil {
-			t.Fatalf("rebuild legacy table (%q): %v", stmt, err)
-		}
+	// Introduce a legacy marker the guard looks for.
+	if _, err := db1.Exec(`CREATE TABLE policies (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("seed legacy table: %v", err)
 	}
 	db1.Close()
 
-	// Second open: should ALTER TABLE to add status with DEFAULT 'active',
-	// and the legacy row should pick up the default.
-	db2, err := database.New(path)
-	if err != nil {
-		t.Fatalf("second open (migration): %v", err)
+	if _, err := database.New(path); err == nil {
+		t.Fatal("expected New to refuse a legacy-schema database, got nil error")
 	}
-	defer db2.Close()
+}
 
-	var status string
-	if err := db2.QueryRow(`SELECT status FROM connections WHERE id = 'legacy'`).Scan(&status); err != nil {
-		t.Fatalf("read status: %v", err)
-	}
-	if status != "active" {
-		t.Fatalf("expected legacy row status='active', got %q", status)
-	}
+// TestRejectsLegacyTokensRoleID guards the mixed-state case: a database from
+// the base cutover build has tokens.role_id (NOT NULL) alongside role_ids. A
+// role_ids-only check would let it through, and the first tokens.Create()
+// would then fail on the NOT NULL role_id constraint. The guard must reject it.
+func TestRejectsLegacyTokensRoleID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mixed.db")
 
-	// Migration must be idempotent: opening a third time should not fail.
-	db2.Close()
-	db3, err := database.New(path)
+	db1, err := database.New(path)
 	if err != nil {
-		t.Fatalf("third open (idempotency): %v", err)
+		t.Fatalf("first open: %v", err)
 	}
-	db3.Close()
+	// Reintroduce the legacy single-role column the cutover schema carried.
+	if _, err := db1.Exec(`ALTER TABLE tokens ADD COLUMN role_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatalf("seed legacy role_id column: %v", err)
+	}
+	db1.Close()
+
+	if _, err := database.New(path); err == nil {
+		t.Fatal("expected New to refuse a tokens table carrying the legacy role_id column, got nil error")
+	}
 }

@@ -57,13 +57,6 @@ func TestSecurityFixesMigration(t *testing.T) {
 		}
 	})
 
-	t.Run("policies gains lint_ack", func(t *testing.T) {
-		cols := tableColumns(t, db, "policies")
-		if _, ok := cols["lint_ack"]; !ok {
-			t.Errorf("policies.lint_ack missing")
-		}
-	})
-
 	t.Run("connections does NOT carry outbound_allowlist column", func(t *testing.T) {
 		// The per-connection SSRF allowlist lives inside the envelope-
 		// encrypted config blob, NOT in a plaintext column. The earlier
@@ -91,22 +84,6 @@ func TestSecurityFixesMigration(t *testing.T) {
 			VALUES (2, 'other', X'00', 1, 16384, 1, X'00', datetime('now'), datetime('now'))`)
 		if err == nil {
 			t.Fatalf("insert id=2 should violate singleton CHECK")
-		}
-	})
-
-	t.Run("lint_ack defaults to empty JSON object", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO policies (id, name, policy_type, policy_config)
-			VALUES ('lint-default', 'lint-default', 'rules', '{}')`)
-		if err != nil {
-			t.Fatalf("insert policy: %v", err)
-		}
-		var ack string
-		err = db.QueryRow(`SELECT lint_ack FROM policies WHERE id = 'lint-default'`).Scan(&ack)
-		if err != nil {
-			t.Fatalf("select lint_ack: %v", err)
-		}
-		if ack != "{}" {
-			t.Errorf("lint_ack default = %q, want %q", ack, "{}")
 		}
 	})
 

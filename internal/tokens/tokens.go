@@ -108,17 +108,11 @@ func (s *Service) Create(req *CreateRequest) (*CreateResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal role_ids: %w", err)
 	}
-	// role_id (legacy NOT NULL column) holds the first role for back-compat /
-	// rollback; role_ids holds the full set the IAM engine composes.
-	primary := ""
-	if len(roleIDs) > 0 {
-		primary = roleIDs[0]
-	}
 
 	_, err = s.db.Exec(
-		`INSERT INTO tokens (id, name, token_hash, role_id, role_ids, created_at, expires_at, revoked)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-		id, req.Name, tokenHash, primary, string(roleIDsJSON), now, expiresAt,
+		`INSERT INTO tokens (id, name, token_hash, role_ids, created_at, expires_at, revoked)
+		 VALUES (?, ?, ?, ?, ?, ?, 0)`,
+		id, req.Name, tokenHash, string(roleIDsJSON), now, expiresAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert token: %w", err)
@@ -138,7 +132,7 @@ func (s *Service) Validate(plaintextToken string) (*Token, error) {
 	tokenHash := hex.EncodeToString(hash[:])
 
 	row := s.db.QueryRow(
-		`SELECT id, name, role_id, role_ids, created_at, expires_at, revoked
+		`SELECT id, name, role_ids, created_at, expires_at, revoked
 		 FROM tokens WHERE token_hash = ?`, tokenHash,
 	)
 
@@ -162,7 +156,7 @@ func (s *Service) Validate(plaintextToken string) (*Token, error) {
 
 func (s *Service) Get(id string) (*Token, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, role_id, role_ids, created_at, expires_at, revoked FROM tokens WHERE id = ?`, id,
+		`SELECT id, name, role_ids, created_at, expires_at, revoked FROM tokens WHERE id = ?`, id,
 	)
 	token, err := scanToken(row)
 	if err != nil {
@@ -176,7 +170,7 @@ func (s *Service) Get(id string) (*Token, error) {
 
 func (s *Service) List() ([]Token, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, role_id, role_ids, created_at, expires_at, revoked FROM tokens`,
+		`SELECT id, name, role_ids, created_at, expires_at, revoked FROM tokens`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query tokens: %w", err)
@@ -198,8 +192,7 @@ func (s *Service) List() ([]Token, error) {
 // many tokens changed. Used by the role-delete cascade: a token that still
 // listed the id would be synthesized as `in` that (now-deleted) role by the IAM
 // engine — its rules/guardrails would keep applying — so the access must be
-// truly revoked here, not merely hidden in the UI. The legacy single role_id
-// column is kept consistent (= first remaining role, or "").
+// truly revoked here, not merely hidden in the UI.
 func (s *Service) RemoveRoleFromAll(roleID string) (int, error) {
 	toks, err := s.List()
 	if err != nil {
@@ -223,12 +216,8 @@ func (s *Service) RemoveRoleFromAll(roleID string) (int, error) {
 		if err != nil {
 			return changed, fmt.Errorf("marshal role_ids: %w", err)
 		}
-		primary := ""
-		if len(kept) > 0 {
-			primary = kept[0]
-		}
-		if _, err := s.db.Exec(`UPDATE tokens SET role_id = ?, role_ids = ? WHERE id = ?`,
-			primary, string(roleIDsJSON), t.ID); err != nil {
+		if _, err := s.db.Exec(`UPDATE tokens SET role_ids = ? WHERE id = ?`,
+			string(roleIDsJSON), t.ID); err != nil {
 			return changed, fmt.Errorf("update token %q: %w", t.ID, err)
 		}
 		changed++
@@ -256,8 +245,8 @@ func (s *Service) TokensUsingRole(roleID string) (int, error) {
 }
 
 // UpdateRoles replaces a token's role set (RBAC edit) WITHOUT regenerating the
-// secret — the token hash is untouched, only role_ids (and the legacy role_id =
-// first role, for back-compat) change. Used by the admin UI's "edit roles".
+// secret — the token hash is untouched, only role_ids changes. Used by the
+// admin UI's "edit roles".
 func (s *Service) UpdateRoles(id string, roleIDs []string) error {
 	if roleIDs == nil {
 		roleIDs = []string{}
@@ -266,12 +255,8 @@ func (s *Service) UpdateRoles(id string, roleIDs []string) error {
 	if err != nil {
 		return fmt.Errorf("marshal role_ids: %w", err)
 	}
-	primary := ""
-	if len(roleIDs) > 0 {
-		primary = roleIDs[0]
-	}
-	res, err := s.db.Exec(`UPDATE tokens SET role_id = ?, role_ids = ? WHERE id = ?`,
-		primary, string(roleIDsJSON), id)
+	res, err := s.db.Exec(`UPDATE tokens SET role_ids = ? WHERE id = ?`,
+		string(roleIDsJSON), id)
 	if err != nil {
 		return fmt.Errorf("update token roles: %w", err)
 	}
@@ -311,23 +296,18 @@ type scanner interface{ Scan(dest ...any) error }
 func scanFromScanner(s scanner) (*Token, error) {
 	var (
 		token     Token
-		roleID    string
 		roleIDs   sql.NullString
 		expiresAt sql.NullTime
 		revoked   int
 	)
-	err := s.Scan(&token.ID, &token.Name, &roleID, &roleIDs, &token.CreatedAt, &expiresAt, &revoked)
+	err := s.Scan(&token.ID, &token.Name, &roleIDs, &token.CreatedAt, &expiresAt, &revoked)
 	if err != nil {
 		return nil, err
 	}
-	// Prefer the role_ids set; fall back to the legacy single role_id for rows
-	// written before the multi-role migration.
 	if roleIDs.Valid && roleIDs.String != "" && roleIDs.String != "[]" {
 		if err := json.Unmarshal([]byte(roleIDs.String), &token.RoleIDs); err != nil {
 			return nil, fmt.Errorf("parse role_ids: %w", err)
 		}
-	} else if roleID != "" {
-		token.RoleIDs = []string{roleID}
 	}
 	if expiresAt.Valid {
 		token.ExpiresAt = &expiresAt.Time
