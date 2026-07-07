@@ -311,9 +311,15 @@ func ApplyResponseFilters(responseJSON []byte, filters []ResponseFilter, content
 }
 
 // applyExclusion drops list items matching this filter's patterns (within its
-// effective field set), handling the standard list shapes. Field-aware filters
-// match only within content fields (a hit inside base64/metadata never drops the
-// item); a whole-response filter matches the item's serialized JSON.
+// effective field set). List detection is shape-agnostic (see excludeTree): any
+// top-level array-of-objects key, the connector envelope `body`, and GraphQL
+// `nodes` arrays are treated as item lists — it does NOT chase a hardcoded key
+// allowlist, so a new connector returning a list under a new key
+// (`pull_requests`, `records`, …) is filtered too. Field-aware filters match only
+// within content fields (a hit inside base64/metadata never drops the item); a
+// whole-response filter matches the item's serialized JSON. Nested structural
+// arrays inside a kept item (labels/assignees/comments) are never recursed into,
+// so kept items aren't corrupted.
 func applyExclusion(result string, f ResponseFilter, contentFields []string) (string, []string, error) {
 	res, err := compileFilters(f.ExcludePatterns, f.Match)
 	if err != nil {
@@ -324,20 +330,9 @@ func applyExclusion(result string, f ResponseFilter, contentFields []string) (st
 	}
 	fields := f.fieldSet(contentFields)
 
-	var data map[string]any
+	var data any
 	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		// Not a JSON object. A top-level JSON array root ([...]) is a real
-		// connector shape — drop matching items (field-aware or whole-item).
-		var arr []any
-		if json.Unmarshal([]byte(result), &arr) == nil {
-			filtered, removed := excludeItems(arr, res, fields)
-			if removed == 0 {
-				return result, nil, nil
-			}
-			rewritten, _ := json.Marshal(filtered)
-			return string(rewritten), []string{fmt.Sprintf("excluded %d item(s)", removed)}, nil
-		}
-		// Body is neither a JSON object nor a JSON array.
+		// The body is not valid JSON at all.
 		if fields == nil {
 			// Opaque whole-response filter — a match nukes the whole response.
 			if anyMatch(res, result) {
@@ -346,51 +341,88 @@ func applyExclusion(result string, f ResponseFilter, contentFields []string) (st
 			return result, nil, nil
 		}
 		// A field-aware exclude cannot act on a non-JSON body. Fail CLOSED
-		// (withhold) rather than pass the unfilterable content through — a silent
-		// no-op here would leak exactly what the operator meant to drop.
+		// (withhold) rather than pass the unfilterable content through.
 		return result, nil, &ResponseFilterError{Filter: f, Err: fmt.Errorf("exclude filter %q: response body is not JSON, cannot apply field-aware exclusion", f.Label)}
 	}
 
-	var actions []string
-	changed := false
-	// Direct list shapes: {"emails": [...]}, {"messages": [...]}, etc.
-	if n := excludeListKeys(data, res, fields); n > 0 {
-		actions = append(actions, fmt.Sprintf("excluded %d item(s)", n))
-		changed = true
+	switch d := data.(type) {
+	case []any:
+		// Top-level JSON array root ([...]).
+		filtered, removed := excludeItems(d, res, fields)
+		if removed == 0 {
+			return result, nil, nil
+		}
+		rewritten, _ := json.Marshal(filtered)
+		return string(rewritten), []string{fmt.Sprintf("excluded %d item(s)", removed)}, nil
+	case map[string]any:
+		// FIX: the connector wraps a NON-JSON upstream response as
+		// body:{"raw":"…"} (github/gitlab client). The outer envelope parses as an
+		// object, so a field-aware/exclude filter finds no list and would silently
+		// no-op — leaking exactly the content the operator meant to withhold. Fail
+		// CLOSED: an opaque body can't be verified against the exclude patterns.
+		if envelopeBodyIsOpaqueRaw(d) {
+			return result, nil, &ResponseFilterError{Filter: f, Err: fmt.Errorf("exclude filter %q: upstream response body is opaque non-JSON (raw), cannot verify exclusion", f.Label)}
+		}
+		removed := excludeTree(d, res, fields)
+		if removed == 0 {
+			return result, nil, nil
+		}
+		rewritten, _ := json.Marshal(d)
+		return string(rewritten), []string{fmt.Sprintf("excluded %d item(s)", removed)}, nil
+	default:
+		// Scalar JSON root (string/number/bool/null).
+		if fields == nil {
+			if anyMatch(res, result) {
+				return "", []string{"response filtered: matched exclude pattern"}, nil
+			}
+			return result, nil, nil
+		}
+		return result, nil, &ResponseFilterError{Filter: f, Err: fmt.Errorf("exclude filter %q: response body is not a filterable object, cannot apply field-aware exclusion", f.Label)}
 	}
-	// GraphQL connection shape (Linear/GitHub v4): items live under nested
-	// `data.<conn>.nodes` arrays. Recurse the whole tree (incl. any envelope body)
-	// so an exclude on e.g. linear_list_issues actually filters.
-	if nested := excludeFromNodes(data, res, fields); nested > 0 {
-		actions = append(actions, fmt.Sprintf("excluded %d item(s)", nested))
-		changed = true
-	}
-	// Connector envelope: the github/gitlab connectors wrap the upstream payload
-	// as {status, headers, body}. For REST list ops the body is a top-level JSON
-	// array; for e.g. github search it's an object {total_count, items:[...]}.
-	// Without this, an exclude obligation on those connectors silently no-ops
-	// (the list array is under "body", not a recognized top-level list key).
-	if body, ok := data["body"]; ok {
-		switch b := body.(type) {
+}
+
+// excludeTree filters the item lists in a decoded map response and returns the
+// total removed. It recognizes three list positions and NOTHING deeper, which is
+// what makes it both generic (no hardcoded key set) and safe (it never recurses
+// into a kept item's internals, so structural sub-arrays like labels/assignees
+// are untouched):
+//
+//   - Connector envelope {status, headers, body}: the payload list lives under
+//     `body` — either a bare array, or a collection object (has a count/cursor
+//     signal) whose array children are the list (e.g. github search
+//     {total_count, items}). Also scrubs the `Link` pagination header, which the
+//     envelope surfaces to the agent.
+//   - Otherwise the root map is the container: every direct array-of-objects key
+//     is an item list (messages/emails/records/pull_requests/…). Count + cursor
+//     side-channels on the root are closed.
+//   - GraphQL `nodes` arrays anywhere (Linear/GitHub-v4 connection shape).
+func excludeTree(root map[string]any, res []*regexp.Regexp, fields map[string]bool) int {
+	if isEnvelope(root) {
+		removed := 0
+		switch b := root["body"].(type) {
 		case []any:
-			filtered, n := excludeItems(b, res, fields)
-			if n > 0 {
-				data["body"] = filtered
-				actions = append(actions, fmt.Sprintf("excluded %d item(s)", n))
-				changed = true
+			filtered, r := excludeItems(b, res, fields)
+			if r > 0 {
+				root["body"] = filtered
+				removed += r
 			}
 		case map[string]any:
-			if n := excludeListKeys(b, res, fields); n > 0 {
-				actions = append(actions, fmt.Sprintf("excluded %d item(s)", n))
-				changed = true
+			// Only treat a body OBJECT as a collection when it carries a count or
+			// cursor — so a single-object get (body:{id,title,labels:[…]}) is not
+			// mistaken for a list and its labels/assignees over-dropped.
+			if hasListSignal(b) {
+				removed += excludeContainer(b, res, fields)
 			}
+			removed += excludeFromNodes(b, res, fields)
 		}
+		if removed > 0 {
+			scrubEnvelopeLink(root)
+		}
+		return removed
 	}
-	if !changed {
-		return result, nil, nil
-	}
-	rewritten, _ := json.Marshal(data)
-	return string(rewritten), actions, nil
+	removed := excludeContainer(root, res, fields)
+	removed += excludeFromNodes(root, res, fields)
+	return removed
 }
 
 // excludeItems returns items with exclude-matching entries dropped and the count
@@ -410,26 +442,32 @@ func excludeItems(items []any, res []*regexp.Regexp, fields map[string]bool) ([]
 	return filtered, removed
 }
 
-// excludeListKeys drops matching items from the standard top-level list keys on
-// m ({"emails":[...]}, {"items":[...]}, …) and closes the count + pagination
-// side-channels on m so a withheld item can't be inferred or paged around.
-// Returns the total removed. Only these recognized list roots are treated as
-// filterable — arbitrary nested arrays (e.g. an item's labels/assignees) are
-// left intact.
-func excludeListKeys(m map[string]any, res []*regexp.Regexp, fields map[string]bool) int {
+// excludeContainer drops matching items from every direct array-of-objects child
+// of m (any key — not a hardcoded set) and, if anything was removed, closes the
+// count + pagination side-channels on m. Scalar arrays (labelIds:["x"]) are
+// skipped, and array elements are never recursed into, so nested structural
+// arrays of kept items are left intact. `nodes` is handled by excludeFromNodes
+// (which also resets pageInfo), so it is skipped here.
+func excludeContainer(m map[string]any, res []*regexp.Regexp, fields map[string]bool) int {
 	removed := 0
-	for _, key := range []string{"emails", "messages", "items", "threads", "results"} {
-		items, ok := m[key].([]any)
-		if !ok {
+	for k, val := range m {
+		if k == "nodes" {
 			continue
 		}
-		filtered, r := excludeItems(items, res, fields)
+		arr, ok := val.([]any)
+		if !ok || !isObjectList(arr) {
+			continue
+		}
+		filtered, r := excludeItems(arr, res, fields)
 		if r > 0 {
-			m[key] = filtered
-			decrementCountFields(m, r)
-			clearPaginationTokens(m)
+			m[k] = filtered
 			removed += r
 		}
+	}
+	if removed > 0 {
+		decrementCountFields(m, removed)
+		clearPaginationTokens(m)
+		resetPageInfo(m)
 	}
 	return removed
 }
@@ -439,33 +477,19 @@ func excludeListKeys(m map[string]any, res []*regexp.Regexp, fields map[string]b
 // data.<conn>.nodes). It returns the number of items removed. On each object that
 // owns a `nodes` array it also closes the side-channels — decrementing count fields
 // (incl. GraphQL `totalCount`) and clearing pagination (top-level cursors and a
-// nested `pageInfo`) — mirroring the top-level list-key handling. It does not
-// recurse into a `nodes` array's own items, so a dropped item is removed whole and
-// sub-connections of kept items are left intact.
+// nested `pageInfo`). It does not recurse into a `nodes` array's own items, so a
+// dropped item is removed whole and sub-connections of kept items are left intact.
 func excludeFromNodes(v any, res []*regexp.Regexp, fields map[string]bool) int {
 	removed := 0
 	switch x := v.(type) {
 	case map[string]any:
 		if nodes, ok := x["nodes"].([]any); ok {
-			filtered := make([]any, 0, len(nodes))
-			r := 0
-			for _, item := range nodes {
-				if itemExcluded(item, res, fields) {
-					r++
-				} else {
-					filtered = append(filtered, item)
-				}
-			}
+			filtered, r := excludeItems(nodes, res, fields)
 			if r > 0 {
 				x["nodes"] = filtered
 				decrementCountFields(x, r)
 				clearPaginationTokens(x)
-				if pi, ok := x["pageInfo"].(map[string]any); ok {
-					delete(pi, "endCursor")
-					delete(pi, "startCursor")
-					pi["hasNextPage"] = false
-					pi["hasPreviousPage"] = false
-				}
+				resetPageInfo(x)
 				removed += r
 			}
 		}
@@ -481,6 +505,86 @@ func excludeFromNodes(v any, res []*regexp.Regexp, fields map[string]bool) int {
 		}
 	}
 	return removed
+}
+
+// isObjectList reports whether arr contains at least one JSON object — the shape
+// of an item list. A pure scalar array (labelIds:["a","b"]) is not a list root
+// and must not be item-filtered.
+func isObjectList(arr []any) bool {
+	for _, e := range arr {
+		if _, ok := e.(map[string]any); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// isEnvelope reports whether m is the connector response envelope
+// {status, headers, body} that the github/gitlab (and mcp_proxy) connectors emit.
+func isEnvelope(m map[string]any) bool {
+	if _, ok := m["body"]; !ok {
+		return false
+	}
+	if _, ok := m["headers"].(map[string]any); !ok {
+		return false
+	}
+	_, ok := m["status"]
+	return ok
+}
+
+// hasListSignal reports whether m carries a count or pagination field — i.e. it
+// looks like a collection response rather than a single object. Used to decide
+// whether an envelope body OBJECT's array children are item lists.
+func hasListSignal(m map[string]any) bool {
+	for _, k := range countFields {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	for _, k := range paginationKeys {
+		if _, ok := m[k]; ok {
+			return true
+		}
+	}
+	_, ok := m["pageInfo"]
+	return ok
+}
+
+// envelopeBodyIsOpaqueRaw reports whether m is the connector envelope whose body
+// is the exact non-JSON wrapper {"raw":"…"} the client emits when the upstream
+// response wasn't valid JSON. Narrow by construction (single "raw" string key) so
+// a normal single-object body is not mistaken for it.
+func envelopeBodyIsOpaqueRaw(m map[string]any) bool {
+	if !isEnvelope(m) {
+		return false
+	}
+	body, ok := m["body"].(map[string]any)
+	if !ok || len(body) != 1 {
+		return false
+	}
+	_, ok = body["raw"].(string)
+	return ok
+}
+
+// scrubEnvelopeLink removes the `Link` pagination header from a connector
+// envelope's headers after items were withheld, so "more pages exist" (github/
+// gitlab REST paginate via Link) isn't leaked around an exclusion.
+func scrubEnvelopeLink(root map[string]any) {
+	if hdrs, ok := root["headers"].(map[string]any); ok {
+		delete(hdrs, "Link")
+		delete(hdrs, "link")
+	}
+}
+
+// resetPageInfo blanks a GraphQL `pageInfo` object on m (cursors + has*Page
+// flags) after items were withheld from a sibling list.
+func resetPageInfo(m map[string]any) {
+	if pi, ok := m["pageInfo"].(map[string]any); ok {
+		delete(pi, "endCursor")
+		delete(pi, "startCursor")
+		pi["hasNextPage"] = false
+		pi["hasPreviousPage"] = false
+	}
 }
 
 // countFields and paginationKeys enumerate the response fields across connector
@@ -557,6 +661,12 @@ func applyRedaction(result string, f ResponseFilter, contentFields []string) (st
 			// (withhold) rather than return the raw body unchanged — a silent
 			// pass-through would leak exactly the content the operator meant to mask.
 			return result, nil, &ResponseFilterError{Filter: f, Err: fmt.Errorf("redact filter %q: response body is not JSON, cannot apply field-aware redaction", f.Label)}
+		}
+		// Same opaque-body fail-closed as exclude: a NON-JSON upstream wrapped as
+		// body:{"raw":"…"} parses as an object but carries no content fields to
+		// mask, so a field-aware redact would silently pass it through.
+		if m, ok := data.(map[string]any); ok && envelopeBodyIsOpaqueRaw(m) {
+			return result, nil, &ResponseFilterError{Filter: f, Err: fmt.Errorf("redact filter %q: upstream response body is opaque non-JSON (raw), cannot apply field-aware redaction", f.Label)}
 		}
 		if redactInFields(data, fields, res) {
 			matched = true
