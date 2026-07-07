@@ -326,77 +326,112 @@ func applyExclusion(result string, f ResponseFilter, contentFields []string) (st
 
 	var data map[string]any
 	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		// Not a JSON object. Only the whole-response path (no field restriction)
-		// can act on a non-object body.
-		if fields == nil {
-			// A top-level JSON array root ([...]) is a real connector shape — drop
-			// matching items rather than treating it as an opaque blob.
-			var arr []any
-			if json.Unmarshal([]byte(result), &arr) == nil {
-				kept := make([]any, 0, len(arr))
-				removed := 0
-				for _, item := range arr {
-					if itemExcluded(item, res, fields) {
-						removed++
-					} else {
-						kept = append(kept, item)
-					}
-				}
-				if removed == 0 {
-					return result, nil, nil
-				}
-				rewritten, _ := json.Marshal(kept)
-				return string(rewritten), []string{fmt.Sprintf("excluded %d item(s)", removed)}, nil
+		// Not a JSON object. A top-level JSON array root ([...]) is a real
+		// connector shape — drop matching items (field-aware or whole-item).
+		var arr []any
+		if json.Unmarshal([]byte(result), &arr) == nil {
+			filtered, removed := excludeItems(arr, res, fields)
+			if removed == 0 {
+				return result, nil, nil
 			}
-			// Opaque body — a match nukes the whole response.
+			rewritten, _ := json.Marshal(filtered)
+			return string(rewritten), []string{fmt.Sprintf("excluded %d item(s)", removed)}, nil
+		}
+		// Body is neither a JSON object nor a JSON array.
+		if fields == nil {
+			// Opaque whole-response filter — a match nukes the whole response.
 			if anyMatch(res, result) {
 				return "", []string{"response filtered: matched exclude pattern"}, nil
 			}
+			return result, nil, nil
 		}
-		return result, nil, nil
+		// A field-aware exclude cannot act on a non-JSON body. Fail CLOSED
+		// (withhold) rather than pass the unfilterable content through — a silent
+		// no-op here would leak exactly what the operator meant to drop.
+		return result, nil, &ResponseFilterError{Filter: f, Err: fmt.Errorf("exclude filter %q: response body is not JSON, cannot apply field-aware exclusion", f.Label)}
 	}
 
 	var actions []string
 	changed := false
-	// Handle list formats: {"emails": [...]}, {"messages": [...]}, etc.
-	for _, key := range []string{"emails", "messages", "items", "threads", "results"} {
-		items, ok := data[key].([]any)
-		if !ok {
-			continue
-		}
-		// Non-nil slice so an all-removed list serialises as [] rather than null.
-		filtered := make([]any, 0, len(items))
-		removed := 0
-		for _, item := range items {
-			if itemExcluded(item, res, fields) {
-				removed++
-			} else {
-				filtered = append(filtered, item)
-			}
-		}
-		if removed > 0 {
-			data[key] = filtered
-			// Close the count + pagination side-channels: an unadjusted count or a
-			// live cursor lets an agent infer how many items were withheld and page
-			// around the exclusion.
-			decrementCountFields(data, removed)
-			clearPaginationTokens(data)
-			actions = append(actions, fmt.Sprintf("excluded %d item(s)", removed))
-			changed = true
-		}
+	// Direct list shapes: {"emails": [...]}, {"messages": [...]}, etc.
+	if n := excludeListKeys(data, res, fields); n > 0 {
+		actions = append(actions, fmt.Sprintf("excluded %d item(s)", n))
+		changed = true
 	}
 	// GraphQL connection shape (Linear/GitHub v4): items live under nested
-	// `data.<conn>.nodes` arrays, not the top-level keys above. Recurse and drop
-	// matching nodes so an exclude on e.g. linear_list_issues actually filters.
+	// `data.<conn>.nodes` arrays. Recurse the whole tree (incl. any envelope body)
+	// so an exclude on e.g. linear_list_issues actually filters.
 	if nested := excludeFromNodes(data, res, fields); nested > 0 {
 		actions = append(actions, fmt.Sprintf("excluded %d item(s)", nested))
 		changed = true
+	}
+	// Connector envelope: the github/gitlab connectors wrap the upstream payload
+	// as {status, headers, body}. For REST list ops the body is a top-level JSON
+	// array; for e.g. github search it's an object {total_count, items:[...]}.
+	// Without this, an exclude obligation on those connectors silently no-ops
+	// (the list array is under "body", not a recognized top-level list key).
+	if body, ok := data["body"]; ok {
+		switch b := body.(type) {
+		case []any:
+			filtered, n := excludeItems(b, res, fields)
+			if n > 0 {
+				data["body"] = filtered
+				actions = append(actions, fmt.Sprintf("excluded %d item(s)", n))
+				changed = true
+			}
+		case map[string]any:
+			if n := excludeListKeys(b, res, fields); n > 0 {
+				actions = append(actions, fmt.Sprintf("excluded %d item(s)", n))
+				changed = true
+			}
+		}
 	}
 	if !changed {
 		return result, nil, nil
 	}
 	rewritten, _ := json.Marshal(data)
 	return string(rewritten), actions, nil
+}
+
+// excludeItems returns items with exclude-matching entries dropped and the count
+// removed. Field-aware filters match only within content fields; a whole-response
+// filter matches the item's serialized JSON.
+func excludeItems(items []any, res []*regexp.Regexp, fields map[string]bool) ([]any, int) {
+	// Non-nil slice so an all-removed list serialises as [] rather than null.
+	filtered := make([]any, 0, len(items))
+	removed := 0
+	for _, item := range items {
+		if itemExcluded(item, res, fields) {
+			removed++
+		} else {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, removed
+}
+
+// excludeListKeys drops matching items from the standard top-level list keys on
+// m ({"emails":[...]}, {"items":[...]}, …) and closes the count + pagination
+// side-channels on m so a withheld item can't be inferred or paged around.
+// Returns the total removed. Only these recognized list roots are treated as
+// filterable — arbitrary nested arrays (e.g. an item's labels/assignees) are
+// left intact.
+func excludeListKeys(m map[string]any, res []*regexp.Regexp, fields map[string]bool) int {
+	removed := 0
+	for _, key := range []string{"emails", "messages", "items", "threads", "results"} {
+		items, ok := m[key].([]any)
+		if !ok {
+			continue
+		}
+		filtered, r := excludeItems(items, res, fields)
+		if r > 0 {
+			m[key] = filtered
+			decrementCountFields(m, r)
+			clearPaginationTokens(m)
+			removed += r
+		}
+	}
+	return removed
 }
 
 // excludeFromNodes recurses the decoded response and applies the exclude to any
@@ -453,7 +488,7 @@ func excludeFromNodes(v any, res []*regexp.Regexp, fields map[string]bool) int {
 // (total/count/Gmail's resultSizeEstimate) or a cursor to page past the dropped
 // item. After an exclude, every present count is decremented and every present
 // cursor is cleared.
-var countFields = []string{"total", "count", "resultSizeEstimate", "totalCount"}
+var countFields = []string{"total", "count", "resultSizeEstimate", "totalCount", "total_count"}
 var paginationKeys = []string{
 	"next_page_token", "nextPageToken", "nextLink",
 	"cursor", "next_cursor", "page_token", "pageToken",
@@ -517,12 +552,16 @@ func applyRedaction(result string, f ResponseFilter, contentFields []string) (st
 		result = out
 	} else {
 		var data any
-		if err := json.Unmarshal([]byte(result), &data); err == nil {
-			if redactInFields(data, fields, res) {
-				matched = true
-				if rewritten, mErr := json.Marshal(data); mErr == nil {
-					result = string(rewritten)
-				}
+		if err := json.Unmarshal([]byte(result), &data); err != nil {
+			// A field-aware redaction cannot act on a non-JSON body. Fail CLOSED
+			// (withhold) rather than return the raw body unchanged — a silent
+			// pass-through would leak exactly the content the operator meant to mask.
+			return result, nil, &ResponseFilterError{Filter: f, Err: fmt.Errorf("redact filter %q: response body is not JSON, cannot apply field-aware redaction", f.Label)}
+		}
+		if redactInFields(data, fields, res) {
+			matched = true
+			if rewritten, mErr := json.Marshal(data); mErr == nil {
+				result = string(rewritten)
 			}
 		}
 	}
