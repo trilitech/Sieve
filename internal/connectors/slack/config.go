@@ -1,10 +1,14 @@
 // Package slack implements the Slack connector for Sieve.
-// Authentication: two peer methods.
-// - "oauth": classic non-rotating Slack bot tokens obtained via the
-// OAuth v2 install flow (classic scopes only for v1; granular-scope
-// token rotation deferred).
-// - "token": admin pastes a pre-existing bot token (xoxb-...) from a
-// Slack app they own.
+// Authentication: a connection picks one identity via auth_kind.
+//   - "oauth": classic non-rotating Slack bot token obtained via the
+//     OAuth v2 install flow (bot identity, xoxb-).
+//   - "token": admin pastes a pre-existing bot token (xoxb-...) from a
+//     Slack app they own (bot identity).
+//   - "user_token": the installing human's user token (xoxp-...), from a
+//     user OAuth install or pasted directly. Acts as the person with
+//     their full reach and unlocks search.messages, which Slack's search
+//     API only accepts with a user token. Also non-rotating.
+//
 // Curated operations cover the most common AI-agent workflows
 // (channels, users, history, threads, search, post). See ops.go for
 // the dispatch table.
@@ -17,10 +21,17 @@ import (
 
 // Auth-kind discriminator. Mirrors the auth_kind field on Linear/Jira
 // /Asana configs so the four connectors share a vocabulary; agents and
-// docs talk about "auth_kind: oauth | token" everywhere.
+// docs talk about "auth_kind: oauth | token | user_token" everywhere.
+//
+// A connection carries exactly one identity:
+//   - KindOAuth / KindToken: the app's BOT (xoxb-), least-privilege default.
+//     Sees only channels the bot is invited to; cannot use search.messages.
+//   - KindUserToken: the installing HUMAN (xoxp-). Full personal reach —
+//     every channel/DM the user can see — plus workspace search.
 const (
-	KindOAuth = "oauth"
-	KindToken = "token"
+	KindOAuth     = "oauth"
+	KindToken     = "token"
+	KindUserToken = "user_token"
 )
 
 // Config is the persisted, decrypted connection config for a Slack
@@ -28,7 +39,7 @@ const (
 // the connections row's `config_ciphertext` blob — never plaintext
 // columns.
 type Config struct {
-	AuthKind  string   `json:"auth_kind"`           // KindOAuth | KindToken
+	AuthKind  string   `json:"auth_kind"`           // KindOAuth | KindToken | KindUserToken
 	TeamID    string   `json:"team_id"`             // Slack workspace ID, e.g. "T012ABCDEF"
 	TeamName  string   `json:"team_name,omitempty"` // Display-only
 	BotUserID string   `json:"bot_user_id,omitempty"`
@@ -41,6 +52,14 @@ type Config struct {
 
 	// AuthKind == KindToken: pasted directly by the admin.
 	BotToken string `json:"bot_token,omitempty"`
+
+	// AuthKind == KindUserToken: the Slack user token (xoxp-...). Set
+	// either by the OAuth user-install callback (copied out of
+	// authed_user.access_token) or pasted directly by the operator. Like
+	// the classic bot token it is non-rotating, so there is no refresh
+	// wiring. This is the credential that makes the connector act as the
+	// human rather than the app's bot.
+	UserToken string `json:"user_token,omitempty"`
 }
 
 // parseConfig decodes the raw config map (as stored in the encrypted
@@ -56,6 +75,7 @@ func parseConfig(raw map[string]any) (*Config, error) {
 	c.TeamName, _ = raw["team_name"].(string)
 	c.BotUserID, _ = raw["bot_user_id"].(string)
 	c.BotToken, _ = raw["bot_token"].(string)
+	c.UserToken, _ = raw["user_token"].(string)
 	if scopes, ok := raw["scopes"].([]any); ok {
 		for _, s := range scopes {
 			if str, ok := s.(string); ok {
@@ -95,8 +115,19 @@ func (c *Config) validate() error {
 		if !strings.HasPrefix(c.BotToken, "xoxb-") {
 			return fmt.Errorf("slack: bot_token must start with xoxb- (Slack bot token format)")
 		}
+	case KindUserToken:
+		if c.UserToken == "" {
+			return fmt.Errorf("slack: user_token config missing user_token")
+		}
+		// xoxp- = classic user token; xoxe.* = enterprise user token
+		// (Slack prefixes Enterprise Grid tokens xoxe.xoxp-...). Reject
+		// xoxb- here so an operator can't silently downgrade a "user"
+		// connection to a bot identity by pasting the wrong token.
+		if !strings.HasPrefix(c.UserToken, "xoxp-") && !strings.HasPrefix(c.UserToken, "xoxe.") {
+			return fmt.Errorf("slack: user_token must start with xoxp- or xoxe. (Slack user token format)")
+		}
 	default:
-		return fmt.Errorf("slack: unknown auth_kind %q (want %q or %q)", c.AuthKind, KindOAuth, KindToken)
+		return fmt.Errorf("slack: unknown auth_kind %q (want %q, %q, or %q)", c.AuthKind, KindOAuth, KindToken, KindUserToken)
 	}
 	return nil
 }
@@ -107,6 +138,9 @@ func (c *Config) validate() error {
 func (c *Config) accessToken() string {
 	if c.AuthKind == KindToken {
 		return c.BotToken
+	}
+	if c.AuthKind == KindUserToken {
+		return c.UserToken
 	}
 	if c.OAuthToken != nil {
 		if s, ok := c.OAuthToken["access_token"].(string); ok {

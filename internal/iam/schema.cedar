@@ -432,7 +432,7 @@ namespace Sieve {
   action "slack/search_messages" in ["slack/read"] appliesTo {
     principal: [Sieve::Token],
     resource: [Sieve::Connection],
-    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "query"?: String } }
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "cursor"?: String, "page_size"?: Long, "query"?: String } }
   };
 }
 

@@ -19,14 +19,18 @@ var ErrNeedsReauth = errors.New("connection needs re-authentication")
 
 // ErrOperationNotEnabled signals that a connector exposes an operation in
 // its catalog (so policies can bind against the name) but refuses to
-// execute it in the current Sieve version. Connectors return this —
-// wrapped with %w plus a connector-supplied reason string — from
-// Execute. The API layer maps errors.Is(err, ErrOperationNotEnabled)
+// execute it for the current connection's configuration. Connectors
+// return this — wrapped with %w plus a connector-supplied reason string —
+// from Execute. The API layer maps errors.Is(err, ErrOperationNotEnabled)
 // to HTTP 501 Not Implemented; the MCP layer surfaces it as a tool
 // error with the canonical "operation_not_enabled:" text prefix.
 // Distinct from ErrNeedsReauth (403, credential-state problem) and from
 // generic 5xx (something is broken). Today's only producer is Slack's
-// search_messages (gated until user-token install ships).
+// search_messages: it runs for real on user-token connections
+// (auth_kind=user_token) and returns this sentinel on bot-token
+// connections, since Slack's search.messages API only accepts user
+// tokens. The op stays in the catalog regardless so policies that
+// mention search_messages keep binding either kind.
 var ErrOperationNotEnabled = errors.New("operation not enabled")
 
 // Connector is the interface that all service connectors must implement.

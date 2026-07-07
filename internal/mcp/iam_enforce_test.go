@@ -5,12 +5,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 	"github.com/trilitech/Sieve/internal/iampolicies"
 	"github.com/trilitech/Sieve/internal/mcp"
 	"github.com/trilitech/Sieve/internal/policy"
+	"github.com/trilitech/Sieve/internal/roles"
+	"github.com/trilitech/Sieve/internal/testing/mockslack"
 	"github.com/trilitech/Sieve/internal/testing/testenv"
+	"github.com/trilitech/Sieve/internal/tokens"
 )
 
 const mcpGuardScript = `import sys, json
@@ -90,4 +95,88 @@ func isToolError(r jsonRPCResponse) bool {
 	}
 	b, _ := r.Result["isError"].(bool)
 	return b
+}
+
+// addSlackConn adds a Slack connection pointed at the mock server and grants
+// slack/search_messages on it to the given role.
+func addSlackConn(t *testing.T, env *testenv.Env, mock *mockslack.Server, id, roleID string, cfg map[string]any) {
+	t.Helper()
+	cfg["_base_url"] = mock.URL
+	cfg["outbound_allowlist"] = []any{"127.0.0.0/8"}
+	if err := env.Connections.Add(id, "slack", id, cfg); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := iampolicies.BuildRuleCedar(iampolicies.RuleSpec{
+		RoleID: roleID, Effect: "allow", ConnectorType: "slack",
+		OpScope: "specific", Operations: []string{"search_messages"},
+		ConnectionIDs: []string{id},
+	}, slackconn.Meta().Operations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.IAM.CreatePolicy("search-"+id, "", grant, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMCP_SlackSearchByIdentityEnforced mirrors the REST enforcement test on
+// the MCP surface: with slack/search_messages granted, a user-token
+// connection runs the search tool, while a bot-token connection with the
+// same grant returns a tool error carrying the operation_not_enabled prefix.
+// One token binds both connections, so tools are connection-prefixed.
+func TestMCP_SlackSearchByIdentityEnforced(t *testing.T) {
+	mock := mockslack.New()
+	t.Cleanup(mock.Close)
+
+	env := testenv.New(t)
+	env.Registry.Register(slackconn.Meta(), slackconn.Factory())
+
+	role, err := env.Roles.Create("searcher", []roles.Binding{
+		{ConnectionID: "slack-user"}, {ConnectionID: "slack-bot"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addSlackConn(t, env, mock, "slack-user", role.ID,
+		map[string]any{"auth_kind": slackconn.KindUserToken, "user_token": "xoxp-user-tok", "team_id": "T012"})
+	addSlackConn(t, env, mock, "slack-bot", role.ID,
+		map[string]any{"auth_kind": slackconn.KindToken, "bot_token": "xoxb-bot-tok", "team_id": "T012"})
+	tok, err := env.Tokens.Create(&tokens.CreateRequest{Name: "t", RoleID: role.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.Settings.Set("iam_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
+	srv := mcp.NewServer(env.Tokens, env.Connections, env.IAM, env.Registry, env.Roles, env.Approval, env.Audit)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	// The token holds two connections, so tools are connection-prefixed.
+	call := func(tool string) jsonRPCResponse {
+		return doRPC(t, ts, tok.PlaintextToken, jsonRPCRequest{
+			JSONRPC: "2.0", ID: 1, Method: "tools/call",
+			Params: map[string]any{
+				"name":      tool,
+				"arguments": map[string]any{"query": "deploy"},
+			},
+		})
+	}
+
+	if r := call("slack-user_search_messages"); isToolError(r) {
+		t.Errorf("user-token search should succeed over MCP, got error: %+v", r.Result)
+	}
+	botResp := call("slack-bot_search_messages")
+	if !isToolError(botResp) {
+		t.Errorf("bot-token search should be a tool error over MCP, got: %+v", botResp.Result)
+	}
+	// The error must carry the canonical operation_not_enabled prefix.
+	if content, _ := botResp.Result["content"].([]any); len(content) > 0 {
+		if first, _ := content[0].(map[string]any); first != nil {
+			if text, _ := first["text"].(string); !strings.Contains(text, "operation_not_enabled") {
+				t.Errorf("bot error should carry operation_not_enabled prefix, got %q", text)
+			}
+		}
+	}
 }

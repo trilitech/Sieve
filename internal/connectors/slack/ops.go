@@ -61,13 +61,13 @@ var operations = []connector.OperationDef{
 		},
 	},
 	{
-		Name:           "search_messages",
-		Description:    "Search messages (requires user-token install — not enabled in v1).",
-		ReadOnly:       true,
-		Disabled:       true,
-		DisabledReason: "needs a user-token install (not enabled in v1)",
+		Name:        "search_messages",
+		Description: "Search messages across the workspace. Requires a user-token connection (auth_kind=user_token); bot-token connections return operation_not_enabled because Slack's search.messages only accepts user tokens.",
+		ReadOnly:    true,
 		Params: map[string]connector.ParamDef{
-			"query": {Type: "string", Required: true},
+			"query":     {Type: "string", Description: "Slack search query, e.g. \"in:#general from:@alice deploy\".", Required: true},
+			"cursor":    {Type: "string", Description: "Pagination cursor from a previous response's next_cursor."},
+			"page_size": {Type: "int", Description: "Page size 1-100 (default 100)."},
 		},
 	},
 	{
@@ -198,18 +198,81 @@ func (c *Connector) opReadThread(ctx context.Context, params map[string]any) (an
 	}, nil
 }
 
-// opSearchMessages always returns the typed connector.ErrOperationNotEnabled
-// sentinel: search.messages requires a user-token install, which is out
-// of scope for v1 (classic bot scopes only).
-// The connector exposes this op anyway so the operation surface stays
-// stable and policies that mention `search_messages` continue to bind
-// even after v2 unlocks user-token installs. Returning a typed error
-// (rather than a phantom-success map with "error" inside) lets the API
-// layer map this to HTTP 501 and the MCP layer to a tool-error result,
-// so agent SDKs branch on the status code / prefix without inspecting
-// response bodies.
+// opSearchMessages runs Slack's search.messages — but only on a
+// user-token connection. Slack rejects bot tokens on search.* with
+// not_allowed_token_type, so a bot connection returns the typed
+// connector.ErrOperationNotEnabled sentinel instead of making a doomed
+// call. Returning a typed error (rather than a phantom-success map with
+// "error" inside) lets the API layer map this to HTTP 501 and the MCP
+// layer to a tool-error result, so agent SDKs branch on the status code
+// / prefix without inspecting response bodies.
+//
+// The op stays in the catalog for both identities so an IAM rule that
+// grants `search_messages` keeps binding across a re-auth or an identity
+// change — the identity gate lives here at execution, not at grant time.
+//
+// Pagination: search.messages is page-based ({paging:{page,pages}}), not
+// cursor-based like the conversations.* methods. We translate Sieve's
+// normalized cursor/page_size to Slack's page/count and lift the next
+// page number back into next_cursor so the agent-facing shape matches
+// every other list_* op.
 func (c *Connector) opSearchMessages(ctx context.Context, params map[string]any) (any, error) {
-	return nil, fmt.Errorf("%w: slack search.messages requires user-token install; v1 supports bot tokens only", connector.ErrOperationNotEnabled)
+	if c.cfg.AuthKind != KindUserToken {
+		return nil, fmt.Errorf("%w: slack search.messages requires a user-token connection (auth_kind=user_token); this connection authenticates as a bot", connector.ErrOperationNotEnabled)
+	}
+	query, _ := params["query"].(string)
+	if query == "" {
+		return nil, fmt.Errorf("slack: search_messages requires query")
+	}
+	v := url.Values{}
+	v.Set("query", query)
+	v.Set("count", strconv.Itoa(pageSizeFrom(params)))
+	page := 1
+	if cur := cursorFrom(params); cur != "" {
+		// search.messages uses a numeric page-as-cursor. Reject a malformed
+		// cursor rather than silently resetting to page 1 — a client that
+		// mispassed the cursor would otherwise loop over the first page forever
+		// instead of learning it sent a bad value.
+		n, err := strconv.Atoi(cur)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("slack: search_messages invalid cursor %q (expected a positive page number from a previous response's next_cursor)", cur)
+		}
+		page = n
+	}
+	v.Set("page", strconv.Itoa(page))
+
+	resp, err := c.client.get(ctx, "search.messages", v)
+	if err != nil {
+		return nil, err
+	}
+	messages, _ := resp["messages"].(map[string]any)
+	matches, _ := messages["matches"].([]any)
+	return map[string]any{
+		"items":       matches,
+		"next_cursor": searchNextCursor(messages, page),
+	}, nil
+}
+
+// searchNextCursor derives the normalized next_cursor for a
+// search.messages response. search.messages reports paging as
+// {paging: {page, pages}}; the next cursor is the next page number when
+// more pages remain, else "".
+func searchNextCursor(messages map[string]any, page int) string {
+	paging, ok := messages["paging"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	pages := 0
+	switch p := paging["pages"].(type) {
+	case float64:
+		pages = int(p)
+	case int:
+		pages = p
+	}
+	if page < pages {
+		return strconv.Itoa(page + 1)
+	}
+	return ""
 }
 
 func (c *Connector) opPostMessage(ctx context.Context, params map[string]any) (any, error) {

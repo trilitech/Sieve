@@ -338,8 +338,26 @@
               </div>
               <button type="submit"
                       class="w-full rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 transition-colors">
-                Install via OAuth
+                Install via OAuth (bot)
               </button>
+              <p class="text-xs text-slate-500">Connects as the app's bot user (<code>xoxb-</code>) — sees only channels it's invited to; no search.</p>
+            </form>
+            <form method="POST" action="/connections/slack/oauth/user/start" class="space-y-3 mt-3 pt-3 border-t border-slate-700">
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Connection Alias</label>
+                <input type="text" name="id" required placeholder="e.g. acme-slack-me"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">Display Name</label>
+                <input type="text" name="display_name" required placeholder="e.g. Acme Workspace (as me)"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500">
+              </div>
+              <button type="submit"
+                      class="w-full rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 transition-colors">
+                Install via OAuth (as user)
+              </button>
+              <p class="text-xs text-slate-500">Connects as <strong>you</strong> (<code>xoxp-</code>) with your full permissions — every channel/DM you can see, plus search. Add the matching <em>user</em> scopes (incl. <code>search:read</code>) under your Slack app's <em>OAuth&nbsp;&amp;&nbsp;Permissions → User Token Scopes</em>.</p>
             </form>
             <div class="mt-2">
               <form method="POST" action="/connections/slack/oauth/clear" class="inline">
@@ -403,6 +421,32 @@
                 <button type="submit"
                         class="w-full rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600 transition-colors">
                   Add via bot token
+                </button>
+              </form>
+              <form method="POST" action="/connections/slack/user-token" class="space-y-3 mt-3 pt-3 border-t border-slate-700">
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Or paste a user token</label>
+                  <p class="text-xs text-slate-500 mb-2">Find <code>xoxp-…</code> under <strong>User OAuth Token</strong> on your Slack app's <strong>OAuth &amp; Permissions</strong> page. Acts as you with your full permissions.</p>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Connection Alias</label>
+                  <input type="text" name="id" required placeholder="e.g. acme-slack-me"
+                         class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Display Name</label>
+                  <input type="text" name="display_name" required placeholder="e.g. Acme Workspace (as me)"
+                         class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500">
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">User token</label>
+                  <input type="password" name="user_token" required placeholder="xoxp-…"
+                         class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500">
+                  <p class="text-xs text-slate-500 mt-1">Sieve calls Slack auth.test before saving. The token is encrypted at rest.</p>
+                </div>
+                <button type="submit"
+                        class="w-full rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-500 transition-colors">
+                  Add via user token
                 </button>
               </form>
             </div>

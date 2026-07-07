@@ -37,6 +37,31 @@ func newConnectorForTest(t *testing.T, mock *mockslack.Server) (*Connector, *boo
 	return &Connector{cfg: cfg, client: cli}, terminalFired
 }
 
+// newUserConnectorForTest stands up a Slack Connector with a user-token
+// identity (auth_kind=user_token) wired to the mock server — the parallel
+// of newConnectorForTest for exercising the user-identity code paths
+// (search_messages runs for real; bot connections don't).
+func newUserConnectorForTest(t *testing.T, mock *mockslack.Server) (*Connector, *bool) {
+	t.Helper()
+	cfg := &Config{
+		AuthKind:  KindUserToken,
+		UserToken: "xoxp-test-user-token",
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	terminalFired := new(bool)
+	allowlist, err := httpguard.ParseCIDRs([]string{"127.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("parse loopback allowlist: %v", err)
+	}
+	cli, err := newClient(cfg, mock.URL, func() { *terminalFired = true }, allowlist)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return &Connector{cfg: cfg, client: cli}, terminalFired
+}
+
 // TestValidate_HappyPath asserts auth.test success populates the
 // connector's TeamID/TeamName/BotUserID fields. Connection-creation
 // flows depend on this — the admin's pasted token is rejected if
