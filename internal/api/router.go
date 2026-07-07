@@ -582,6 +582,15 @@ func (rt *Router) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Re-force the trusted structural keys AFTER the body merge. The body is
+	// agent-controlled; without this a request could carry {"method":"GET"} to
+	// make an http_method-conditioned rule allow a call that ProxyHTTP then
+	// forwards with the REAL method/path — a pre-execution policy bypass. Body
+	// fields still populate context.param.* for legitimate body-based
+	// conditions; only method/path (which drive context.http_method and the
+	// forwarded request) are protected.
+	policyParams["method"] = r.Method
+	policyParams["path"] = proxyPath
 
 	// Policy evaluation is the SOLE gate and runs BEFORE we reveal whether the
 	// connection exists, its type, or its status — otherwise a missing id, a

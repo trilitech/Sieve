@@ -829,6 +829,10 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.connections.Add(id, connectorType, displayName, config); err != nil {
+			if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+				http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -903,6 +907,10 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 
 	// Non-OAuth connectors: save directly.
 	if err := s.connections.Add(id, connectorType, displayName, map[string]any{}); err != nil {
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1187,11 +1195,19 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.connections.UpdateConfig(pending.ID, connConfig); err != nil {
+			if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+				http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+				return
+			}
 			http.Error(w, fmt.Sprintf("failed to update connection: %v", err), http.StatusInternalServerError)
 			return
 		}
 	} else {
 		if err := s.connections.Add(pending.ID, pending.ConnectorType, pending.DisplayName, connConfig); err != nil {
+			if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+				http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+				return
+			}
 			http.Error(w, fmt.Sprintf("failed to save connection: %v", err), http.StatusInternalServerError)
 			return
 		}
