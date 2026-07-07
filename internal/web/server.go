@@ -797,6 +797,24 @@ type pendingOAuth struct {
 	OperatorSessionHash string // hex(sha256(cookie value)); empty when no session was active
 }
 
+// writeConnectionError centralizes keyring-state → HTTP mapping for the admin
+// web surface, mirroring api.Router.writeConnectionError so a config read/write
+// can't drift into the wrong status. A locked keyring is a transient service
+// state (503), and a rotation in progress is 503 + Retry-After; anything else
+// falls through to the caller's default status/message. Keeping this in one
+// place is what stops the "one more handler forgot the 503 branch" class of bug.
+func (s *Server) writeConnectionError(w http.ResponseWriter, defaultStatus int, defaultMessage string, err error) {
+	switch {
+	case errors.Is(err, secrets.ErrKeyringNotLoaded):
+		http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+	case errors.Is(err, secrets.ErrKeyringRotating):
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "rotation in progress, retry shortly", http.StatusServiceUnavailable)
+	default:
+		http.Error(w, defaultMessage, defaultStatus)
+	}
+}
+
 func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -829,11 +847,7 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.connections.Add(id, connectorType, displayName, config); err != nil {
-			if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-				http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 			return
 		}
 		_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.add", id,
@@ -907,11 +921,7 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 
 	// Non-OAuth connectors: save directly.
 	if err := s.connections.Add(id, connectorType, displayName, map[string]any{}); err != nil {
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 		return
 	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.add", id,
@@ -1195,20 +1205,12 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.connections.UpdateConfig(pending.ID, connConfig); err != nil {
-			if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-				http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-				return
-			}
-			http.Error(w, fmt.Sprintf("failed to update connection: %v", err), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, fmt.Sprintf("failed to update connection: %v", err), err)
 			return
 		}
 	} else {
 		if err := s.connections.Add(pending.ID, pending.ConnectorType, pending.DisplayName, connConfig); err != nil {
-			if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-				http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-				return
-			}
-			http.Error(w, fmt.Sprintf("failed to save connection: %v", err), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save connection: %v", err), err)
 			return
 		}
 	}
@@ -1837,16 +1839,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := s.connections.GetWithConfig(connID)
 	if err != nil {
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		if errors.Is(err, secrets.ErrKeyringRotating) {
-			w.Header().Set("Retry-After", "5")
-			http.Error(w, "rotation in progress, retry shortly", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, "connection not found", http.StatusNotFound)
+		s.writeConnectionError(w, http.StatusNotFound, "connection not found", err)
 		return
 	}
 

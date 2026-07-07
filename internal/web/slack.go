@@ -276,11 +276,7 @@ func (s *Server) handleSlackToken(w http.ResponseWriter, r *http.Request) {
 		"bot_user_id": botUserID,
 	}
 	if err := s.connections.Add(id, "slack", displayName, cfg); err != nil {
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 		return
 	}
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
@@ -326,11 +322,7 @@ func (s *Server) handleSlackUserToken(w http.ResponseWriter, r *http.Request) {
 		"bot_user_id": userID, // for a user token this is the authenticated user's id
 	}
 	if err := s.connections.Add(id, "slack", displayName, cfg); err != nil {
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 		return
 	}
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
@@ -385,11 +377,7 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 	// default-to-bot.
 	isUser, existingTeamID, err := s.slackConnStoredIdentity(id)
 	if err != nil {
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 		return
 	}
 	// Reuse the OAuth-start path: kick a fresh flow with the same id +
@@ -424,7 +412,7 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 			"bot_user_id": userID,
 		}
 		if err := s.connections.UpdateConfig(id, cfg); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 			return
 		}
 		if err := s.connections.SetStatus(id, connections.StatusActive); err != nil {
@@ -462,7 +450,7 @@ func (s *Server) handleSlackReauth(w http.ResponseWriter, r *http.Request) {
 			"bot_user_id": botUserID,
 		}
 		if err := s.connections.UpdateConfig(id, cfg); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 			return
 		}
 		if err := s.connections.SetStatus(id, connections.StatusActive); err != nil {
@@ -547,11 +535,7 @@ func (s *Server) handleSlackOAuthConfigure(w http.ResponseWriter, r *http.Reques
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 	}); err != nil {
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, "save Slack OAuth credentials: "+err.Error(), http.StatusInternalServerError)
+		s.writeConnectionError(w, http.StatusInternalServerError, "save Slack OAuth credentials: "+err.Error(), err)
 		return
 	}
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
@@ -592,11 +576,7 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 		// previously did not. Reading the stored config needs the keyring.
 		full, ferr := s.connections.GetWithConfig(pending.ID)
 		if ferr != nil {
-			if errors.Is(ferr, secrets.ErrKeyringNotLoaded) {
-				http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-				return
-			}
-			http.Error(w, ferr.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, ferr.Error(), ferr)
 			return
 		}
 		storedTeamID, _ := full.Config["team_id"].(string)
@@ -606,11 +586,7 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 			return
 		}
 		if err := s.connections.UpdateConfig(pending.ID, cfg); err != nil {
-			if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-				http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 			return
 		}
 		if err := s.connections.SetStatus(pending.ID, connections.StatusActive); err != nil {
@@ -619,11 +595,7 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 		}
 	} else {
 		if err := s.connections.Add(pending.ID, "slack", pending.DisplayName, cfg); err != nil {
-			if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-				http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			s.writeConnectionError(w, http.StatusInternalServerError, err.Error(), err)
 			return
 		}
 	}
