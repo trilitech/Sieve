@@ -79,6 +79,61 @@ The only provider-specific decision is public-vs-confidential (does the platform
 allow the secret alongside PKCE, or require the verifier instead). Everything
 else is shared.
 
+## Verifying the flow locally
+
+### Smoke test — no external account (30 seconds)
+
+Confirms the public-client authorize leg without completing consent. Launch with
+any dummy client_id and no secret so the provider runs in PKCE mode:
+
+```bash
+./sieve --slack-client-id "123.456"      # or --google-oauth-client-id "dummy"
+```
+
+In the admin UI, start an install (Slack card → **Install via OAuth**). The
+provider will reject the bogus id, but the **authorize URL** (address bar, or
+DevTools → Network → the 302) carries the proof:
+
+```
+...oauth/v2/authorize?...&code_challenge=<hash>&code_challenge_method=S256
+```
+
+If you see `code_challenge` + `code_challenge_method=S256`, the public-client
+PKCE leg is wired.
+
+### Full round-trip — Google (~10 min, plain HTTP loopback)
+
+Google accepts an `http://127.0.0.1` / `http://localhost` loopback redirect, so
+no TLS is needed:
+
+1. Register an OAuth client ([Google OAuth setup](google-oauth-setup.md)) with
+   redirect `http://localhost:19816/oauth/callback`; download the JSON or note
+   the client id/secret.
+2. `./sieve --google-credentials ./data/credentials.json`
+   (or `--google-oauth-client-id … --google-oauth-client-secret …`).
+3. Connections → **Connect Google Account**. Before approving, confirm
+   `code_challenge=` is in the authorize URL → approve → connection goes
+   `active`. Token refresh runs locally, so this exercises authorize + PKCE
+   exchange + refresh.
+
+### Full round-trip — Slack (HTTPS loopback)
+
+Slack requires an `https` redirect, but **`https://localhost` loopback works
+locally — no public tunnel needed.** Enable TLS on the admin listener:
+
+1. Generate a localhost cert/key (e.g. `mkcert localhost` or a self-signed pair).
+2. In the admin UI **Settings** (`/settings`), set:
+   - `public_base_url` → `https://localhost:19816`
+   - `admin.tls_cert_path` / `admin.tls_key_path` → your cert/key paths
+
+   then restart Sieve (it now serves the admin UI over HTTPS).
+3. In your Slack app's **OAuth & Redirect URLs**, register
+   `https://localhost:19816/oauth/callback`.
+4. Launch with your Slack client id (omit the secret for the PKCE public flow):
+   `./sieve --slack-client-id "…"`
+5. Connections → Slack → **Install via OAuth** → approve. The connection lands
+   `active`; the exchange sent `code_verifier` and no `client_secret`.
+
 ## What PKCE does *not* solve
 
 PKCE removes the *secret* from the flow. It does **not** remove a provider's app

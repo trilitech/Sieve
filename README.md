@@ -116,9 +116,17 @@ go build -o sieve ./cmd/sieve
 # API/MCP: http://localhost:19817
 ```
 
+**First-run admin setup.** On the very first visit to the Web UI, Sieve has no
+admin operator yet, so http://localhost:19816 redirects you to **`/setup`** (a
+loopback-only page) to create the first admin credential + display name. Set it,
+log in, and you land on the connections dashboard. Every subsequent visit uses
+the normal `/login` page.
+
 Common flags: `--db PATH` (default `./data/sieve.db`), `--web HOST:PORT`,
 `--api HOST:PORT`, `--google-credentials FILE` (auto-discovered from cwd
-if a `*client_secret*.json` is present).
+if a `*client_secret*.json` is present). To distribute Sieve with your own
+OAuth apps, also `--google-oauth-client-id` / `--slack-client-id` (and their
+`*-secret` variants) — see [CLI reference → OAuth app client flags](docs/cli-reference.md#oauth-app-client-flags).
 
 > **Note on upgrading from an older dev build:** the `connections` table schema
 > changed to encrypted columns. On first start against a pre-encryption DB,
