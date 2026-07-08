@@ -122,6 +122,23 @@ func main() {
 		googleCredsPath = flag.String("google-credentials", "",
 			"path to the Google OAuth client_secret*.json (for the Google Account connector). "+
 				"Empty = auto-discover *client_secret*.json in cwd. Optional.")
+
+		// OAuth app client IDs for the apps Sieve distributes, so users don't
+		// register their own. A client_id with no secret runs that provider as a
+		// PKCE public client. Flags default to the matching env var; either works.
+		googleOAuthClientID = flag.String("google-oauth-client-id", os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
+			"Google OAuth client_id (Desktop app) for the shipped Gmail install flow. "+
+				"Overrides the build-time default; falls back to $GOOGLE_OAUTH_CLIENT_ID. "+
+				"When set, no per-user credentials.json is needed.")
+		googleOAuthClientSecret = flag.String("google-oauth-client-secret", os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
+			"Google OAuth client_secret for the Desktop client (non-confidential; used for token refresh). "+
+				"Falls back to $GOOGLE_OAUTH_CLIENT_SECRET.")
+		slackClientID = flag.String("slack-client-id", os.Getenv("SLACK_CLIENT_ID"),
+			"Slack app client_id for the shipped OAuth install flow. Falls back to $SLACK_CLIENT_ID. "+
+				"Set without --slack-client-secret to install via PKCE (no secret stored).")
+		slackClientSecret = flag.String("slack-client-secret", os.Getenv("SLACK_CLIENT_SECRET"),
+			"Slack app client_secret (confidential BYO-app flow). Falls back to $SLACK_CLIENT_SECRET. "+
+				"Omit to use the PKCE public-client flow. A client secret pasted in the admin UI takes precedence.")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags]\n", os.Args[0])
@@ -143,7 +160,13 @@ func main() {
 		os.Exit(runResetKeyring(*dbPath))
 	}
 
-	if err := run(*dbPath, *webAddr, *apiAddr, *setup, *googleCredsPath); err != nil {
+	oauthClients := web.OAuthClientConfig{
+		GoogleClientID:     *googleOAuthClientID,
+		GoogleClientSecret: *googleOAuthClientSecret,
+		SlackClientID:      *slackClientID,
+		SlackClientSecret:  *slackClientSecret,
+	}
+	if err := run(*dbPath, *webAddr, *apiAddr, *setup, *googleCredsPath, oauthClients); err != nil {
 		log.SetFlags(0)
 		log.Fatalf("sieve: %v", err)
 	}
@@ -421,7 +444,7 @@ func runResetKeyring(dbPath string) int {
 	return rotateExitSuccess
 }
 
-func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) error {
+func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string, oauthClients web.OAuthClientConfig) error {
 	// --- Database ---
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
@@ -483,6 +506,7 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string) er
 		keyring, db, webAddr,
 	)
 	webSrv.SetIAM(iamSvc, registry, settingsSvc)
+	webSrv.SetOAuthClients(oauthClients)
 	defer webSrv.Close()
 
 	// Operator + session services drive the admin-authentication path.

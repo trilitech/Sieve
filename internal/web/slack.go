@@ -106,8 +106,19 @@ func (s *Server) slackOAuthCreds() (clientID, clientSecret string, err error) {
 		// Surface so the calling handler returns 503.
 		return "", "", err
 	}
-	// No stored row — try env vars as a fallback.
-	return os.Getenv("SLACK_CLIENT_ID"), os.Getenv("SLACK_CLIENT_SECRET"), nil
+	// No stored row. Fall back to the launch-configured client (--slack-client-id,
+	// via SetOAuthClients), then env vars. Resolved independently so a client_id
+	// with no secret runs as a PKCE public client. A stored row (pasted in the
+	// UI) always wins over these.
+	id := s.oauthClients.SlackClientID
+	if id == "" {
+		id = os.Getenv("SLACK_CLIENT_ID")
+	}
+	secret := s.oauthClients.SlackClientSecret
+	if secret == "" {
+		secret = os.Getenv("SLACK_CLIENT_SECRET")
+	}
+	return id, secret, nil
 }
 
 // slackOAuthIsConfigured reports whether a client_id is resolvable from either

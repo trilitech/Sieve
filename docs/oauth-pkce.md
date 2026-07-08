@@ -36,6 +36,22 @@ Providers differ on whether the two can be combined:
 - **Slack** forbids sending `client_secret` when using PKCE, so Sieve sends the
   verifier *instead of* the secret whenever no secret is configured.
 
+## Configuring the client at launch
+
+Sieve is launched with the client ID of the OAuth app **you** publish, so users
+don't register their own. Set it via CLI flag or environment variable (a `client_id`
+with no secret ⇒ PKCE public client):
+
+| Provider | Flag | Env |
+|---|---|---|
+| Google | `--google-oauth-client-id` / `--google-oauth-client-secret` | `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` |
+| Slack | `--slack-client-id` / `--slack-client-secret` | `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` |
+
+Precedence, highest first: **admin-UI stored value (Slack only) → CLI flag → env
+var → build-time default** (Google's `defaultGoogleClientID`, injectable with
+`-ldflags` at release time). Full flag list:
+[CLI reference → OAuth app client flags](cli-reference.md#oauth-app-client-flags).
+
 ## Per-provider status
 
 | Provider | PKCE | Notes |

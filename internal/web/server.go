@@ -105,6 +105,13 @@ type Server struct {
 	templates             map[string]*template.Template
 	googleCredentialsFile string
 
+	// oauthClients holds the shipped/launch-configured OAuth app client IDs
+	// (and, where applicable, non-confidential secrets) for providers whose
+	// public app Sieve distributes. Populated by SetOAuthClients from CLI flags
+	// / env at startup; empty in tests. See resolveGoogle*/slackOAuthCreds for
+	// the precedence (launch value > env > build-time default).
+	oauthClients OAuthClientConfig
+
 	oauthMu      sync.Mutex
 	oauthPending map[string]pendingOAuth // state -> pending connection info
 
@@ -372,6 +379,25 @@ func (s *Server) SetAuth(op *operator.Service, sess *session.Manager) {
 // rate limiter wired separately in cmd/sieve/main.go.
 func (s *Server) SetLoginRateLimiter(rl *ratelimit.Limiter) {
 	s.loginLimiter = rl
+}
+
+// OAuthClientConfig carries the OAuth app client credentials Sieve is launched
+// with — the public client_id (and, for a Google Desktop client, its
+// non-confidential secret) of the app Sieve distributes so users don't register
+// their own. Populated from CLI flags / env in cmd/sieve/main.go. A client_id
+// with no secret runs that provider as a PKCE public client (see pkce.go).
+type OAuthClientConfig struct {
+	GoogleClientID     string
+	GoogleClientSecret string
+	SlackClientID      string
+	SlackClientSecret  string
+}
+
+// SetOAuthClients records the launch-configured OAuth app client credentials.
+// Safe to call with a zero value (tests / installs that only use the encrypted
+// Slack row, a BYO Google credentials file, or env vars).
+func (s *Server) SetOAuthClients(c OAuthClientConfig) {
+	s.oauthClients = c
 }
 
 // SetIAM wires the IAM engine services that drive the /iam admin page.
@@ -1083,16 +1109,23 @@ var (
 )
 
 // googleOAuthClientID / googleOAuthClientSecret resolve the shipped Desktop
-// client, letting env vars override the build-time defaults for self-hosters
-// and automated (BYO) deployments.
-func googleOAuthClientID() string {
+// client. Precedence: the launch-configured value (--google-oauth-client-id,
+// via SetOAuthClients) > the GOOGLE_OAUTH_CLIENT_ID/SECRET env var > the
+// build-time default (defaultGoogleClientID, injected via -ldflags).
+func (s *Server) googleOAuthClientID() string {
+	if v := strings.TrimSpace(s.oauthClients.GoogleClientID); v != "" {
+		return v
+	}
 	if v := strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_CLIENT_ID")); v != "" {
 		return v
 	}
 	return defaultGoogleClientID
 }
 
-func googleOAuthClientSecret() string {
+func (s *Server) googleOAuthClientSecret() string {
+	if v := strings.TrimSpace(s.oauthClients.GoogleClientSecret); v != "" {
+		return v
+	}
 	if v := strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET")); v != "" {
 		return v
 	}
@@ -1128,10 +1161,10 @@ func (s *Server) googleOAuthConfig(r *http.Request) (*oauth2.Config, error) {
 	redirectURL := s.publicBaseURL(r) + "/oauth/callback"
 
 	// Preferred: Sieve's shipped Desktop client (no per-user credentials file).
-	if id := googleOAuthClientID(); id != "" {
+	if id := s.googleOAuthClientID(); id != "" {
 		return &oauth2.Config{
 			ClientID:     id,
-			ClientSecret: googleOAuthClientSecret(),
+			ClientSecret: s.googleOAuthClientSecret(),
 			Scopes:       googleOAuthScopes,
 			Endpoint:     google.Endpoint,
 			RedirectURL:  redirectURL,

@@ -4,12 +4,13 @@ Sieve needs a Google OAuth "client ID" to connect to your Google account.
 
 ## Two ways to connect
 
-**1. Zero setup (default).** If your Sieve build ships with a Google client ID
-(set at release time, or via the `GOOGLE_OAUTH_CLIENT_ID` /
-`GOOGLE_OAUTH_CLIENT_SECRET` environment variables), you don't register
-anything — just click **Connect Google Account**. The flow uses
-[PKCE](oauth-pkce.md) and a loopback redirect, so no confidential secret ever
-lives on your machine. The rest of this page is unnecessary in that case.
+**1. Zero setup (default).** If Sieve is launched with a Google client ID —
+via the `--google-oauth-client-id` / `--google-oauth-client-secret` flags, the
+`GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` env vars, or a build-time
+default — you don't register anything; just click **Connect Google Account**.
+The flow uses [PKCE](oauth-pkce.md) and a loopback redirect, so no confidential
+secret ever lives on your machine. The rest of this page is unnecessary in that
+case. (See [CLI reference → OAuth app client flags](cli-reference.md#oauth-app-client-flags).)
 
 **2. Bring your own client (BYO).** For self-hosters, air-gapped deployments, or
 anyone who prefers to own the Google Cloud project, register your own OAuth

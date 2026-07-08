@@ -179,6 +179,53 @@ func TestGoogleOAuthConfig_FallsBackToCredentialsFile(t *testing.T) {
 	}
 }
 
+// TestGoogleOAuthConfig_LaunchValueBeatsEnv proves the launch-configured client
+// (SetOAuthClients, i.e. --google-oauth-client-id) takes precedence over the env
+// var — so operators can pin the client at startup.
+func TestGoogleOAuthConfig_LaunchValueBeatsEnv(t *testing.T) {
+	t.Setenv("GOOGLE_OAUTH_CLIENT_ID", "env.apps.googleusercontent.com")
+	t.Setenv("GOOGLE_OAUTH_CLIENT_SECRET", "env-secret")
+
+	s := &Server{}
+	s.SetOAuthClients(OAuthClientConfig{
+		GoogleClientID:     "launch.apps.googleusercontent.com",
+		GoogleClientSecret: "launch-secret",
+	})
+	conf, err := s.googleOAuthConfig(httptest.NewRequest(http.MethodGet, "/", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conf.ClientID != "launch.apps.googleusercontent.com" {
+		t.Errorf("ClientID = %q, want the launch-configured value (must beat env)", conf.ClientID)
+	}
+	if conf.ClientSecret != "launch-secret" {
+		t.Errorf("ClientSecret = %q, want the launch-configured value", conf.ClientSecret)
+	}
+}
+
+// TestSlackOAuthCreds_LaunchValueAndPublic proves the launch-configured Slack
+// client (SetOAuthClients, i.e. --slack-client-id) beats the env var and that a
+// client_id with no secret resolves to public (PKCE) mode.
+func TestSlackOAuthCreds_LaunchValueAndPublic(t *testing.T) {
+	env := testenv.New(t)
+	t.Setenv("SLACK_CLIENT_ID", "env-slack-id")
+	t.Setenv("SLACK_CLIENT_SECRET", "")
+
+	s := &Server{connections: env.Connections}
+	s.SetOAuthClients(OAuthClientConfig{SlackClientID: "launch-slack-id"}) // no secret
+
+	id, secret, err := s.slackOAuthCreds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "launch-slack-id" {
+		t.Errorf("client_id = %q, want the launch-configured value (must beat env)", id)
+	}
+	if secret != "" {
+		t.Errorf("client_secret = %q, want empty (public PKCE client)", secret)
+	}
+}
+
 // TestGoogleOAuthConfig_UnconfiguredErrors proves a clear error when neither a
 // shipped client nor a credentials file is present.
 func TestGoogleOAuthConfig_UnconfiguredErrors(t *testing.T) {
