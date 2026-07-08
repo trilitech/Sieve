@@ -48,7 +48,7 @@ Best when you want Sieve to manage the Slack app's bot token end to end. **No en
    ```
 
    Add `channels:join` if you want the bot to join channels it's invited to.
-3. Add the redirect URL `http://<your-sieve-host>:19816/oauth/callback`. This is the Sieve admin port — never expose this to agents.
+3. Add the redirect URL `http://<your-sieve-host>:19816/oauth/callback`. This is the Sieve admin port — never expose this to agents. **Slack requires an `https` redirect** (or a custom URI scheme); plain `http://localhost` is rejected — see [Redirect requirement](#redirect-requirement) below.
 4. From your Slack app's **Basic Information** page, copy the **Client ID** and **Client Secret**.
 5. Open Sieve's connections page, find the **Slack** card. The card shows a **Set up Slack OAuth** form when no credentials are configured.
 6. Paste the Client ID and Client Secret, click **Save Slack OAuth credentials**. Sieve persists them and the page reloads.
@@ -58,6 +58,12 @@ Best when you want Sieve to manage the Slack app's bot token end to end. **No en
 **Where credentials are stored.** When you paste creds in the UI, Sieve stores them as an envelope-encrypted reserved row in the `connections` table (`connector_type = '_oauth_app:slack'`, id `oauth_app__slack`). Same encryption path as connection configs: per-record DEK, KEK-wrapped, picked up automatically by passphrase rotation. The encrypted row is hidden from the per-tenant connections list and is not addressable by agent traffic. **Reading the credentials requires the keyring** — if Sieve is started with the keyring locked, the OAuth install flow returns HTTP 503 "service locked" until an operator supplies the passphrase. Direct bot-token entry remains available without the keyring (it goes through the standard connection config path, which is also encrypted but operates per-connection).
 
 **Alternative: pre-set via environment variables.** If you'd rather configure via deployment automation, set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in Sieve's environment before startup. Stored credentials in the encrypted row take precedence, so a value pasted in the UI overrides any env var. The env-var path is for 12-factor escape hatches and is not encrypted; if you're using deployment-managed secrets (Vault, Kubernetes Secret, etc.), the env-var path is the right home for those.
+
+**Public-client (PKCE) install — no secret.** A `client_secret` is optional. When only a `client_id` is configured (e.g. `SLACK_CLIENT_ID` alone, or a client ID shipped with your build), Sieve installs via [PKCE](oauth-pkce.md) as a public client — no secret is stored or sent. When a secret *is* configured (the paste-creds form requires both), Sieve uses the confidential (BYO-app) flow instead. Slack forbids sending both, so it's strictly one or the other; either way IAM grants bind to the connection id unchanged.
+
+### Redirect requirement
+
+Slack rejects a plain `http://localhost` / `http://127.0.0.1` redirect — it requires an `https` redirect URL registered on the app, or a custom URI scheme. For local installs, either front Sieve's admin port with TLS and register `https://localhost:19816/oauth/callback`, or use an `https` tunnel and register that. This is a Slack platform constraint, independent of whether you use the PKCE or confidential flow. (Google, by contrast, permits `http://127.0.0.1` loopback, so Gmail installs need no TLS locally.)
 
 **Resetting credentials.** Below the install button, a small "Reset Slack OAuth credentials" link wipes the persisted encrypted row. Use this when rotating the Slack app or moving to a different OAuth app.
 

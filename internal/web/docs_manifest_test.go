@@ -19,6 +19,7 @@ var realSlugs = []string{
 	"gmail-api",
 	"google-oauth-setup",
 	"mcp-integration",
+	"oauth-pkce",
 	"policy-rules-reference",
 	"policy-scripts",
 	"user-stories",

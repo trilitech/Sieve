@@ -1,7 +1,25 @@
 # Setting up Google OAuth credentials for Sieve
 
 Sieve needs a Google OAuth "client ID" to connect to your Google account.
-This is a one-time setup that takes about 5 minutes.
+
+## Two ways to connect
+
+**1. Zero setup (default).** If your Sieve build ships with a Google client ID
+(set at release time, or via the `GOOGLE_OAUTH_CLIENT_ID` /
+`GOOGLE_OAUTH_CLIENT_SECRET` environment variables), you don't register
+anything — just click **Connect Google Account**. The flow uses
+[PKCE](oauth-pkce.md) and a loopback redirect, so no confidential secret ever
+lives on your machine. The rest of this page is unnecessary in that case.
+
+**2. Bring your own client (BYO).** For self-hosters, air-gapped deployments, or
+anyone who prefers to own the Google Cloud project, register your own OAuth
+client and point Sieve at the downloaded `credentials.json` — the one-time
+(~5 min) setup below. A BYO client is used only when no shipped/env client ID is
+present.
+
+> Which am I on? Open the Google connection card — if it offers **Connect Google
+> Account** directly, you're on the zero-setup path. If it reports that Google
+> OAuth isn't configured, follow the BYO steps below.
 
 ## Is this sensitive?
 
