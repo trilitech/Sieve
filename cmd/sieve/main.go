@@ -445,6 +445,22 @@ func runResetKeyring(dbPath string) int {
 }
 
 func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string, oauthClients web.OAuthClientConfig) error {
+	// --- Keyring passphrase (BEFORE opening the DB) ---
+	// Acquire the passphrase first. If the DB were opened first, SQLite would
+	// take fd 3 (the first free descriptor after stdio); secrets.Acquire then
+	// probes fd 3 for a systemd-style credential, reads the database bytes as a
+	// passphrase, and — via acquireFD3's Close — shuts fd 3, corrupting the live
+	// DB handle so the very next read (crypto_meta) fails with
+	// "disk I/O error: bad file descriptor". Reading the passphrase before any
+	// file is opened means fd 3 is only "open" when genuinely inherited at exec
+	// (the systemd LoadCredential= contract), which is exactly what that branch
+	// is meant to detect.
+	pp, err := secrets.Acquire(secrets.PromptOptions{Confirm: setup})
+	if err != nil {
+		return fmt.Errorf("read passphrase: %w", err)
+	}
+	defer zero(pp)
+
 	// --- Database ---
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return fmt.Errorf("create db dir: %w", err)
@@ -454,13 +470,6 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string, oa
 		return fmt.Errorf("open db %q: %w", dbPath, err)
 	}
 	defer db.Close()
-
-	// --- Keyring ---
-	pp, err := secrets.Acquire(secrets.PromptOptions{Confirm: setup})
-	if err != nil {
-		return fmt.Errorf("read passphrase: %w", err)
-	}
-	defer zero(pp)
 
 	keyring := &secrets.Keyring{}
 	if setup {
