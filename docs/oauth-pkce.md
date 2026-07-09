@@ -134,6 +134,54 @@ locally — no public tunnel needed.** Enable TLS on the admin listener:
 5. Connections → Slack → **Install via OAuth** → approve. The connection lands
    `active`; the exchange sent `code_verifier` and no `client_secret`.
 
+## Distribution: internal (org-only) vs external (public)
+
+*How* you register the OAuth app — not the PKCE code — decides how much review
+and compliance burden you take on. Choose by audience:
+
+### Internal — your organization's members only (lowest friction, recommended for org rollouts)
+
+Best when Sieve is for your own team. Register each provider so only accounts in
+your own tenant can use it:
+
+- **Google — Workspace "Internal" app.** Create the Cloud project *inside your
+  Google Workspace org* and set the OAuth consent screen **User Type =
+  Internal**. Then:
+  - **No verification, no CASA, no "unverified app" warning, no 100-user cap** —
+    even with restricted scopes (`gmail.modify`, Drive). CASA/verification are an
+    *External*-app requirement; Internal apps are exempt.
+  - Only `@your-domain` accounts can authorize; personal Gmail / other orgs
+    cannot.
+  - Optional zero-consent: in **Admin console → Security → API controls → App
+    access control**, mark the app **Trusted** for its scopes so employees skip
+    the consent screen entirely.
+  - Register a **Desktop** client (loopback + PKCE, `http://127.0.0.1` — no TLS
+    needed); ship its id via `--google-oauth-client-id`.
+- **Slack — single-workspace app.** Create the app and install it only in your
+  workspace; **do not submit it to the Slack Marketplace** (Marketplace review is
+  only for public distribution). The HTTPS-loopback redirect still applies (see
+  [connectors-slack.md](connectors-slack.md#redirect-requirement)). Ship the id
+  via `--slack-client-id`.
+
+Everything stays under your existing tenant agreement (your Google Workspace /
+Slack org terms) — an internal-tool rollout, not public developer distribution.
+**Boundary:** Internal covers *members of your org only*. The moment the audience
+includes personal accounts, external contractors, or the public, you must switch
+to External.
+
+### External — anyone (public distribution, burdened)
+
+Required only if non-org users install Sieve:
+
+- **Google:** consent screen **User Type = External** + app verification +
+  (for restricted Gmail/Drive scopes) an **annual CASA** assessment + a
+  Limited-Use-compliant privacy policy. Your company becomes the accountable
+  registered developer.
+- **Slack:** submit the app to the **Slack Marketplace** for review.
+
+> Not legal advice: the External path binds your company to each provider's
+> user-data policies. Have counsel review before publishing.
+
 ## What PKCE does *not* solve
 
 PKCE removes the *secret* from the flow. It does **not** remove a provider's app

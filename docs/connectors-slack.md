@@ -61,6 +61,17 @@ Best when you want Sieve to manage the Slack app's bot token end to end. **No en
 
 **Public-client (PKCE) install — no secret.** A `client_secret` is optional. When only a `client_id` is configured — via the `--slack-client-id` launch flag, the `SLACK_CLIENT_ID` env var, or a client ID shipped with your build — Sieve installs via [PKCE](oauth-pkce.md) as a public client, and no secret is stored or sent. When a secret *is* configured (the `--slack-client-secret` flag, `SLACK_CLIENT_SECRET`, or the paste-creds form, which requires both), Sieve uses the confidential (BYO-app) flow instead. Slack forbids sending both, so it's strictly one or the other; either way IAM grants bind to the connection id unchanged. See [CLI reference → OAuth app client flags](cli-reference.md#oauth-app-client-flags).
 
+### Org-only vs public distribution
+
+For your **own workspace** (the common case), just create the app and install it
+in your workspace — **do not submit it to the Slack Marketplace.** Marketplace
+review is only for *public* distribution to other workspaces; a single-workspace
+app needs no directory listing and no review, so there's nothing to wait on. Ship
+its client id to your team's Sieve installs via `--slack-client-id`. This mirrors
+Google's "Internal" app model — see
+[Distribution: internal vs external](oauth-pkce.md#distribution-internal-org-only-vs-external-public).
+Submit to the Marketplace only when you need other organizations to install it.
+
 ### Redirect requirement
 
 Slack rejects a plain `http://localhost` / `http://127.0.0.1` redirect — it requires an `https` redirect URL registered on the app. **`https://localhost` loopback works fine, though — no public tunnel is needed.** Serve the admin UI over TLS and register `https://localhost:19816/oauth/callback` on your Slack app:

@@ -111,7 +111,17 @@ you've enabled here.
 
 Go to **APIs & Services → OAuth consent screen** (or https://console.cloud.google.com/apis/credentials/consent).
 
-- Select **External** (unless you have a Google Workspace org and want internal only)
+- **User Type — pick by audience:**
+  - **Internal** — *strongly preferred if this is for your own organization.*
+    Available only when the project is owned by your Google Workspace org. An
+    Internal app needs **no verification and no CASA** (even with restricted
+    Gmail/Drive scopes), shows employees no "unverified app" warning, and has no
+    100-user cap — but only `@your-domain` accounts can use it. This is the
+    lowest-friction, lowest-liability path for an org rollout.
+  - **External** — required if anyone outside your org (personal accounts,
+    contractors, the public) must connect. Restricted scopes then trigger
+    verification + an annual CASA assessment; see
+    [Distribution: internal vs external](oauth-pkce.md#distribution-internal-org-only-vs-external-public).
 - Click **Create**
 - Fill in:
   - **App name**: Sieve
@@ -120,10 +130,10 @@ Go to **APIs & Services → OAuth consent screen** (or https://console.cloud.goo
 - Click **Save and Continue** through the remaining steps (Scopes, Test Users, Summary)
 - Click **Back to Dashboard**
 
-**Note:** The app will be in "Testing" mode, which means only test users you
-explicitly add can use it. You can add your email(s) under **Test users**.
-Alternatively, when connecting, you can click "Advanced" → "Go to Sieve
-(unsafe)" to bypass the unverified app warning.
+**Note (External apps only):** the app starts in "Testing" mode — only test users
+you add under **Test users** can use it, or you click "Advanced → Go to Sieve
+(unsafe)" to bypass the unverified-app warning. **Internal apps skip this
+entirely** — every member of your org can connect immediately, no warning.
 
 ### 5. Create OAuth credentials
 
