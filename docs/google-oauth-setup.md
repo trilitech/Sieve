@@ -22,6 +22,47 @@ present.
 > Account** directly, you're on the zero-setup path. If it reports that Google
 > OAuth isn't configured, follow the BYO steps below.
 
+## Recommended: Internal (org-only) client — the fast path
+
+If Sieve is for **your own organization's employees**, register the OAuth app as
+*Internal* to your Google Workspace. This is the lowest-friction, lowest-liability
+setup: **no verification, no CASA, no "unverified app" warning, no user cap** —
+employees just sign in with their `@your-domain` account. (Only org accounts can
+use it; for external or public users see
+[Distribution: internal vs external](oauth-pkce.md#distribution-internal-org-only-vs-external-public).)
+
+**Prerequisite:** a Google Cloud project **owned by your Workspace org** (not a
+personal Gmail account) and admin rights on it — Internal isn't offered otherwise.
+
+1. **Console → project.** In the [Google Cloud Console](https://console.cloud.google.com/),
+   create or select a project inside your Workspace org.
+2. **Enable APIs.** APIs & Services → Library → enable what you need (Gmail API,
+   plus any of Drive / Calendar / People / Sheets / Docs). The
+   [gcloud one-liner](#google-cloud-api-quick-setup-gcloud-cli) below does this too.
+3. **Consent screen → Internal.** APIs & Services → OAuth consent screen →
+   **User Type: `Internal`** → Create → fill App name + support/developer email →
+   Save. There is no test-user list, verification, or CASA step for Internal.
+4. **Create the client.** APIs & Services → Credentials → Create Credentials →
+   OAuth client ID → **Application type: `Desktop app`** → name it → Create.
+   (Desktop uses loopback, so there's no redirect URI to register.)
+5. **Copy the credentials.** The dialog shows the **Client ID** and
+   **Client secret** — copy both.
+6. **Launch Sieve with them** — no `credentials.json`, no `sieve.yaml`:
+   ```bash
+   ./sieve --google-oauth-client-id "…apps.googleusercontent.com" \
+           --google-oauth-client-secret "GOCSPX-…"
+   # equivalently: GOOGLE_OAUTH_CLIENT_ID=… GOOGLE_OAUTH_CLIENT_SECRET=… ./sieve
+   ```
+   Employees open `/connections` → **Connect Google Account** → sign in with their
+   org account → done, no warning.
+
+**Optional — skip the consent screen entirely:** in **Admin console → Security →
+API controls → App access control**, mark the app **Trusted** for its scopes;
+employees are then pre-authorized org-wide and never see a consent prompt.
+
+The detailed browser walkthrough below covers these same steps in more depth,
+plus the **External** (public) and **BYO `credentials.json`** variants.
+
 ## Is this sensitive?
 
 **Not really.** Google explicitly documents that OAuth client credentials for
@@ -66,8 +107,8 @@ Notes:
 - Verify with `gcloud services list --enabled`.
 
 Then jump to **[Step 4](#4-configure-the-oauth-consent-screen)** below to
-finish the browser-only parts (consent screen, OAuth client, download JSON,
-wire it into `sieve.yaml`).
+finish the browser-only parts (consent screen, OAuth client) and hand the
+Client ID + Secret to Sieve via the launch flags (Step 7).
 
 ## Step by step (browser)
 
@@ -140,30 +181,25 @@ entirely** — every member of your org can connect immediately, no warning.
 Go to **APIs & Services → Credentials** (or https://console.cloud.google.com/apis/credentials).
 
 - Click **+ Create Credentials → OAuth client ID**
-- Application type: **Web application**
-- Name: Sieve (or anything)
-- Under **Authorized redirect URIs**, add:
-  ```
-  http://localhost:19816/oauth/callback
-  ```
-  (If you access Sieve via a different hostname/port, use that instead)
-- Click **Create**
+- Application type: **Desktop app** (recommended — it uses loopback, so there's
+  no redirect URI to register). Name it anything and click **Create**.
+  - *Alternative:* a **Web application** client also works, but then you must add
+    `http://localhost:19816/oauth/callback` (or your host/port) under **Authorized
+    redirect URIs** so it matches what Sieve sends.
 
-### 6. Download the credentials JSON
+### 6. Grab the Client ID + Secret
 
-After creating, you'll see a dialog with your Client ID and Client Secret.
-
-- Click **Download JSON**
-- Save the file as `data/gmail_credentials.json` in your Sieve directory
-
-The file looks like this:
+After creating, the dialog shows your **Client ID** and **Client Secret** — copy
+both; that's all Sieve needs (next step). You only need the **Download JSON**
+button if you prefer the file-based path (also in the next step); save it in your
+Sieve directory. For a Desktop-app client the JSON is keyed under `"installed"`
+(a Web-app client uses `"web"`):
 
 ```json
 {
-  "web": {
+  "installed": {
     "client_id": "123456789-xxxxxxxx.apps.googleusercontent.com",
     "client_secret": "GOCSPX-xxxxxxxx",
-    "redirect_uris": ["http://localhost:19816/oauth/callback"],
     ...
   }
 }
@@ -171,17 +207,27 @@ The file looks like this:
 
 ### 7. Configure Sieve
 
-Make sure your `sieve.yaml` points to the file:
+Hand the client to Sieve **at launch** — the binary is flag/env driven and does
+**not** read `sieve.yaml` for this:
 
-```yaml
-connectors:
-  google:
-    client_credentials_file: "./data/gmail_credentials.json"
+```bash
+# Preferred: pass the Client ID + Secret directly (Desktop or Web client).
+./sieve --google-oauth-client-id "…apps.googleusercontent.com" \
+        --google-oauth-client-secret "GOCSPX-…"
+
+# Or, if you downloaded the JSON, point at the file (the BYO-file path):
+./sieve --google-credentials ./data/gmail_credentials.json
 ```
+
+The env vars `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` work
+identically to the flags. Full list:
+[CLI reference → OAuth app client flags](cli-reference.md#oauth-app-client-flags).
+(Sieve also auto-discovers a `*client_secret*.json` in the working directory, so
+saving the file there and starting `./sieve` with no flag works too.)
 
 ### 8. Connect your account
 
-1. Start Sieve: `./sieve serve`
+1. Start Sieve (with the flag/file from step 7): `./sieve …`
 2. Open http://localhost:19816/connections
 3. Click **Connect Google Account**
 4. Sign in with the Google account you want to connect
@@ -208,6 +254,10 @@ sends. Check:
 - Path is `/oauth/callback` (not `/oauth/callback/` with trailing slash)
 - Protocol is `http` (not `https`, unless you're behind a reverse proxy)
 - If accessing via hostname (not localhost), the hostname must match
+
+This applies to **Web application** clients, which have a registered redirect URI.
+A **Desktop app** client uses loopback and registers no URI, so it doesn't hit
+this error — another reason to prefer Desktop (Step 5).
 
 ### "This app isn't verified" warning
 
