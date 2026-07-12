@@ -105,6 +105,13 @@ type Server struct {
 	templates             map[string]*template.Template
 	googleCredentialsFile string
 
+	// oauthClients holds the shipped/launch-configured OAuth app client IDs
+	// (and, where applicable, non-confidential secrets) for providers whose
+	// public app Sieve distributes. Populated by SetOAuthClients from CLI flags
+	// / env at startup; empty in tests. See resolveGoogle*/slackOAuthCreds for
+	// the precedence (launch value > env > build-time default).
+	oauthClients OAuthClientConfig
+
 	oauthMu      sync.Mutex
 	oauthPending map[string]pendingOAuth // state -> pending connection info
 
@@ -372,6 +379,25 @@ func (s *Server) SetAuth(op *operator.Service, sess *session.Manager) {
 // rate limiter wired separately in cmd/sieve/main.go.
 func (s *Server) SetLoginRateLimiter(rl *ratelimit.Limiter) {
 	s.loginLimiter = rl
+}
+
+// OAuthClientConfig carries the OAuth app client credentials Sieve is launched
+// with — the public client_id (and, for a Google Desktop client, its
+// non-confidential secret) of the app Sieve distributes so users don't register
+// their own. Populated from CLI flags / env in cmd/sieve/main.go. A client_id
+// with no secret runs that provider as a PKCE public client (see pkce.go).
+type OAuthClientConfig struct {
+	GoogleClientID     string
+	GoogleClientSecret string
+	SlackClientID      string
+	SlackClientSecret  string
+}
+
+// SetOAuthClients records the launch-configured OAuth app client credentials.
+// Safe to call with a zero value (tests / installs that only use the encrypted
+// Slack row, a BYO Google credentials file, or env vars).
+func (s *Server) SetOAuthClients(c OAuthClientConfig) {
+	s.oauthClients = c
 }
 
 // SetIAM wires the IAM engine services that drive the /iam admin page.
@@ -795,6 +821,7 @@ type pendingOAuth struct {
 	CreatedAt           time.Time
 	IsReauth            bool
 	OperatorSessionHash string // hex(sha256(cookie value)); empty when no session was active
+	CodeVerifier        string // PKCE (RFC 7636) verifier; only its S256 challenge left this process. See pkce.go.
 }
 
 // writeConnectionError centralizes keyring-state → HTTP mapping for the admin
@@ -904,6 +931,7 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 		}
 		state := hex.EncodeToString(stateBytes)
 
+		verifier := newPKCEVerifier()
 		s.oauthMu.Lock()
 		s.oauthPending[state] = pendingOAuth{
 			ID:                  id,
@@ -911,10 +939,11 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 			DisplayName:         displayName,
 			CreatedAt:           time.Now(),
 			OperatorSessionHash: operatorSessionHash(r),
+			CodeVerifier:        verifier,
 		}
 		s.oauthMu.Unlock()
 
-		url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+		url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce, oauth2.S256ChallengeOption(verifier))
 		http.Redirect(w, r, url, http.StatusFound)
 		return
 	}
@@ -974,6 +1003,7 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 	}
 	state := hex.EncodeToString(stateBytes)
 
+	verifier := newPKCEVerifier()
 	s.oauthMu.Lock()
 	s.oauthPending[state] = pendingOAuth{
 		ID:                  id,
@@ -982,6 +1012,7 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 		CreatedAt:           time.Now(),
 		IsReauth:            true,
 		OperatorSessionHash: operatorSessionHash(r),
+		CodeVerifier:        verifier,
 	}
 	s.oauthMu.Unlock()
 
@@ -989,7 +1020,7 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 		map[string]any{"connector_type": conn.ConnectorType},
 		"success")
 
-	url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+	url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce, oauth2.S256ChallengeOption(verifier))
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
@@ -1065,31 +1096,94 @@ func (s *Server) publicBaseURL(_ *http.Request) string {
 
 // --- OAuth handlers ---
 
+// defaultGoogleClient{ID,Secret} hold Sieve's shipped Google "Desktop app"
+// OAuth client, populated at release/build time (e.g.
+// `-ldflags "-X github.com/trilitech/Sieve/internal/web.defaultGoogleClientID=..."`).
+// Shipping one client means users never register their own Google Cloud
+// project — the zero-setup path. A Desktop client's secret is non-confidential
+// by Google's own definition, so embedding it is sanctioned; combined with PKCE
+// (see pkce.go) it authenticates the loopback code exchange. Empty in source.
+var (
+	defaultGoogleClientID     string
+	defaultGoogleClientSecret string
+)
+
+// googleOAuthClientID / googleOAuthClientSecret resolve the shipped Desktop
+// client. Precedence: the launch-configured value (--google-oauth-client-id,
+// via SetOAuthClients) > the GOOGLE_OAUTH_CLIENT_ID/SECRET env var > the
+// build-time default (defaultGoogleClientID, injected via -ldflags).
+func (s *Server) googleOAuthClientID() string {
+	if v := strings.TrimSpace(s.oauthClients.GoogleClientID); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_CLIENT_ID")); v != "" {
+		return v
+	}
+	return defaultGoogleClientID
+}
+
+func (s *Server) googleOAuthClientSecret() string {
+	if v := strings.TrimSpace(s.oauthClients.GoogleClientSecret); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET")); v != "" {
+		return v
+	}
+	return defaultGoogleClientSecret
+}
+
+// googleOAuthScopes are the Google API scopes Sieve requests. NOTE: gmail.modify
+// and drive are Google RESTRICTED scopes — a publicly distributed app requesting
+// them must pass OAuth verification + a CASA security assessment. Keep this list
+// as tight as the product actually needs to minimize that review.
+var googleOAuthScopes = []string{
+	"https://www.googleapis.com/auth/gmail.modify",
+	"https://www.googleapis.com/auth/drive",
+	"https://www.googleapis.com/auth/calendar",
+	"https://www.googleapis.com/auth/contacts",
+	"https://www.googleapis.com/auth/spreadsheets",
+	"https://www.googleapis.com/auth/documents",
+}
+
+// googleOAuthConfig builds the OAuth2 config for the Google/Gmail install flow.
+// Preference order:
+//  1. Sieve's shipped "Desktop app" client (client_id [+ non-confidential
+//     secret] from the build-time defaults or GOOGLE_OAUTH_CLIENT_ID/SECRET).
+//     This is the zero-setup path — the user never registers their own Google
+//     project; PKCE (pkce.go) secures the loopback code exchange.
+//  2. BYO fallback: an operator-supplied credentials.json (Web or Desktop
+//     client). Retained for self-hosters and air-gapped deployments.
+//
+// The redirect_uri is always derived from publicBaseURL, never r.Host — an
+// attacker reaching the admin listener could otherwise forge the Host header and
+// redirect the OAuth callback to a server they control.
 func (s *Server) googleOAuthConfig(r *http.Request) (*oauth2.Config, error) {
+	redirectURL := s.publicBaseURL(r) + "/oauth/callback"
+
+	// Preferred: Sieve's shipped Desktop client (no per-user credentials file).
+	if id := s.googleOAuthClientID(); id != "" {
+		return &oauth2.Config{
+			ClientID:     id,
+			ClientSecret: s.googleOAuthClientSecret(),
+			Scopes:       googleOAuthScopes,
+			Endpoint:     google.Endpoint,
+			RedirectURL:  redirectURL,
+		}, nil
+	}
+
+	// BYO fallback: operator-provided client credentials file.
+	if s.googleCredentialsFile == "" {
+		return nil, fmt.Errorf("Google OAuth not configured: set GOOGLE_OAUTH_CLIENT_ID (Sieve's shipped desktop client) or provide a client credentials file")
+	}
 	data, err := os.ReadFile(s.googleCredentialsFile)
 	if err != nil {
 		return nil, fmt.Errorf("read credentials file: %w", err)
 	}
-
-	scopes := []string{
-		"https://www.googleapis.com/auth/gmail.modify",
-		"https://www.googleapis.com/auth/drive",
-		"https://www.googleapis.com/auth/calendar",
-		"https://www.googleapis.com/auth/contacts",
-		"https://www.googleapis.com/auth/spreadsheets",
-		"https://www.googleapis.com/auth/documents",
-	}
-	conf, err := google.ConfigFromJSON(data, scopes...)
+	conf, err := google.ConfigFromJSON(data, googleOAuthScopes...)
 	if err != nil {
 		return nil, fmt.Errorf("parse credentials file: %w", err)
 	}
-
-	// Single callback URL — connection ID is carried in the state parameter.
-	// Derived from settings.public_base_url. MUST NOT be built from r.Host
-	// because an attacker reaching the admin listener could forge the Host
-	// header and redirect the OAuth callback to an attacker-controlled
-	// server.
-	conf.RedirectURL = s.publicBaseURL(r) + "/oauth/callback"
+	conf.RedirectURL = redirectURL
 	return conf, nil
 }
 
@@ -1148,8 +1242,14 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Exchange the authorization code for a token.
-	token, err := conf.Exchange(context.Background(), code)
+	// Exchange the authorization code for a token. Replay the PKCE verifier
+	// minted at /start (see pkce.go) so the token endpoint can bind the code to
+	// this flow. Guard on non-empty for flows started before this field existed.
+	exchangeOpts := []oauth2.AuthCodeOption{}
+	if pending.CodeVerifier != "" {
+		exchangeOpts = append(exchangeOpts, oauth2.VerifierOption(pending.CodeVerifier))
+	}
+	token, err := conf.Exchange(context.Background(), code, exchangeOpts...)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("token exchange failed: %v", err), http.StatusInternalServerError)
 		return

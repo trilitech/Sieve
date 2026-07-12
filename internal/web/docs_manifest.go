@@ -116,7 +116,7 @@ func Manifest() DocManifest {
 				Title:       "Security",
 				Description: "How Sieve stores and protects credentials.",
 				Order:       50,
-				Slugs:       []string{"credential-encryption"},
+				Slugs:       []string{"credential-encryption", "oauth-pkce"},
 			},
 		},
 		Descriptions: map[string]string{
@@ -130,6 +130,7 @@ func Manifest() DocManifest {
 			"policy-scripts":         "Authoring custom Python (or any-language) policies.",
 			"mcp-integration":        "Wiring Sieve as an MCP server for Claude Desktop and other clients.",
 			"credential-encryption":  "Envelope encryption, key derivation, and passphrase handling.",
+			"oauth-pkce":             "How PKCE lets Sieve run OAuth as a public client with no shipped secret.",
 			"cli-reference":          "Command-line invocations and runtime flags.",
 		},
 		Hidden:        map[string]bool{},

@@ -48,7 +48,7 @@ Best when you want Sieve to manage the Slack app's bot token end to end. **No en
    ```
 
    Add `channels:join` if you want the bot to join channels it's invited to.
-3. Add the redirect URL `http://<your-sieve-host>:19816/oauth/callback`. This is the Sieve admin port — never expose this to agents.
+3. Add the redirect URL `http://<your-sieve-host>:19816/oauth/callback`. This is the Sieve admin port — never expose this to agents. **Slack requires an `https` redirect** (or a custom URI scheme); plain `http://localhost` is rejected — see [Redirect requirement](#redirect-requirement) below.
 4. From your Slack app's **Basic Information** page, copy the **Client ID** and **Client Secret**.
 5. Open Sieve's connections page, find the **Slack** card. The card shows a **Set up Slack OAuth** form when no credentials are configured.
 6. Paste the Client ID and Client Secret, click **Save Slack OAuth credentials**. Sieve persists them and the page reloads.
@@ -58,6 +58,29 @@ Best when you want Sieve to manage the Slack app's bot token end to end. **No en
 **Where credentials are stored.** When you paste creds in the UI, Sieve stores them as an envelope-encrypted reserved row in the `connections` table (`connector_type = '_oauth_app:slack'`, id `oauth_app__slack`). Same encryption path as connection configs: per-record DEK, KEK-wrapped, picked up automatically by passphrase rotation. The encrypted row is hidden from the per-tenant connections list and is not addressable by agent traffic. **Reading the credentials requires the keyring** — if Sieve is started with the keyring locked, the OAuth install flow returns HTTP 503 "service locked" until an operator supplies the passphrase. Direct bot-token entry remains available without the keyring (it goes through the standard connection config path, which is also encrypted but operates per-connection).
 
 **Alternative: pre-set via environment variables.** If you'd rather configure via deployment automation, set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in Sieve's environment before startup. Stored credentials in the encrypted row take precedence, so a value pasted in the UI overrides any env var. The env-var path is for 12-factor escape hatches and is not encrypted; if you're using deployment-managed secrets (Vault, Kubernetes Secret, etc.), the env-var path is the right home for those.
+
+**Public-client (PKCE) install — no secret.** A `client_secret` is optional. When only a `client_id` is configured — via the `--slack-client-id` launch flag, the `SLACK_CLIENT_ID` env var, or a client ID shipped with your build — Sieve installs via [PKCE](oauth-pkce.md) as a public client, and no secret is stored or sent. When a secret *is* configured (the `--slack-client-secret` flag, `SLACK_CLIENT_SECRET`, or the paste-creds form, which requires both), Sieve uses the confidential (BYO-app) flow instead. Slack forbids sending both, so it's strictly one or the other; either way IAM grants bind to the connection id unchanged. See [CLI reference → OAuth app client flags](cli-reference.md#oauth-app-client-flags).
+
+### Org-only vs public distribution
+
+For your **own workspace** (the common case), just create the app and install it
+in your workspace — **do not submit it to the Slack Marketplace.** Marketplace
+review is only for *public* distribution to other workspaces; a single-workspace
+app needs no directory listing and no review, so there's nothing to wait on. Ship
+its client id to your team's Sieve installs via `--slack-client-id`. This mirrors
+Google's "Internal" app model — see
+[Distribution: internal vs external](oauth-pkce.md#distribution-internal-org-only-vs-external-public).
+Submit to the Marketplace only when you need other organizations to install it.
+
+### Redirect requirement
+
+Slack rejects a plain `http://localhost` / `http://127.0.0.1` redirect — it requires an `https` redirect URL registered on the app. **`https://localhost` loopback works fine, though — no public tunnel is needed.** Serve the admin UI over TLS and register `https://localhost:19816/oauth/callback` on your Slack app:
+
+1. Generate a localhost cert/key (e.g. `mkcert localhost`, or a self-signed pair).
+2. In the admin UI **Settings** (`/settings`), set `public_base_url` to `https://localhost:19816` and `admin.tls_cert_path` / `admin.tls_key_path` to your cert/key; restart Sieve.
+3. Register `https://localhost:19816/oauth/callback` under your Slack app's **OAuth & Permissions → Redirect URLs**.
+
+This is a Slack platform constraint, independent of the PKCE vs confidential flow. (Google, by contrast, permits `http://127.0.0.1` loopback, so Gmail installs need no TLS locally.) See [Verifying the flow locally](oauth-pkce.md#verifying-the-flow-locally) for the full round-trip.
 
 **Resetting credentials.** Below the install button, a small "Reset Slack OAuth credentials" link wipes the persisted encrypted row. Use this when rotating the Slack app or moving to a different OAuth app.
 

@@ -36,6 +36,32 @@ On startup the server:
 
 Graceful shutdown on SIGINT or SIGTERM with a 5-second timeout.
 
+### OAuth app client flags
+
+To distribute Sieve so users don't register their own OAuth app, launch it with
+the client ID of the app **you** publish. Each flag falls back to the matching
+environment variable; a stored value pasted in the admin UI (Slack) or a
+build-time default (Google, via `-ldflags`) is also honored. A `client_id` with
+**no** secret runs that provider as a [PKCE public client](oauth-pkce.md).
+
+| Flag | Env fallback | Purpose |
+|---|---|---|
+| `--google-oauth-client-id` | `GOOGLE_OAUTH_CLIENT_ID` | Google Desktop client_id; when set, no per-user `credentials.json` is needed |
+| `--google-oauth-client-secret` | `GOOGLE_OAUTH_CLIENT_SECRET` | Google Desktop secret (non-confidential; used for token refresh) |
+| `--slack-client-id` | `SLACK_CLIENT_ID` | Slack app client_id; set alone for the PKCE public-client install |
+| `--slack-client-secret` | `SLACK_CLIENT_SECRET` | Slack app secret (confidential BYO flow); omit for PKCE |
+| `--google-credentials` | — | Path to a BYO Google `credentials.json` (fallback when no client_id is set) |
+
+Precedence, highest first: **admin-UI stored value (Slack only) → CLI flag → env var → build-time default**. Example:
+
+```bash
+sieve \
+  --google-oauth-client-id "1234.apps.googleusercontent.com" \
+  --google-oauth-client-secret "GOCSPX-xxxx" \
+  --slack-client-id "5678.90"
+# Slack has no --slack-client-secret here → PKCE public-client install.
+```
+
 ---
 
 ## sieve passphrase change

@@ -106,29 +106,35 @@ func (s *Server) slackOAuthCreds() (clientID, clientSecret string, err error) {
 		// Surface so the calling handler returns 503.
 		return "", "", err
 	}
-	// No stored row — try env vars as a fallback.
-	return os.Getenv("SLACK_CLIENT_ID"), os.Getenv("SLACK_CLIENT_SECRET"), nil
+	// No stored row. Fall back to the launch-configured client (--slack-client-id,
+	// via SetOAuthClients), then env vars. Resolved independently so a client_id
+	// with no secret runs as a PKCE public client. A stored row (pasted in the
+	// UI) always wins over these.
+	id := s.oauthClients.SlackClientID
+	if id == "" {
+		id = os.Getenv("SLACK_CLIENT_ID")
+	}
+	secret := s.oauthClients.SlackClientSecret
+	if secret == "" {
+		secret = os.Getenv("SLACK_CLIENT_SECRET")
+	}
+	return id, secret, nil
 }
 
-// slackOAuthClientID returns just the public client_id (or env fallback).
-// Convenience for code paths that only need the public identifier.
-func (s *Server) slackOAuthClientID() string {
-	id, _, _ := s.slackOAuthCreds()
-	return id
-}
-
-// slackOAuthIsConfigured reports whether both client_id and client_secret
-// are resolvable from either the encrypted _oauth_app:slack row or the
-// env-var fallback. Used by the connections template to decide whether
-// to show the install button or the configure form. Returns false (not
-// configured) if the keyring is locked — operators see the configure
-// form, which fails fast with 503 on submit until they unlock.
+// slackOAuthIsConfigured reports whether a client_id is resolvable from either
+// the encrypted _oauth_app:slack row or the env-var fallback. Used by the
+// connections template to decide whether to show the install button or the
+// configure form. A client_secret is NOT required: with only a client_id the
+// install runs as a PKCE public client (see pkce.go); a secret upgrades it to
+// the confidential (BYO-app) flow. Returns false (not configured) if the
+// keyring is locked — operators see the configure form, which fails fast with
+// 503 on submit until they unlock.
 func (s *Server) slackOAuthIsConfigured() bool {
-	id, secret, err := s.slackOAuthCreds()
+	id, _, err := s.slackOAuthCreds()
 	if err != nil {
 		return false
 	}
-	return id != "" && secret != ""
+	return id != ""
 }
 
 // handleSlackOAuthStart kicks off the Slack OAuth v2 install flow for
@@ -192,11 +198,25 @@ func (s *Server) beginSlackUserOAuth(w http.ResponseWriter, r *http.Request, id,
 // and exactly one of botScope / userScope (bot install vs user install);
 // this helper handles state generation, TTL setup, and redirect uniformly.
 func (s *Server) beginSlackOAuthWithScopes(w http.ResponseWriter, r *http.Request, id, displayName, botScope, userScope string) {
-	clientID := s.slackOAuthClientID()
+	clientID, clientSecret, err := s.slackOAuthCreds()
+	if err != nil {
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if clientID == "" {
 		http.Error(w, "Slack OAuth not configured — paste your Slack app credentials at /connections (the 'Set up Slack OAuth' form), or use the bot-token entry path", http.StatusBadRequest)
 		return
 	}
+	// PKCE public-client mode: when no client_secret is configured (Sieve's
+	// shipped distributed app), the flow authenticates with a PKCE verifier
+	// instead of a secret. With a secret present (BYO app) we stay on the
+	// confidential flow and omit the challenge — Slack forbids sending both.
+	// See pkce.go.
+	usePKCE := clientSecret == ""
 
 	stateBytes := make([]byte, 16)
 	if _, err := rand.Read(stateBytes); err != nil {
@@ -205,6 +225,7 @@ func (s *Server) beginSlackOAuthWithScopes(w http.ResponseWriter, r *http.Reques
 	}
 	state := hex.EncodeToString(stateBytes)
 
+	verifier := newPKCEVerifier()
 	s.oauthMu.Lock()
 	s.oauthPending[state] = pendingOAuth{
 		ID:                  id,
@@ -212,6 +233,7 @@ func (s *Server) beginSlackOAuthWithScopes(w http.ResponseWriter, r *http.Reques
 		DisplayName:         displayName,
 		CreatedAt:           time.Now(),
 		OperatorSessionHash: operatorSessionHash(r),
+		CodeVerifier:        verifier,
 	}
 	s.oauthMu.Unlock()
 
@@ -225,6 +247,11 @@ func (s *Server) beginSlackOAuthWithScopes(w http.ResponseWriter, r *http.Reques
 	}
 	if userScope != "" {
 		q.Set("user_scope", userScope)
+	}
+	if usePKCE {
+		for k, vs := range pkceChallengeParams(verifier) {
+			q[k] = vs
+		}
 	}
 	// redirect_uri MUST come from publicBaseURL — Slack's OAuth flow
 	// validates that the redirect_uri presented to oauth.v2.access (below)
@@ -560,7 +587,7 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 	// Pass publicBaseURL's host portion to slackOAuthExchange so the
 	// redirect_uri sent to oauth.v2.access matches what was used at install
 	// time (Slack validates equality). r.Host MUST NOT be used.
-	cfg, err := s.slackOAuthExchange(r.Context(), s.publicBaseURL(r), code)
+	cfg, err := s.slackOAuthExchange(r.Context(), s.publicBaseURL(r), code, pending.CodeVerifier)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -610,18 +637,29 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 // — supplied by completeSlackOAuth via publicBaseURL so it matches what was
 // sent to Slack at install time (Slack validates equality). MUST NOT be
 // derived from r.Host (
-func (s *Server) slackOAuthExchange(ctx context.Context, baseURL, code string) (map[string]any, error) {
+func (s *Server) slackOAuthExchange(ctx context.Context, baseURL, code, verifier string) (map[string]any, error) {
 	clientID, clientSecret, err := s.slackOAuthCreds()
 	if err != nil {
 		return nil, fmt.Errorf("Slack OAuth credentials: %w", err)
 	}
-	if clientID == "" || clientSecret == "" {
-		return nil, fmt.Errorf("Slack OAuth credentials missing")
+	if clientID == "" {
+		return nil, fmt.Errorf("Slack OAuth client_id missing")
+	}
+	// Client proof: a BYO confidential app authenticates with its client_secret;
+	// the shipped public app (no secret) authenticates with the PKCE verifier
+	// minted at /start. Slack forbids sending both, so it's strictly one or the
+	// other. See pkce.go.
+	if clientSecret == "" && verifier == "" {
+		return nil, fmt.Errorf("Slack OAuth client proof missing: neither client_secret nor PKCE verifier is present")
 	}
 
 	q := url.Values{}
 	q.Set("client_id", clientID)
-	q.Set("client_secret", clientSecret)
+	if clientSecret != "" {
+		q.Set("client_secret", clientSecret)
+	} else {
+		q.Set("code_verifier", verifier)
+	}
 	q.Set("code", code)
 	q.Set("redirect_uri", strings.TrimRight(baseURL, "/")+"/oauth/callback")
 	req, err := http.NewRequestWithContext(ctx, "POST", slackEndpoint(slackTokenURL), strings.NewReader(q.Encode()))
