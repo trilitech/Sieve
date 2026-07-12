@@ -19,6 +19,8 @@ namespace Sieve {
   action "linear/read" in ["read"];
   action "linear/write" in ["write"];
   action "mcp_proxy/write" in ["write"];
+  action "notion/read" in ["read"];
+  action "notion/write" in ["write"];
   action "slack/read" in ["read"];
   action "slack/write" in ["write"];
   action "google/calendar.read" in ["google/read"];
@@ -398,6 +400,66 @@ namespace Sieve {
     principal: [Sieve::Token],
     resource: [Sieve::Mcp::Tool],
     context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long }
+  };
+  action "notion/notion_append_block_children" in ["notion/write"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "after"?: String, "block_id"?: String, "children"?: String } }
+  };
+  action "notion/notion_create_comment" in ["notion/write"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "discussion_id"?: String, "parent"?: String, "rich_text"?: String } }
+  };
+  action "notion/notion_create_page" in ["notion/write"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "children"?: String, "parent"?: String, "properties"?: String } }
+  };
+  action "notion/notion_get_block_children" in ["notion/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "block_id"?: String, "page_size"?: Long, "start_cursor"?: String } }
+  };
+  action "notion/notion_get_comments" in ["notion/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "block_id"?: String, "page_size"?: Long, "start_cursor"?: String } }
+  };
+  action "notion/notion_get_database" in ["notion/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "database_id"?: String } }
+  };
+  action "notion/notion_get_page" in ["notion/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "page_id"?: String } }
+  };
+  action "notion/notion_list_users" in ["notion/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "page_size"?: Long, "start_cursor"?: String } }
+  };
+  action "notion/notion_query_database" in ["notion/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "database_id"?: String, "filter"?: String, "page_size"?: Long, "sorts"?: String, "start_cursor"?: String } }
+  };
+  action "notion/notion_request" in ["notion/write"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "body"?: String, "method"?: String, "path"?: String, "query"?: String } }
+  };
+  action "notion/notion_search" in ["notion/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "filter"?: String, "page_size"?: Long, "query"?: String, "start_cursor"?: String } }
+  };
+  action "notion/notion_update_page" in ["notion/write"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "archived"?: Bool, "page_id"?: String, "properties"?: String } }
   };
   action "slack/list_channels" in ["slack/read"] appliesTo {
     principal: [Sieve::Token],

@@ -9,6 +9,7 @@ import (
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	linearconn "github.com/trilitech/Sieve/internal/connectors/linear"
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
+	notionconn "github.com/trilitech/Sieve/internal/connectors/notion"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 )
 
@@ -25,5 +26,6 @@ func buildConnectorRegistry() *connector.Registry {
 	registry.Register(anthropicconn.Meta(), anthropicconn.Factory())
 	registry.Register(gitlabconn.Meta(), gitlabconn.Factory())
 	registry.Register(linearconn.Meta(), linearconn.Factory())
+	registry.Register(notionconn.Meta(), notionconn.Factory())
 	return registry
 }

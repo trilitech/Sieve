@@ -41,6 +41,7 @@ import (
 	"github.com/trilitech/Sieve/internal/connectors/gmail"
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	"github.com/trilitech/Sieve/internal/connectors/mcpproxy"
+	notionconn "github.com/trilitech/Sieve/internal/connectors/notion"
 	slackconn "github.com/trilitech/Sieve/internal/connectors/slack"
 )
 
@@ -134,6 +135,13 @@ func allConnectors(t *testing.T) []connectorRegistration {
 			fac:  gitlabconn.Factory(),
 			sampleConfig: map[string]any{
 				"token": "glpat-test",
+			},
+		},
+		{
+			meta: notionconn.Meta(),
+			fac:  notionconn.Factory(),
+			sampleConfig: map[string]any{
+				"api_key": "ntn_test",
 			},
 		},
 	}
