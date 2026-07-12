@@ -463,6 +463,11 @@
                 <input type="text" name="display_name" required placeholder="e.g. Work Gmail"
                        class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
               </div>
+              {{/* Connector-declared setup fields (e.g. Linear's api_key),
+                   rendered from meta.SetupFields via the shared partial. */}}
+              {{range index $.CreateFields .Type}}
+              {{template "connection_edit_field" .}}
+              {{end}}
               <button type="submit"
                       class="w-full rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">
                 Connect {{.Name}}

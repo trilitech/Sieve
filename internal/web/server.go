@@ -784,12 +784,35 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		connLabels[c.ID] = label
 	}
 
+	// Create-time field view-models per connector type, so the generic
+	// catalog card can render the connector's declared SetupFields (e.g.
+	// Linear's api_key). Without this the generic form only collected
+	// alias + display_name, so any data-driven connector that needs a
+	// credential typed in failed validation with no field to fill.
+	// Reuses the same editFieldView projection + connection_edit_field
+	// partial as the edit page. Connectors with bespoke create forms
+	// (http_proxy/github/gitlab/slack) don't consult this; OAuth-only
+	// fields (google) are filtered out by fieldInMode.
+	createFields := make(map[string][]editFieldView)
+	for _, metas := range catalog {
+		for _, m := range metas {
+			var fields []editFieldView
+			for _, f := range m.SetupFields {
+				if fieldInMode(f, formModeCreate) {
+					fields = append(fields, fieldViewFromStored(f, nil))
+				}
+			}
+			createFields[m.Type] = fields
+		}
+	}
+
 	data := map[string]any{
-		"Active":      active,
-		"Connections": conns,
-		"ConnLabels":  connLabels,
-		"Catalog":     catalog,
-		"ConnType":    connType,
+		"Active":       active,
+		"Connections":  conns,
+		"ConnLabels":   connLabels,
+		"Catalog":      catalog,
+		"CreateFields": createFields,
+		"ConnType":     connType,
 		// Per-connector UI capability flags. Slack OAuth requires
 		// operator-supplied client credentials. The UI shows different
 		// content depending on whether they're configured: the install
