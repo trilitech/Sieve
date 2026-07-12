@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 // Config is the persisted, decrypted connection config for a Linear
@@ -34,7 +36,9 @@ func parseConfig(raw map[string]any) (*Config, error) {
 	if raw == nil {
 		return nil, errors.New("linear: empty config")
 	}
-	buf, err := json.Marshal(raw)
+	// Drop reserved runtime keys (injected _on_token_refresh callbacks hold
+	// func values json.Marshal can't encode). See connector.ConfigWithoutReservedKeys.
+	buf, err := json.Marshal(connector.ConfigWithoutReservedKeys(raw))
 	if err != nil {
 		return nil, fmt.Errorf("linear: re-marshal config: %w", err)
 	}

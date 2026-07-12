@@ -72,6 +72,35 @@ type ConfigSchemaProvider interface {
 	ConfigSchemaKeys() []string
 }
 
+// ReservedConfigKeyPrefix marks config-map keys that carry runtime-only
+// values rather than persisted configuration — e.g. the token-lifecycle
+// callbacks (`_on_token_refresh`, `_on_token_refresh_failure`) that
+// connections.Service injects into the config map before constructing a
+// connector. These values are not JSON-serializable (they are Go funcs), so
+// any connector factory that re-marshals the raw config map to coerce field
+// types MUST strip them first with ConfigWithoutReservedKeys — otherwise
+// json.Marshal aborts construction with "unsupported type: func(...)".
+// Connectors that read a reserved key directly (e.g. gmail reading
+// _on_token_refresh by key) are unaffected.
+const ReservedConfigKeyPrefix = "_"
+
+// ConfigWithoutReservedKeys returns a shallow copy of raw with every
+// reserved-prefix key (see ReservedConfigKeyPrefix) removed, so the result is
+// safe to json.Marshal. raw is not modified; a nil raw yields nil.
+func ConfigWithoutReservedKeys(raw map[string]any) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	out := make(map[string]any, len(raw))
+	for k, v := range raw {
+		if strings.HasPrefix(k, ReservedConfigKeyPrefix) {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // ConfigKeysFromTags returns the JSON tag names of a struct type's fields.
 // Untagged fields, anonymous embeds, and `-` tags are skipped. The tag's
 // `,omitempty` (and similar) suffixes are stripped. Used by typed-Config

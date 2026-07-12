@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 // Config is the persisted, decrypted connection config for a GitLab
@@ -34,11 +36,15 @@ const defaultBaseURL = "https://gitlab.com"
 // hands the factory. The map originates from JSON (encrypted at rest,
 // decrypted on read), so we re-marshal/unmarshal to coerce types
 // cleanly — matching the github connector's pattern.
+//
+// Reserved runtime keys (e.g. the injected _on_token_refresh callbacks) are
+// dropped first: they hold func values that json.Marshal cannot encode, and
+// this connector never uses them. See connector.ConfigWithoutReservedKeys.
 func parseConfig(raw map[string]any) (*Config, error) {
 	if raw == nil {
 		return nil, errors.New("gitlab: empty config")
 	}
-	buf, err := json.Marshal(raw)
+	buf, err := json.Marshal(connector.ConfigWithoutReservedKeys(raw))
 	if err != nil {
 		return nil, fmt.Errorf("gitlab: re-marshal config: %w", err)
 	}

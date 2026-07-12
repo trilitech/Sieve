@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/trilitech/Sieve/internal/connector"
 )
 
 // Credential kinds.
@@ -69,11 +71,15 @@ func (s Scope) String() string {
 // parseConfig decodes the connection config that connections.Service hands the
 // factory. The map originates from JSON (encrypted at rest, decrypted on read),
 // so we re-marshal/unmarshal to coerce types cleanly.
+//
+// Reserved runtime keys (e.g. the injected _on_token_refresh callbacks) are
+// dropped first: they hold func values that json.Marshal cannot encode, and
+// this connector never uses them. See connector.ConfigWithoutReservedKeys.
 func parseConfig(raw map[string]any) (*Config, error) {
 	if raw == nil {
 		return nil, errors.New("github: empty config")
 	}
-	buf, err := json.Marshal(raw)
+	buf, err := json.Marshal(connector.ConfigWithoutReservedKeys(raw))
 	if err != nil {
 		return nil, fmt.Errorf("github: re-marshal config: %w", err)
 	}
