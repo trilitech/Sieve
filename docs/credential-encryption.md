@@ -99,19 +99,19 @@ Tampering with either blob flips the GCM auth tag and the call errors out. No pa
 When Sieve starts, it looks for the passphrase in this order:
 
 1. **`SIEVE_PASSPHRASE_FILE`** env var → read the file at that path. The env var holds a *path*, not the passphrase itself. Good for Docker secrets, systemd `LoadCredential=`, Kubernetes mounted secrets. Takes precedence over the TTY prompt so that operators with wired-up credential plumbing aren't re-prompted on every start.
-2. **FD 3** — file descriptor 3, if open. This is the convention systemd's `LoadCredential=` uses when it hands a secret to the unit without touching the filesystem.
+2. **`SIEVE_PASSPHRASE_FD`** env var → read the passphrase from the file descriptor it names (e.g. `SIEVE_PASSPHRASE_FD=3`), for supervisor/pipe handoffs that don't touch the filesystem. **This is opt-in: you must name the fd.** Sieve never auto-probes a descriptor. (Earlier builds auto-read *any* open fd 3, which meant a stray descriptor leaked by a terminal, IDE, tmux, or CI launcher could silently hijack intake and fail startup with a bogus "wrong passphrase" — never reaching the prompt. Naming the fd removes that footgun.)
 3. **TTY** — if stdin is an interactive terminal, prompt with echo off. First-run setup prompts twice and verifies the entries match. (Only consulted if neither of the above is configured.)
 4. **No source** → startup fails with a clear error. Sieve refuses to run without a key.
 
-Note that routine startup (`./sieve` with no flags) consults the sources in the order above; the file/FD 3 sources do not have a "confirm" step. **First-run setup (`./sieve --setup`) and `--rotate-passphrase`'s second prompt are different**: they force the TTY path and refuse to read the file/FD 3 sources at all (so that an unattended source cannot silently satisfy a confirmation or rotation new-passphrase prompt). The next subsection covers the operational consequences.
+Note that routine startup (`./sieve` with no flags) consults the sources in the order above; the file/fd sources do not have a "confirm" step. **First-run setup (`./sieve --setup`) and `--rotate-passphrase`'s second prompt are different**: they force the TTY path and refuse to read the file/fd sources at all (so that an unattended source cannot silently satisfy a confirmation or rotation new-passphrase prompt). The next subsection covers the operational consequences.
 
 ### Setup and rotation flows require a TTY
 
 A small but important caveat for operators who run `SIEVE_PASSPHRASE_FILE` in production:
 
-- **`./sieve` (routine start)** — reads the file/FD 3 source as documented above.
-- **`./sieve --setup`** — ignores `SIEVE_PASSPHRASE_FILE` and FD 3 and reads only from a TTY, failing if stdin isn't interactive. The new passphrase you choose at first-run cannot be confirmed against a static file (the confirmation step exists to catch typos), so setup must be driven from an interactive shell. If your env has the file pointer set, that's fine — it just isn't used here.
-- **`./sieve --rotate-passphrase`** — the *current* passphrase still comes from `SIEVE_PASSPHRASE_FILE` if set (so you don't have to type the existing one); the *new* passphrase ignores file/FD 3 sources and is read only from the TTY. Without this guard, rotation under a configured file source would silently re-read the same source for both prompts, fail the "new identical to current" guard, and never actually rotate.
+- **`./sieve` (routine start)** — reads the file/fd source as documented above.
+- **`./sieve --setup`** — ignores `SIEVE_PASSPHRASE_FILE` and `SIEVE_PASSPHRASE_FD` and reads only from a TTY, failing if stdin isn't interactive. The new passphrase you choose at first-run cannot be confirmed against a static file (the confirmation step exists to catch typos), so setup must be driven from an interactive shell. If your env has the file/fd pointer set, that's fine — it just isn't used here.
+- **`./sieve --rotate-passphrase`** — the *current* passphrase still comes from `SIEVE_PASSPHRASE_FILE`/`SIEVE_PASSPHRASE_FD` if set (so you don't have to type the existing one); the *new* passphrase ignores those sources and is read only from the TTY. Without this guard, rotation under a configured file source would silently re-read the same source for both prompts, fail the "new identical to current" guard, and never actually rotate.
 
 If you hit `this passphrase prompt requires a TTY`, the cause is a non-interactive stdin — re-run the command from an interactive shell (a real terminal, not a pipe / `< file` redirection / nohup'd background). `SIEVE_PASSPHRASE_FILE` can stay set; it just won't satisfy this particular prompt.
 

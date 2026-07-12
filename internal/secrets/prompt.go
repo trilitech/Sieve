@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/term"
@@ -16,9 +18,16 @@ import (
 // uses, and lets operators mount a secret file into the container.
 const PassphraseFileEnv = "SIEVE_PASSPHRASE_FILE"
 
-// passphraseSourceFD3 is FD 3 — the conventional handoff slot used by
-// systemd-supplied credentials and other supervisor patterns.
-const passphraseSourceFD3 = 3
+// PassphraseFDEnv names the environment variable an operator sets to read the
+// passphrase from an already-open file descriptor (e.g. SIEVE_PASSPHRASE_FD=3),
+// for supervisor/pipe handoffs that don't touch the filesystem. It is OPT-IN by
+// design: earlier builds auto-detected *any* open fd 3, which let a stray
+// descriptor leaked by a terminal, IDE, tmux, or CI launcher silently hijack
+// passphrase intake — Sieve read whatever that fd pointed at as the passphrase
+// and failed startup with a bogus "wrong passphrase", never reaching the TTY
+// prompt. Requiring the operator to name the fd removes that footgun; a
+// descriptor Sieve wasn't told to use is never read.
+const PassphraseFDEnv = "SIEVE_PASSPHRASE_FD"
 
 // PromptOptions controls how Acquire reads the passphrase.
 type PromptOptions struct {
@@ -32,8 +41,8 @@ type PromptOptions struct {
 	// to "Sieve passphrase: ".
 	Prompt string
 
-	// RequireTTY, when true, skips SIEVE_PASSPHRASE_FILE and FD 3 and
-	// reads only from the TTY. The CLI flows that capture a *new*
+	// RequireTTY, when true, skips SIEVE_PASSPHRASE_FILE and
+	// SIEVE_PASSPHRASE_FD and reads only from the TTY. The CLI flows that capture a *new*
 	// passphrase (--setup, --rotate-passphrase's second prompt) set
 	// this. Without it, running --rotate-passphrase with the file
 	// source configured would re-read the same file twice (current
@@ -62,13 +71,17 @@ func IsStdinTerminal() bool {
 // is otherwise an ephemeral mount the operator manages, the file is
 // *not* deleted; it's the operator's responsibility. Reading it once
 // into memory is enough.
-// 2. Else if FD 3 is open → read until EOF (matches systemd LoadCredential).
+// 2. Else if SIEVE_PASSPHRASE_FD names an open fd → read that descriptor
+// until EOF. OPT-IN only: the operator explicitly designates the fd, so a
+// descriptor leaked/inherited from a launcher (terminal, IDE, tmux, CI)
+// can never silently hijack intake. A named-but-unreadable fd is a loud
+// error, not a fallthrough.
 // 3. Else if stdin is a TTY → prompt with echo off (golang.org/x/term).
 // 4. Else → return an error so startup fails loudly.
-// Environment variables (other than the file pointer) are deliberately
-// not supported — env leaks through /proc/<pid>/environ, ps, and crash
-// dumps. If you need to plumb a passphrase from CI, write it to a file
-// and point SIEVE_PASSPHRASE_FILE at it.
+// Environment variables (other than the file/fd pointers, which name a
+// *location*, not the secret) are deliberately not supported — env leaks
+// through /proc/<pid>/environ, ps, and crash dumps. If you need to plumb a
+// passphrase from CI, write it to a file and point SIEVE_PASSPHRASE_FILE at it.
 // Note: opts.Confirm is only meaningful when the read happens on a TTY.
 // Confirm=true implies opts.RequireTTY=true (below), so when Confirm is
 // set Acquire never reaches the file or FD 3 branches.
@@ -91,7 +104,8 @@ func Acquire(opts PromptOptions) ([]byte, error) {
 				"stdin is not interactive (both --setup and " +
 				"--rotate-passphrase's new-passphrase prompt only accept a " +
 				"typed value). Re-run from an interactive shell. " +
-				"Neither " + PassphraseFileEnv + " nor FD 3 influences this " +
+				"Neither " + PassphraseFileEnv + " nor " + PassphraseFDEnv +
+				" influences this " +
 				"branch — even when configured, those sources are skipped " +
 				"here so that an unattended file source cannot silently " +
 				"satisfy a confirmation or rotation new-passphrase prompt.")
@@ -103,8 +117,8 @@ func Acquire(opts PromptOptions) ([]byte, error) {
 		return acquireFile(path)
 	}
 
-	if fd3Open() {
-		return acquireFD3()
+	if fdStr := os.Getenv(PassphraseFDEnv); fdStr != "" {
+		return acquirePassphraseFD(fdStr)
 	}
 
 	if IsStdinTerminal() {
@@ -112,7 +126,8 @@ func Acquire(opts PromptOptions) ([]byte, error) {
 	}
 
 	return nil, errors.New("no passphrase source available: " +
-		PassphraseFileEnv + " is unset, FD 3 is closed, and stdin is not a TTY")
+		PassphraseFileEnv + " and " + PassphraseFDEnv +
+		" are unset and stdin is not a TTY")
 }
 
 func acquireTTY(prompt string, confirm bool) ([]byte, error) {
@@ -157,23 +172,32 @@ func acquireFile(path string) ([]byte, error) {
 	return pp, nil
 }
 
-func acquireFD3() ([]byte, error) {
-	f := os.NewFile(passphraseSourceFD3, "passphrase-fd3")
+// acquirePassphraseFD reads the passphrase from the file descriptor named by
+// SIEVE_PASSPHRASE_FD (e.g. "3"). Reading a descriptor as a credential is
+// opt-in: the operator names the fd, so a descriptor leaked into the process
+// by a launcher can't silently satisfy intake (see PassphraseFDEnv). An
+// invalid fd number, a stdio fd, or a designated fd that can't be read is a
+// loud error rather than a silent fallthrough.
+func acquirePassphraseFD(fdStr string) ([]byte, error) {
+	fd, err := strconv.Atoi(strings.TrimSpace(fdStr))
+	if err != nil || fd < 0 {
+		return nil, fmt.Errorf("%s=%q is not a valid file descriptor number", PassphraseFDEnv, fdStr)
+	}
+	if fd <= 2 {
+		return nil, fmt.Errorf("%s=%d refers to stdin/stdout/stderr; designate fd 3 or higher", PassphraseFDEnv, fd)
+	}
+	f := os.NewFile(uintptr(fd), "passphrase-fd")
+	if f == nil {
+		return nil, fmt.Errorf("%s=%d is not an open file descriptor", PassphraseFDEnv, fd)
+	}
 	defer f.Close()
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return nil, fmt.Errorf("read FD 3: %w", err)
+		return nil, fmt.Errorf("read passphrase from fd %d (%s): %w", fd, PassphraseFDEnv, err)
 	}
 	pp := bytes.TrimRight(data, "\r\n")
 	if len(pp) == 0 {
-		return nil, errors.New("FD 3 supplied an empty passphrase")
+		return nil, fmt.Errorf("fd %d (%s) supplied an empty passphrase", fd, PassphraseFDEnv)
 	}
 	return pp, nil
-}
-
-// fd3Open returns true if file descriptor 3 is open in the current process.
-// We probe via Stat — open FDs return a file mode; closed FDs error.
-func fd3Open() bool {
-	var st syscall.Stat_t
-	return syscall.Fstat(passphraseSourceFD3, &st) == nil
 }

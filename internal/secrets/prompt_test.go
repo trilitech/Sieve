@@ -9,9 +9,10 @@
 package secrets_test
 
 // Source-selection contract for Acquire. The intake priority (file →
-// FD 3 → TTY → error) changed in this PR; these tests pin which source
-// wins under each combination so a future regression can't silently
-// flip the order. The TTY branch itself is not exercised here (go test
+// SIEVE_PASSPHRASE_FD (opt-in) → TTY → error); these tests pin which
+// source wins under each combination so a future regression can't silently
+// flip the order — and, crucially, that an open-but-unnamed fd 3 is IGNORED
+// (the footgun the opt-in fixes). The TTY branch itself is not exercised here (go test
 // runs under a pipe/file stdin and term.IsTerminal returns false in
 // that environment); the production wiring for the TTY path is
 // covered by the cmd/sieve rotate flow.
@@ -27,11 +28,10 @@ import (
 	"github.com/trilitech/Sieve/internal/secrets"
 )
 
-// TestAcquire_FileSource_WinsOverFD3 verifies that when both
-// SIEVE_PASSPHRASE_FILE is set and FD 3 is open, the file wins. This is
-// the documented order — operators set the file env var deliberately;
-// FD 3 is the systemd LoadCredential= convention.
-func TestAcquire_FileSource_WinsOverFD3(t *testing.T) {
+// TestAcquire_FileSource_WinsOverFD verifies that when SIEVE_PASSPHRASE_FILE
+// is set and SIEVE_PASSPHRASE_FD names an open fd, the file wins. Operators
+// set both deliberately; the documented order puts the file first.
+func TestAcquire_FileSource_WinsOverFD(t *testing.T) {
 	dir := t.TempDir()
 	filePP := []byte("from-file-source")
 	path := filepath.Join(dir, "pp")
@@ -41,9 +41,10 @@ func TestAcquire_FileSource_WinsOverFD3(t *testing.T) {
 
 	t.Setenv(secrets.PassphraseFileEnv, path)
 
-	// Also open FD 3 so both sources are available. openFD3Pipe
+	// Also make an fd source available (fd 3, explicitly named). openFD3Pipe
 	// registers its own t.Cleanup; no explicit Close needed.
-	openFD3Pipe(t, "from-fd3-source\n")
+	openFD3Pipe(t, "from-fd-source\n")
+	t.Setenv(secrets.PassphraseFDEnv, "3")
 
 	got, err := secrets.Acquire(secrets.PromptOptions{})
 	if err != nil {
@@ -54,37 +55,65 @@ func TestAcquire_FileSource_WinsOverFD3(t *testing.T) {
 	}
 }
 
-// TestAcquire_FD3_UsedWhenFileEnvUnset verifies FD 3 is the second
-// fallback when SIEVE_PASSPHRASE_FILE is not set.
-func TestAcquire_FD3_UsedWhenFileEnvUnset(t *testing.T) {
-	// Make sure the env var is unset for this test.
+// TestAcquire_FD_UsedWhenNamed verifies the fd source is used when
+// SIEVE_PASSPHRASE_FD names it and the file env is unset.
+func TestAcquire_FD_UsedWhenNamed(t *testing.T) {
 	t.Setenv(secrets.PassphraseFileEnv, "")
 	os.Unsetenv(secrets.PassphraseFileEnv)
 
-	// openFD3Pipe registers its own t.Cleanup; no explicit Close needed.
-	openFD3Pipe(t, "from-fd3\n")
+	openFD3Pipe(t, "from-fd\n")
+	t.Setenv(secrets.PassphraseFDEnv, "3")
 
 	got, err := secrets.Acquire(secrets.PromptOptions{})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	if string(got) != "from-fd3" {
-		t.Errorf("expected FD 3 source, got %q", got)
+	if string(got) != "from-fd" {
+		t.Errorf("expected fd source, got %q", got)
 	}
 }
 
-// TestAcquire_NoSource_NoTTY verifies the clear-error path: no file,
-// no FD 3, stdin not a TTY → error mentioning all three.
+// TestAcquire_UnnamedOpenFD3_Ignored is the regression for the footgun: an
+// open fd 3 that the operator did NOT designate via SIEVE_PASSPHRASE_FD must
+// be ignored — a stray descriptor leaked by a terminal/IDE/CI launcher must
+// never hijack intake. With no file and no named fd (stdin not a TTY under
+// `go test`), Acquire must reach the loud "no source" error rather than read
+// the leaked fd's contents.
+func TestAcquire_UnnamedOpenFD3_Ignored(t *testing.T) {
+	t.Setenv(secrets.PassphraseFileEnv, "")
+	os.Unsetenv(secrets.PassphraseFileEnv)
+	t.Setenv(secrets.PassphraseFDEnv, "")
+	os.Unsetenv(secrets.PassphraseFDEnv)
+
+	// fd 3 is open with a would-be passphrase, but never named.
+	openFD3Pipe(t, "leaked-secret-must-not-be-used\n")
+
+	_, err := secrets.Acquire(secrets.PromptOptions{})
+	if err == nil {
+		t.Fatal("expected error: an unnamed open fd 3 must not be used as a passphrase source")
+	}
+	if strings.Contains(err.Error(), "leaked-secret") {
+		t.Fatalf("Acquire read the leaked fd 3 contents; footgun not closed: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no passphrase source") {
+		t.Errorf("expected the no-source error, got: %v", err)
+	}
+}
+
+// TestAcquire_NoSource_NoTTY verifies the clear-error path: no file, no
+// named fd, stdin not a TTY → error mentioning both env vars and the TTY.
 func TestAcquire_NoSource_NoTTY(t *testing.T) {
 	t.Setenv(secrets.PassphraseFileEnv, "")
 	os.Unsetenv(secrets.PassphraseFileEnv)
+	t.Setenv(secrets.PassphraseFDEnv, "")
+	os.Unsetenv(secrets.PassphraseFDEnv)
 	closeFD3IfOpen(t)
 
 	_, err := secrets.Acquire(secrets.PromptOptions{})
 	if err == nil {
 		t.Fatal("expected error when no source available")
 	}
-	for _, want := range []string{secrets.PassphraseFileEnv, "FD 3", "TTY"} {
+	for _, want := range []string{secrets.PassphraseFileEnv, secrets.PassphraseFDEnv, "TTY"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q, got: %v", want, err)
 		}

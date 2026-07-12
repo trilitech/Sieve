@@ -446,15 +446,14 @@ func runResetKeyring(dbPath string) int {
 
 func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string, oauthClients web.OAuthClientConfig) error {
 	// --- Keyring passphrase (BEFORE opening the DB) ---
-	// Acquire the passphrase first. If the DB were opened first, SQLite would
-	// take fd 3 (the first free descriptor after stdio); secrets.Acquire then
-	// probes fd 3 for a systemd-style credential, reads the database bytes as a
-	// passphrase, and — via acquireFD3's Close — shuts fd 3, corrupting the live
-	// DB handle so the very next read (crypto_meta) fails with
-	// "disk I/O error: bad file descriptor". Reading the passphrase before any
-	// file is opened means fd 3 is only "open" when genuinely inherited at exec
-	// (the systemd LoadCredential= contract), which is exactly what that branch
-	// is meant to detect.
+	// Acquire the passphrase first. When an operator opts into the fd source
+	// (SIEVE_PASSPHRASE_FD=3), opening the DB first would let SQLite grab fd 3
+	// (the first free descriptor after stdio); secrets.Acquire would then read
+	// the database bytes as the passphrase and, on Close, shut fd 3 — corrupting
+	// the live DB handle so the next read (crypto_meta) fails with "disk I/O
+	// error: bad file descriptor". Reading the passphrase before any file is
+	// opened means the designated fd still points at what the operator handed us
+	// at exec, not at a descriptor Sieve itself opened.
 	pp, err := secrets.Acquire(secrets.PromptOptions{Confirm: setup})
 	if err != nil {
 		return fmt.Errorf("read passphrase: %w", err)
