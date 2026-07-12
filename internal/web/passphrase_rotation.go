@@ -171,17 +171,24 @@ func (s *Server) renderRotationError(w http.ResponseWriter, r *http.Request, sta
 	s.render(w, r, "settings", data)
 }
 
-// checkRotationOrigin verifies that the request's Origin header (or
-// Referer as fallback) matches the request's Host header. This is the
-// canonical lightweight CSRF defense for state-mutating POSTs — browsers
-// always set Origin to the scheme://host of the page that initiated the
-// form submission, and an attacker on a different origin cannot forge it.
-// Matching against r.Host (rather than the configured webAddr) makes the
-// check robust to ephemeral test ports and to operators running Sieve on
-// any local interface; the security property is "the form was submitted
-// from the same origin that served the page", which is exactly r.Host.
-// Returns false (reject) when both Origin and Referer are absent — a
-// real browser always sends at least one for state-mutating POSTs.
+// checkRotationOrigin is a lightweight, defense-in-depth CSRF check layered
+// on top of the session CSRF token that requireOperatorSession already
+// enforces on every state-mutating admin POST. It rejects a request whose
+// Origin (or, as a fallback, Referer) is PRESENT but does not match the
+// request's Host — the signature of a cross-origin form submission. Matching
+// against r.Host (rather than the configured webAddr) keeps it robust to
+// ephemeral test ports and to operators binding any local interface.
+//
+// It deliberately does NOT reject when both Origin and Referer are absent.
+// A cross-origin attacker cannot suppress the Origin header: browsers force
+// it onto every cross-origin state-changing request, so a forged CSRF POST
+// always arrives WITH a (mismatching) Origin and is caught above. An ABSENT
+// Origin is instead what several legitimate SAME-origin submissions look like
+// here — this app sends `Referrer-Policy: no-referrer` (so the Referer
+// fallback is always empty), and browsers such as Safari omit Origin on
+// same-origin classic form POSTs. Rejecting those produced a spurious
+// "cross-origin request rejected" with no security benefit; the session CSRF
+// token remains the primary guarantee in the absent case.
 func (s *Server) checkRotationOrigin(r *http.Request) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
 		u, err := url.Parse(origin)
@@ -197,7 +204,9 @@ func (s *Server) checkRotationOrigin(r *http.Request) bool {
 		}
 		return u.Host == r.Host
 	}
-	return false
+	// Both absent: cannot be an attacker-forged cross-origin POST (browsers
+	// always attach Origin cross-origin). Rely on the session CSRF token.
+	return true
 }
 
 // zeroBytes overwrites a byte slice in place. Same shape as the helper

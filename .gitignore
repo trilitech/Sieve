@@ -6,6 +6,8 @@ data/
 *credentials*.json
 .env
 .gh_token
+.passphrase
+.new_gitlab_token
 .vscode/
 .idea/
 *.swp

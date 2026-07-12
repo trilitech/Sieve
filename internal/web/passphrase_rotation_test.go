@@ -404,17 +404,11 @@ func TestRotateHandlerRejectsCrossOrigin(t *testing.T) {
 		t.Fatalf("cross-origin status: got %d, want 403", resp.StatusCode)
 	}
 
-	// Missing both Origin and Referer: also 403.
-	req2 := rotateRequest(t, ts, "test-passphrase", "x", "x")
-	req2.Header.Del("Origin")
-	resp2, err := env.AdminClient().Do(req2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusForbidden {
-		t.Fatalf("missing-origin status: got %d, want 403", resp2.StatusCode)
-	}
+	// Note: a request with BOTH Origin and Referer absent is intentionally
+	// NOT rejected here — an attacker's cross-origin POST always carries a
+	// (mismatching) Origin, so absent means legitimate same-origin, and the
+	// session CSRF token is the guard. See checkRotationOrigin and
+	// TestCheckRotationOriginAbsentHeadersAllowed.
 
 	// Zero rotation audit rows MUST result.
 	if got := countAuditOps(t, env.Audit, "keyring.rotate"); got != 0 {
@@ -505,4 +499,44 @@ func serverFromHandler(ts *httptest.Server) *Server {
 	rotationSrvMu.Lock()
 	defer rotationSrvMu.Unlock()
 	return rotationSrvByURL[ts.URL]
+}
+
+// TestCheckRotationOriginAbsentHeadersAllowed pins the same-origin CSRF
+// heuristic used by the passphrase-rotation and connection-edit POSTs:
+//   - a PRESENT Origin/Referer that mismatches Host is rejected (real
+//     cross-origin signature);
+//   - a matching one is allowed;
+//   - BOTH absent is allowed — a cross-origin attacker can't suppress
+//     Origin, and this app's Referrer-Policy: no-referrer + browsers like
+//     Safari (which omit Origin on same-origin form POSTs) otherwise
+//     produced a spurious "cross-origin request rejected".
+func TestCheckRotationOriginAbsentHeadersAllowed(t *testing.T) {
+	s := &Server{}
+	newReq := func(origin, referer string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "http://localhost:19816/connections/x/edit", nil)
+		r.Host = "localhost:19816"
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		if referer != "" {
+			r.Header.Set("Referer", referer)
+		}
+		return r
+	}
+	cases := []struct {
+		name            string
+		origin, referer string
+		want            bool
+	}{
+		{"matching origin", "http://localhost:19816", "", true},
+		{"mismatching origin rejected", "http://evil.example", "", false},
+		{"matching referer fallback", "", "http://localhost:19816/connections", true},
+		{"mismatching referer rejected", "", "http://evil.example/x", false},
+		{"both absent allowed", "", "", true},
+	}
+	for _, tc := range cases {
+		if got := s.checkRotationOrigin(newReq(tc.origin, tc.referer)); got != tc.want {
+			t.Errorf("%s: checkRotationOrigin = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
