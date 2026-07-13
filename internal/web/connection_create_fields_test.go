@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	linearconn "github.com/trilitech/Sieve/internal/connectors/linear"
+	notionconn "github.com/trilitech/Sieve/internal/connectors/notion"
 	"github.com/trilitech/Sieve/internal/scriptgen"
 	"github.com/trilitech/Sieve/internal/testing/testenv"
 )
@@ -61,6 +62,55 @@ func TestConnectionsPage_RendersDataDrivenSetupFields(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("connections page missing %q — Linear SetupField not rendered on the create card", want)
+		}
+	}
+}
+
+// TestConnectionsNotionIsLiveConnector guards that a registered connector is
+// surfaced as a real, live catalog card + nav tab — not left as a grayed-out
+// "Coming Soon" placeholder. It reproduces the Notion regression where the
+// connector was registered (and rendered in the "all" view) but still appeared
+// as a "Planned" placeholder and had no category tab.
+func TestConnectionsNotionIsLiveConnector(t *testing.T) {
+	env := testenv.New(t).WithOperator("test-pass", "test-op")
+	env.Registry.Register(notionconn.Meta(), notionconn.Factory())
+	scriptgenSvc := scriptgen.NewService(env.Connections, env.Settings)
+	srv := NewServer(
+		env.Tokens, env.Connections, env.Roles,
+		env.Registry, env.Approval, env.Audit,
+		"", env.Settings, scriptgenSvc,
+		env.Keyring, env.DB, "127.0.0.1:0",
+	)
+	srv.SetAuth(env.Operator, env.Session)
+	t.Cleanup(srv.Close)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	get := func(path string) string {
+		resp, err := env.AdminClient().Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+
+	all := get("/connections")
+	// Nav must carry a Notion category tab.
+	if !strings.Contains(all, "/connections?type=notion") {
+		t.Error("nav is missing a Notion tab (/connections?type=notion)")
+	}
+	// Notion must NOT linger as a grayed 'Coming Soon' placeholder.
+	if strings.Contains(all, "Pages, databases, blocks") {
+		t.Error("Notion still rendered as a Coming Soon placeholder")
+	}
+
+	// The dedicated Notion tab must render the real create card.
+	page := get("/connections?type=notion")
+	for _, want := range []string{`name="connector_type" value="notion"`, `name="api_key"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("/connections?type=notion missing %q", want)
 		}
 	}
 }
