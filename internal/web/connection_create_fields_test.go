@@ -106,9 +106,15 @@ func TestConnectionsNotionIsLiveConnector(t *testing.T) {
 		t.Error("Notion still rendered as a Coming Soon placeholder")
 	}
 
-	// The dedicated Notion tab must render the real create card.
+	// The dedicated Notion tab must render the real (bespoke OAuth) card:
+	// with no OAuth creds configured, that's the client-cred setup form plus
+	// the token-paste fallback.
 	page := get("/connections?type=notion")
-	for _, want := range []string{`name="connector_type" value="notion"`, `name="api_key"`} {
+	for _, want := range []string{
+		"/connections/notion/oauth/configure",
+		"/connections/notion/token",
+		`name="token"`,
+	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("/connections?type=notion missing %q", want)
 		}

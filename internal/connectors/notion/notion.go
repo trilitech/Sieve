@@ -120,6 +120,28 @@ func Meta() connector.ConnectorMeta {
 				Placeholder: `["127.0.0.0/8"]`,
 				HelpText:    "JSON array of CIDR blocks the connector may dial in addition to public Internet ranges. Leave empty for production (api.notion.com). Required to point base_url at a private/loopback address.",
 			},
+			// Set automatically by the OAuth install flow; never entered by hand.
+			// EditOnly + non-Editable ⇒ rendered on neither the create nor edit
+			// form, but declared so the architecture test accepts them as
+			// persisted config keys.
+			{
+				Name:     "workspace_id",
+				Label:    "Workspace ID",
+				Type:     "text",
+				Required: false,
+				Editable: false,
+				EditOnly: true,
+				HelpText: "Set by the OAuth install; identifies the Notion workspace this token belongs to.",
+			},
+			{
+				Name:     "workspace_name",
+				Label:    "Workspace name",
+				Type:     "text",
+				Required: false,
+				Editable: false,
+				EditOnly: true,
+				HelpText: "Set by the OAuth install.",
+			},
 		},
 	}
 }

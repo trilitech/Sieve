@@ -23,6 +23,16 @@ import (
 type Config struct {
 	APIKey  string `json:"api_key"`
 	BaseURL string `json:"base_url,omitempty"`
+
+	// WorkspaceID / WorkspaceName are set by the OAuth install flow (web layer)
+	// and identify the Notion workspace the token belongs to. They are not
+	// entered by hand (EditOnly, non-Editable SetupFields). WorkspaceID lets a
+	// reauth enforce workspace continuity — refusing a token minted against a
+	// different workspace, which would silently repoint IAM grants bound to the
+	// connection id (the same class of guard as the Slack connector's team_id).
+	// A token pasted directly leaves these empty.
+	WorkspaceID   string `json:"workspace_id,omitempty"`
+	WorkspaceName string `json:"workspace_name,omitempty"`
 }
 
 const defaultBaseURL = "https://api.notion.com"

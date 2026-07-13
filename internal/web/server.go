@@ -391,6 +391,8 @@ type OAuthClientConfig struct {
 	GoogleClientSecret string
 	SlackClientID      string
 	SlackClientSecret  string
+	NotionClientID     string
+	NotionClientSecret string
 }
 
 // SetOAuthClients records the launch-configured OAuth app client credentials.
@@ -456,6 +458,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /connections/slack/token", s.handleSlackToken)
 	mux.HandleFunc("POST /connections/slack/user-token", s.handleSlackUserToken)
 	mux.HandleFunc("POST /connections/slack/{id}/reauth", s.handleSlackReauth)
+	mux.HandleFunc("POST /connections/notion/oauth/configure", s.handleNotionOAuthConfigure)
+	mux.HandleFunc("POST /connections/notion/oauth/clear", s.handleNotionOAuthClearConfig)
+	mux.HandleFunc("POST /connections/notion/oauth/start", s.handleNotionOAuthStart)
+	mux.HandleFunc("POST /connections/notion/token", s.handleNotionToken)
+	mux.HandleFunc("POST /connections/notion/{id}/reauth", s.handleNotionReauth)
 	mux.HandleFunc("POST /connections/github/app/start", s.handleGitHubAppStart)
 	mux.HandleFunc("GET /connections/github/app/created", s.handleGitHubAppCreated)
 	mux.HandleFunc("GET /connections/github/app/installed", s.handleGitHubAppInstalled)
@@ -819,7 +826,8 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		// button when set, the configure-form when not. Same lookup
 		// chain (settings → env) the install handler uses, so the
 		// flag and runtime behavior never diverge.
-		"SlackOAuthConfigured": s.slackOAuthIsConfigured(),
+		"SlackOAuthConfigured":  s.slackOAuthIsConfigured(),
+		"NotionOAuthConfigured": s.notionOAuthIsConfigured(),
 	}
 	s.render(w, r, "connections", data)
 }
@@ -1256,6 +1264,10 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	// google falls through to the existing path below.
 	if pending.ConnectorType == "slack" {
 		s.completeSlackOAuth(w, r, pending, code)
+		return
+	}
+	if pending.ConnectorType == "notion" {
+		s.completeNotionOAuth(w, r, pending, code)
 		return
 	}
 
