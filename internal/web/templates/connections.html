@@ -138,7 +138,7 @@
             <div class="flex items-start justify-between mb-3">
               <div>
                 <h4 class="text-white font-medium">{{.Name}}</h4>
-                <p class="text-sm text-slate-400 mt-0.5">{{.Description}}</p>
+                <p class="text-sm text-slate-400 mt-0.5">{{linkify .Description}}</p>
               </div>
               {{if eq .Type "google"}}
               <div class="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center flex-shrink-0">

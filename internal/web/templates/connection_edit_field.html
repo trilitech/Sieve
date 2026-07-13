@@ -19,14 +19,14 @@
       class="mt-1 rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500">
     <span class="text-sm text-slate-300">
       <span class="font-medium text-white">{{.Label}}</span>
-      {{if .HelpText}}<span class="block text-slate-400 mt-1">{{.HelpText}}</span>{{end}}
+      {{if .HelpText}}<span class="block text-slate-400 mt-1">{{linkify .HelpText}}</span>{{end}}
     </span>
   </label>
 
   {{else if eq .Type "textarea"}}
   <label class="block">
     <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
-    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{linkify .HelpText}}</p>{{end}}
     <textarea name="{{.Name}}" rows="6" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
       class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">{{.TextareaValue}}</textarea>
   </label>
@@ -34,7 +34,7 @@
   {{else if eq .Type "json"}}
   <label class="block">
     <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
-    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{linkify .HelpText}}</p>{{end}}
     <textarea name="{{.Name}}" rows="4" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
       class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">{{.StringValue}}</textarea>
   </label>
@@ -42,7 +42,7 @@
   {{else if eq .Type "json_array"}}
   <label class="block">
     <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
-    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{linkify .HelpText}}</p>{{end}}
     <textarea name="{{.Name}}" rows="4" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
       class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">{{.StringValue}}</textarea>
   </label>
@@ -50,7 +50,7 @@
   {{else if eq .Type "number"}}
   <label class="block">
     <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
-    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{linkify .HelpText}}</p>{{end}}
     <input type="number" name="{{.Name}}" min="0" step="1"
       value="{{.StringValue}}" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
       class="w-64 rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">
@@ -59,7 +59,7 @@
   {{else if eq .Type "password"}}
   <label class="block">
     <span class="text-sm font-medium text-white">{{.Label}}{{if and .Required (not .Secret)}} <span class="text-red-400" title="required">*</span>{{end}}</span>
-    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{linkify .HelpText}}</p>{{end}}
     {{/* Secret password fields don't get the HTML required attribute:
          an empty submission on edit means "keep stored", and adding
          required would break that path. */}}
@@ -71,7 +71,7 @@
   {{else if eq .Type "text"}}
   <label class="block">
     <span class="text-sm font-medium text-white">{{.Label}}{{if .Required}} <span class="text-red-400" title="required">*</span>{{end}}</span>
-    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{.HelpText}}</p>{{end}}
+    {{if .HelpText}}<p class="text-xs text-slate-400 mt-1 mb-2">{{linkify .HelpText}}</p>{{end}}
     <input type="text" name="{{.Name}}" value="{{.StringValue}}" placeholder="{{.Placeholder}}" {{if .Required}}required{{end}}
       class="w-full rounded-md bg-slate-900 border border-slate-700 px-3 py-2 text-sm text-slate-100 focus:border-indigo-500 focus:ring-indigo-500 font-mono">
   </label>

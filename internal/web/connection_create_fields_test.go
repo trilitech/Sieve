@@ -59,6 +59,8 @@ func TestConnectionsPage_RendersDataDrivenSetupFields(t *testing.T) {
 		`name="connector_type" value="linear"`,
 		`name="api_key"`,
 		`name="base_url"`,
+		// Help-text URLs must render as clickable links (linkify).
+		`<a href="https://api.linear.app"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("connections page missing %q — Linear SetupField not rendered on the create card", want)

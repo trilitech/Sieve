@@ -157,6 +157,9 @@ type Server struct {
 // funcMap returns the template function map used across all templates.
 func funcMap() template.FuncMap {
 	return template.FuncMap{
+		// linkify turns URLs and bare hostnames in operator-facing help text
+		// / descriptions into clickable links (all other text HTML-escaped).
+		"linkify": linkifyText,
 		// json marshals v to a JSON string with aggressive escaping
 		// suitable for embedding inside <script type="application/json">
 		// blocks. Returns a plain string (NOT template.JS) so Go's
