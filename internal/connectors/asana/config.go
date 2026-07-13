@@ -19,6 +19,25 @@ import (
 type Config struct {
 	APIKey  string `json:"api_key"`
 	BaseURL string `json:"base_url,omitempty"`
+
+	// The following are set by the OAuth install flow (web layer), never by
+	// hand (EditOnly, non-editable SetupFields). Asana OAuth access tokens
+	// EXPIRE (~1h) and carry a refresh token, so a connection installed via
+	// OAuth stores the token bundle plus the client credentials the connector
+	// needs to refresh it (mirrors the gmail connector). A PAT connection
+	// leaves these empty and authenticates with api_key directly.
+	OAuthToken   map[string]any `json:"oauth_token,omitempty"`
+	ClientID     string         `json:"client_id,omitempty"`
+	ClientSecret string         `json:"client_secret,omitempty"`
+}
+
+// hasOAuth reports whether an OAuth token bundle with an access token is present.
+func (c *Config) hasOAuth() bool {
+	if c.OAuthToken == nil {
+		return false
+	}
+	at, _ := c.OAuthToken["access_token"].(string)
+	return at != ""
 }
 
 const defaultBaseURL = "https://app.asana.com"
@@ -55,8 +74,8 @@ func parseConfig(raw map[string]any) (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if c.APIKey == "" {
-		return errors.New("asana: api_key required")
+	if c.APIKey == "" && !c.hasOAuth() {
+		return errors.New("asana: api_key or oauth_token required")
 	}
 	if c.BaseURL == "" {
 		c.BaseURL = defaultBaseURL

@@ -59,7 +59,7 @@ func writeSecurityHeaders(w http.ResponseWriter) {
 	const cdnScripts = "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
 	const cdnStyles = "https://fonts.googleapis.com"
 	const cdnFonts = "https://fonts.gstatic.com"
-	const oauthHosts = "https://accounts.google.com https://slack.com https://github.com https://api.notion.com https://app.notion.com"
+	const oauthHosts = "https://accounts.google.com https://slack.com https://github.com https://api.notion.com https://app.notion.com https://app.asana.com"
 	h := w.Header()
 	h.Set("Content-Security-Policy",
 		"default-src 'self'; "+

@@ -144,6 +144,11 @@ func main() {
 				"Credentials pasted in the admin UI take precedence.")
 		notionClientSecret = flag.String("notion-client-secret", os.Getenv("NOTION_CLIENT_SECRET"),
 			"Notion public-integration client_secret (confidential flow; Notion requires it). Falls back to $NOTION_CLIENT_SECRET.")
+		asanaClientID = flag.String("asana-client-id", os.Getenv("ASANA_CLIENT_ID"),
+			"Asana app client_id for the OAuth install flow. Falls back to $ASANA_CLIENT_ID. "+
+				"Credentials pasted in the admin UI take precedence.")
+		asanaClientSecret = flag.String("asana-client-secret", os.Getenv("ASANA_CLIENT_SECRET"),
+			"Asana app client_secret. Falls back to $ASANA_CLIENT_SECRET.")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [flags]\n", os.Args[0])
@@ -172,6 +177,8 @@ func main() {
 		SlackClientSecret:  *slackClientSecret,
 		NotionClientID:     *notionClientID,
 		NotionClientSecret: *notionClientSecret,
+		AsanaClientID:      *asanaClientID,
+		AsanaClientSecret:  *asanaClientSecret,
 	}
 	if err := run(*dbPath, *webAddr, *apiAddr, *setup, *googleCredsPath, oauthClients); err != nil {
 		log.SetFlags(0)

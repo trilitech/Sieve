@@ -109,6 +109,7 @@ func TestCSPFormActionAllowsOAuthHosts(t *testing.T) {
 		// both must be allowed or the browser stops at the blocked hop.
 		"https://api.notion.com",
 		"https://app.notion.com",
+		"https://app.asana.com",
 	} {
 		if !strings.Contains(formAction, host) {
 			t.Errorf("form-action missing %q; a form POST that 302s there is blocked by CSP.\nform-action: %s", host, formAction)

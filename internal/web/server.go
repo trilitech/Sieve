@@ -396,6 +396,8 @@ type OAuthClientConfig struct {
 	SlackClientSecret  string
 	NotionClientID     string
 	NotionClientSecret string
+	AsanaClientID      string
+	AsanaClientSecret  string
 }
 
 // SetOAuthClients records the launch-configured OAuth app client credentials.
@@ -466,6 +468,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /connections/notion/oauth/start", s.handleNotionOAuthStart)
 	mux.HandleFunc("POST /connections/notion/token", s.handleNotionToken)
 	mux.HandleFunc("POST /connections/notion/{id}/reauth", s.handleNotionReauth)
+	mux.HandleFunc("POST /connections/asana/oauth/configure", s.handleAsanaOAuthConfigure)
+	mux.HandleFunc("POST /connections/asana/oauth/clear", s.handleAsanaOAuthClearConfig)
+	mux.HandleFunc("POST /connections/asana/oauth/start", s.handleAsanaOAuthStart)
+	mux.HandleFunc("POST /connections/asana/token", s.handleAsanaToken)
+	mux.HandleFunc("POST /connections/asana/{id}/reauth", s.handleAsanaReauth)
 	mux.HandleFunc("POST /connections/github/app/start", s.handleGitHubAppStart)
 	mux.HandleFunc("GET /connections/github/app/created", s.handleGitHubAppCreated)
 	mux.HandleFunc("GET /connections/github/app/installed", s.handleGitHubAppInstalled)
@@ -831,6 +838,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		// flag and runtime behavior never diverge.
 		"SlackOAuthConfigured":  s.slackOAuthIsConfigured(),
 		"NotionOAuthConfigured": s.notionOAuthIsConfigured(),
+		"AsanaOAuthConfigured":  s.asanaOAuthIsConfigured(),
 		// The exact redirect URI to register in the provider's OAuth app —
 		// derived from how the operator reached this page, so the setup cards
 		// can show it verbatim instead of telling operators to guess.
@@ -1320,6 +1328,10 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if pending.ConnectorType == "notion" {
 		s.completeNotionOAuth(w, r, pending, code)
+		return
+	}
+	if pending.ConnectorType == "asana" {
+		s.completeAsanaOAuth(w, r, pending, code)
 		return
 	}
 

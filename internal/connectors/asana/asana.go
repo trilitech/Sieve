@@ -16,12 +16,23 @@ package asana
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
+	"time"
+
+	"golang.org/x/oauth2"
 
 	"github.com/trilitech/Sieve/internal/connector"
 	"github.com/trilitech/Sieve/internal/httpguard"
+)
+
+// Asana OAuth endpoints, relative to the (overridable) base URL. Both live
+// under app.asana.com alongside the /api/1.0 REST base.
+const (
+	oauthAuthorizePath = "/-/oauth_authorize"
+	oauthTokenPath     = "/-/oauth_token"
 )
 
 // ConnectorType is the type string used in the registry, audit logs, MCP tool
@@ -30,8 +41,9 @@ const ConnectorType = "asana"
 
 // Connector implements connector.Connector for Asana.
 type Connector struct {
-	config     *Config
-	httpClient *http.Client
+	config      *Config
+	httpClient  *http.Client
+	tokenSource oauth2.TokenSource // yields the current Bearer token (static PAT or refreshing OAuth)
 }
 
 // Factory returns a connector.Factory.
@@ -61,11 +73,55 @@ func Factory() connector.Factory {
 		if err != nil {
 			return nil, fmt.Errorf("asana: outbound_allowlist: %w", err)
 		}
+		httpClient := newHTTPClient(allowlist)
+		ts, err := buildTokenSource(raw, cfg, httpClient)
+		if err != nil {
+			return nil, err
+		}
 		return &Connector{
-			config:     cfg,
-			httpClient: newHTTPClient(allowlist),
+			config:      cfg,
+			httpClient:  httpClient,
+			tokenSource: ts,
 		}, nil
 	}
+}
+
+// buildTokenSource returns the source doRequest reads the Bearer token from.
+// PAT (or a pasted OAuth token with no client creds) → a static source. An
+// OAuth install with client creds → a refreshing oauth2 source that persists
+// rotated tokens via the injected _on_token_refresh callback (Asana access
+// tokens expire in ~1h). Refreshes go through the SSRF-guarded httpClient (and,
+// in tests, the loopback mock via the overridden base URL).
+func buildTokenSource(raw map[string]any, cfg *Config, httpClient *http.Client) (oauth2.TokenSource, error) {
+	if !cfg.hasOAuth() {
+		return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: cfg.APIKey}), nil
+	}
+	token, err := tokenFromMap(cfg.OAuthToken)
+	if err != nil {
+		return nil, fmt.Errorf("asana: parse oauth_token: %w", err)
+	}
+	if cfg.ClientID == "" || cfg.ClientSecret == "" {
+		// No client creds to refresh with — use the access token statically.
+		return oauth2.StaticTokenSource(token), nil
+	}
+	oauthConf := &oauth2.Config{
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  cfg.BaseURL + oauthAuthorizePath,
+			TokenURL: cfg.BaseURL + oauthTokenPath,
+		},
+	}
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, httpClient)
+	base := oauthConf.TokenSource(ctx, token)
+	onRefresh, _ := raw["_on_token_refresh"].(func(*oauth2.Token))
+	onRefreshFailure, _ := raw["_on_token_refresh_failure"].(func(string))
+	return &persistingTokenSource{
+		base:             base,
+		lastHash:         token.AccessToken,
+		onRefresh:        onRefresh,
+		onRefreshFailure: onRefreshFailure,
+	}, nil
 }
 
 // Meta returns connector metadata for registration.
@@ -112,8 +168,93 @@ func Meta() connector.ConnectorMeta {
 				Placeholder: `["127.0.0.0/8"]`,
 				HelpText:    "JSON array of CIDR blocks the connector may dial in addition to public Internet ranges. Leave empty for production (app.asana.com). Required to point base_url at a private/loopback address.",
 			},
+			// Set by the OAuth install flow; never entered by hand. EditOnly +
+			// non-Editable ⇒ rendered on neither form, but declared so the
+			// architecture test accepts them as persisted config keys. The
+			// connector needs client_id/secret at execute time to refresh the
+			// (expiring) OAuth access token.
+			{Name: "oauth_token", Label: "OAuth token", Type: "text", Editable: false, EditOnly: true, HelpText: "Set by the OAuth install (access + refresh token bundle)."},
+			{Name: "client_id", Label: "OAuth client ID", Type: "text", Editable: false, EditOnly: true, HelpText: "Set by the OAuth install; used to refresh the access token."},
+			{Name: "client_secret", Label: "OAuth client secret", Type: "password", Secret: true, Editable: false, EditOnly: true, HelpText: "Set by the OAuth install; used to refresh the access token."},
 		},
 	}
+}
+
+// --- OAuth token source (mirrors the gmail connector) ---
+
+// reauthErrorCodes are the OAuth token-endpoint error codes that mean the
+// refresh token is dead and the operator must re-authenticate.
+var reauthErrorCodes = map[string]bool{
+	"invalid_grant":   true,
+	"invalid_client":  true,
+	"invalid_request": true,
+}
+
+// tokenFromMap reconstructs an *oauth2.Token from the stored oauth_token map.
+func tokenFromMap(m map[string]any) (*oauth2.Token, error) {
+	accessToken, _ := m["access_token"].(string)
+	if accessToken == "" {
+		return nil, errors.New("missing access_token")
+	}
+	token := &oauth2.Token{
+		AccessToken:  accessToken,
+		TokenType:    stringFromMap(m, "token_type"),
+		RefreshToken: stringFromMap(m, "refresh_token"),
+	}
+	if expiryStr, ok := m["expiry"].(string); ok && expiryStr != "" {
+		t, err := time.Parse(time.RFC3339, expiryStr)
+		if err != nil {
+			return nil, fmt.Errorf("parsing expiry: %w", err)
+		}
+		token.Expiry = t
+	}
+	// A zero expiry would make oauth2 treat the token as perpetually valid and
+	// never refresh. Treat missing/zero expiry as already-expired so the first
+	// use refreshes.
+	if token.Expiry.IsZero() {
+		token.Expiry = time.Now().UTC()
+	}
+	return token, nil
+}
+
+func stringFromMap(m map[string]any, k string) string {
+	s, _ := m[k].(string)
+	return s
+}
+
+// persistingTokenSource wraps a refreshing oauth2.TokenSource, persisting a
+// rotated token via onRefresh and flipping needs_reauth via onRefreshFailure
+// when the refresh token is dead (mapping to connector.ErrNeedsReauth).
+type persistingTokenSource struct {
+	base             oauth2.TokenSource
+	lastHash         string
+	onRefresh        func(token *oauth2.Token)
+	onRefreshFailure func(reason string)
+}
+
+func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
+	tok, err := p.base.Token()
+	if err != nil {
+		var rerr *oauth2.RetrieveError
+		if errors.As(err, &rerr) && reauthErrorCodes[rerr.ErrorCode] {
+			if p.onRefreshFailure != nil {
+				reason := rerr.ErrorCode
+				if rerr.ErrorDescription != "" {
+					reason = rerr.ErrorCode + ": " + rerr.ErrorDescription
+				}
+				p.onRefreshFailure(reason)
+			}
+			return nil, fmt.Errorf("%w: %s", connector.ErrNeedsReauth, rerr.ErrorCode)
+		}
+		return nil, err
+	}
+	if tok.AccessToken != p.lastHash {
+		if p.lastHash != "" && p.onRefresh != nil {
+			p.onRefresh(tok)
+		}
+		p.lastHash = tok.AccessToken
+	}
+	return tok, nil
 }
 
 func (a *Connector) Type() string                         { return ConnectorType }

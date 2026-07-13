@@ -9,6 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/oauth2"
 
 	"github.com/trilitech/Sieve/internal/connector"
 )
@@ -244,4 +247,94 @@ func TestUnknownOperation(t *testing.T) {
 	if _, err := c.Execute(context.Background(), "asana_nope", nil); err == nil {
 		t.Error("unknown op must error")
 	}
+}
+
+// TestOAuthModeRefreshesExpiredToken proves the OAuth path: an expired access
+// token is transparently refreshed via /-/oauth_token on the request that needs
+// it, the API call then carries the NEW token, and the rotated token is handed
+// to _on_token_refresh for persistence.
+func TestOAuthModeRefreshesExpiredToken(t *testing.T) {
+	var refreshed bool
+	var apiAuth string
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/-/oauth_token" {
+			refreshed = true
+			_, _ = io.WriteString(w, `{"access_token":"acc-2","token_type":"bearer","expires_in":3600,"refresh_token":"ref-2"}`)
+			return
+		}
+		apiAuth = r.Header.Get("Authorization")
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	t.Cleanup(mock.Close)
+
+	var persisted *oauth2.Token
+	c, err := Factory()(map[string]any{
+		"base_url":           mock.URL,
+		"outbound_allowlist": []string{"127.0.0.0/8"},
+		"client_id":          "cid",
+		"client_secret":      "sec",
+		"oauth_token": map[string]any{
+			"access_token":  "acc-1",
+			"refresh_token": "ref-1",
+			"token_type":    "bearer",
+			"expiry":        "2000-01-01T00:00:00Z", // long expired
+		},
+		"_on_token_refresh": func(tok *oauth2.Token) { persisted = tok },
+	})
+	if err != nil {
+		t.Fatalf("Factory (oauth mode): %v", err)
+	}
+
+	if _, err := c.Execute(context.Background(), "asana_list_workspaces", nil); err != nil {
+		t.Fatalf("list_workspaces: %v", err)
+	}
+	if !refreshed {
+		t.Error("expected a refresh against /-/oauth_token for the expired token")
+	}
+	if apiAuth != "Bearer acc-2" {
+		t.Errorf("API call Authorization = %q, want Bearer acc-2 (refreshed token)", apiAuth)
+	}
+	if persisted == nil || persisted.AccessToken != "acc-2" {
+		t.Errorf("_on_token_refresh not called with the rotated token: %+v", persisted)
+	}
+}
+
+// TestOAuthModeStaticWhenNoClientCreds: an OAuth token with no client creds to
+// refresh with is used statically (still authenticates).
+func TestOAuthModeStaticWhenNoClientCreds(t *testing.T) {
+	var rec recorder
+	c := oauthConnector(t, &rec, map[string]any{
+		"access_token": "acc-static", "token_type": "bearer",
+		"expiry": time.Now().Add(time.Hour).Format(time.RFC3339),
+	}, "", "")
+	execOK(t, c, "asana_list_workspaces", nil)
+	if got := rec.headers.Get("Authorization"); got != "Bearer acc-static" {
+		t.Errorf("Authorization = %q, want Bearer acc-static", got)
+	}
+}
+
+func oauthConnector(t *testing.T, rec *recorder, oauthToken map[string]any, clientID, clientSecret string) *Connector {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.headers = r.Header.Clone()
+		rec.path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := map[string]any{
+		"base_url":           srv.URL,
+		"outbound_allowlist": []string{"127.0.0.0/8"},
+		"oauth_token":        oauthToken,
+	}
+	if clientID != "" {
+		cfg["client_id"] = clientID
+		cfg["client_secret"] = clientSecret
+	}
+	c, err := Factory()(cfg)
+	if err != nil {
+		t.Fatalf("Factory: %v", err)
+	}
+	return c.(*Connector)
 }

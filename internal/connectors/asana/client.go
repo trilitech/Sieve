@@ -66,7 +66,15 @@ func (a *Connector) doRequest(ctx context.Context, method, path string, query ur
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.config.APIKey)
+	// Bearer token from the token source: a static PAT, or a refreshing OAuth
+	// token (which may return connector.ErrNeedsReauth if the refresh token is
+	// dead). Refreshing here means an expired OAuth token is renewed
+	// transparently on the request that needs it.
+	tok, err := a.tokenSource.Token()
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Sieve-Asana-Connector")
 	if body != nil {
