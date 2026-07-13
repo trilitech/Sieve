@@ -105,7 +105,10 @@ func TestCSPFormActionAllowsOAuthHosts(t *testing.T) {
 		"https://accounts.google.com",
 		"https://slack.com",
 		"https://github.com",
+		// Notion's OAuth redirect chain hops api.notion.com -> app.notion.com;
+		// both must be allowed or the browser stops at the blocked hop.
 		"https://api.notion.com",
+		"https://app.notion.com",
 	} {
 		if !strings.Contains(formAction, host) {
 			t.Errorf("form-action missing %q; a form POST that 302s there is blocked by CSP.\nform-action: %s", host, formAction)
