@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/trilitech/Sieve/internal/connector"
 	anthropicconn "github.com/trilitech/Sieve/internal/connectors/anthropic"
+	asanaconn "github.com/trilitech/Sieve/internal/connectors/asana"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
 	gitlabconn "github.com/trilitech/Sieve/internal/connectors/gitlab"
 	"github.com/trilitech/Sieve/internal/connectors/gmail"
@@ -27,5 +28,6 @@ func buildConnectorRegistry() *connector.Registry {
 	registry.Register(gitlabconn.Meta(), gitlabconn.Factory())
 	registry.Register(linearconn.Meta(), linearconn.Factory())
 	registry.Register(notionconn.Meta(), notionconn.Factory())
+	registry.Register(asanaconn.Meta(), asanaconn.Factory())
 	return registry
 }

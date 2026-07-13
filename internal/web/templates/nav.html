@@ -55,6 +55,7 @@
           <li><a href="/connections?type=slack" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-slack"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Slack</a></li>
           <li><a href="/connections?type=linear" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-linear"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Linear</a></li>
           <li><a href="/connections?type=notion" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-notion"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Notion</a></li>
+          <li><a href="/connections?type=asana" class="block px-3 py-1 rounded-lg text-xs transition-colors {{if eq .Active "connections-asana"}}text-indigo-400 bg-indigo-500/10{{else}}text-slate-400 hover:text-slate-200 hover:bg-slate-700/50{{end}}">Asana</a></li>
           <li class="pt-1.5 mt-1.5 border-t border-slate-700/50">
             <span class="block px-3 py-0.5 text-[10px] text-slate-600 uppercase tracking-wider">Coming Soon</span>
           </li>
@@ -313,6 +314,7 @@ var CMDK_ITEMS = [
   {label: "Connections / Slack",           href: "/connections?type=slack",           keywords: "chat messaging"},
   {label: "Connections / Linear",          href: "/connections?type=linear",          keywords: "issues projects tickets"},
   {label: "Connections / Notion",          href: "/connections?type=notion",          keywords: "pages databases blocks docs"},
+  {label: "Connections / Asana",           href: "/connections?type=asana",           keywords: "tasks projects stories comments"},
   // Policies sub-tabs (mirror). Only leaf scopes that the operations
   // picker recognises are listed — "google" and "cloud" are sidebar
   // group labels, not real scopes, so they're omitted to avoid landing

@@ -36,6 +36,7 @@ import (
 
 	"github.com/trilitech/Sieve/internal/connector"
 	anthropicconn "github.com/trilitech/Sieve/internal/connectors/anthropic"
+	asanaconn "github.com/trilitech/Sieve/internal/connectors/asana"
 	githubconn "github.com/trilitech/Sieve/internal/connectors/github"
 	gitlabconn "github.com/trilitech/Sieve/internal/connectors/gitlab"
 	"github.com/trilitech/Sieve/internal/connectors/gmail"
@@ -142,6 +143,13 @@ func allConnectors(t *testing.T) []connectorRegistration {
 			fac:  notionconn.Factory(),
 			sampleConfig: map[string]any{
 				"api_key": "ntn_test",
+			},
+		},
+		{
+			meta: asanaconn.Meta(),
+			fac:  asanaconn.Factory(),
+			sampleConfig: map[string]any{
+				"api_key": "1/asana-test",
 			},
 		},
 	}

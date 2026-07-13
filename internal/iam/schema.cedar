@@ -9,6 +9,8 @@ namespace Sieve {
   action "write";
   action "anthropic/read" in ["read"];
   action "anthropic/write" in ["write"];
+  action "asana/read" in ["read"];
+  action "asana/write" in ["write"];
   action "github/read" in ["read"];
   action "github/write" in ["write"];
   action "gitlab/read" in ["read"];
@@ -45,6 +47,61 @@ namespace Sieve {
     principal: [Sieve::Token],
     resource: [Sieve::Connection],
     context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "max_cost"?: String, "max_tokens"?: Long, "messages"?: String, "metadata"?: String, "model"?: String, "stop_sequences"?: Set<String>, "system"?: String, "temperature"?: String, "tool_choice"?: String, "tools"?: String, "top_k"?: Long, "top_p"?: String } }
+  };
+  action "asana/asana_create_story" in ["asana/write"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "task_gid"?: String, "text"?: String } }
+  };
+  action "asana/asana_create_task" in ["asana/write"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "assignee"?: String, "due_on"?: String, "name"?: String, "notes"?: String, "project"?: String, "workspace"?: String } }
+  };
+  action "asana/asana_get_project" in ["asana/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "opt_fields"?: String, "project_gid"?: String } }
+  };
+  action "asana/asana_get_task" in ["asana/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "opt_fields"?: String, "task_gid"?: String } }
+  };
+  action "asana/asana_list_projects" in ["asana/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "archived"?: Bool, "limit"?: Long, "offset"?: String, "opt_fields"?: String, "workspace"?: String } }
+  };
+  action "asana/asana_list_stories" in ["asana/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "limit"?: Long, "offset"?: String, "opt_fields"?: String, "task_gid"?: String } }
+  };
+  action "asana/asana_list_tasks" in ["asana/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "assignee"?: String, "completed_since"?: String, "limit"?: Long, "offset"?: String, "opt_fields"?: String, "project"?: String, "workspace"?: String } }
+  };
+  action "asana/asana_list_users" in ["asana/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "limit"?: Long, "offset"?: String, "opt_fields"?: String, "workspace"?: String } }
+  };
+  action "asana/asana_list_workspaces" in ["asana/read"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "limit"?: Long, "offset"?: String } }
+  };
+  action "asana/asana_request" in ["asana/write"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "body"?: String, "method"?: String, "path"?: String, "query"?: String } }
+  };
+  action "asana/asana_update_task" in ["asana/write"] appliesTo {
+    principal: [Sieve::Token],
+    resource: [Sieve::Connection],
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "assignee"?: String, "completed"?: Bool, "due_on"?: String, "name"?: String, "notes"?: String, "task_gid"?: String } }
   };
   action "github/github_comment_issue" in ["github/write"] appliesTo {
     principal: [Sieve::Token],
