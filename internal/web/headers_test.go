@@ -84,6 +84,35 @@ func TestTokenCreateResponseHeaders(t *testing.T) {
 // set as a GET. The headers come from the shared admin middleware, so
 // this test guards the middleware's coverage of write-path responses
 // rather than any specific handler's behaviour.
+// TestCSPFormActionAllowsOAuthHosts guards the CSP form-action allowlist: a
+// modern browser enforces form-action on the REDIRECT target of a form
+// submission, so an OAuth-provider host missing here silently blocks the
+// install (the redirect to the provider's authorize URL is dropped with no
+// error). Every connector whose install POSTs and 302s to a provider host must
+// be listed. (Notion regression: api.notion.com was missing → the Notion OAuth
+// install dead-ended.)
+func TestCSPFormActionAllowsOAuthHosts(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeSecurityHeaders(rec)
+	csp := rec.Header().Get("Content-Security-Policy")
+	i := strings.Index(csp, "form-action")
+	if i < 0 {
+		t.Fatalf("no form-action directive in CSP: %s", csp)
+	}
+	formAction := csp[i:]
+	for _, host := range []string{
+		"'self'",
+		"https://accounts.google.com",
+		"https://slack.com",
+		"https://github.com",
+		"https://api.notion.com",
+	} {
+		if !strings.Contains(formAction, host) {
+			t.Errorf("form-action missing %q; a form POST that 302s there is blocked by CSP.\nform-action: %s", host, formAction)
+		}
+	}
+}
+
 func TestAdminMutationPostResponseHeaders(t *testing.T) {
 	ts, env := newHeadersTestServer(t)
 	role, err := env.Roles.Create("conn-test-role", nil)

@@ -47,15 +47,17 @@ func WriteSensitive(w http.ResponseWriter) {
 // the initial form target AND any redirects from that submission, so a
 // POST to /connections/{id}/reauth (same-origin, allowed) that gets a
 // 302 → accounts.google.com would otherwise be blocked at the redirect.
-// Same applies to Slack OAuth (slack.com) and the GitHub App install /
-// manifest flows (github.com). The list is intentionally minimal —
-// adding a connector that POSTs to a new OAuth host requires updating
-// this directive.
+// Same applies to Slack OAuth (slack.com), the GitHub App install /
+// manifest flows (github.com), and Notion OAuth (api.notion.com). The list
+// is intentionally minimal — adding a connector that POSTs to a new OAuth
+// host requires updating this directive (a modern browser enforces
+// form-action on the redirect target, so a missing host silently blocks the
+// install with no error).
 func writeSecurityHeaders(w http.ResponseWriter) {
 	const cdnScripts = "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com"
 	const cdnStyles = "https://fonts.googleapis.com"
 	const cdnFonts = "https://fonts.gstatic.com"
-	const oauthHosts = "https://accounts.google.com https://slack.com https://github.com"
+	const oauthHosts = "https://accounts.google.com https://slack.com https://github.com https://api.notion.com"
 	h := w.Header()
 	h.Set("Content-Security-Policy",
 		"default-src 'self'; "+
