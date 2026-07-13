@@ -127,6 +127,39 @@ func TestGoogleOAuthRedirectURLIgnoresHostHeader(t *testing.T) {
 	}
 }
 
+// TestOAuthRedirectBaseURLDerivesFromHost proves the OAuth-redirect helper
+// derives scheme://host from the request (so redirect URIs match however the
+// operator reached the admin UI), trusting ONLY r.Host + r.TLS — never the
+// forgeable X-Forwarded-* headers — and that public_base_url still overrides.
+func TestOAuthRedirectBaseURLDerivesFromHost(t *testing.T) {
+	_, env, srv := newHostHeaderTestServer(t)
+
+	// Derives from r.Host.
+	r := httptest.NewRequest("GET", "http://x/x", nil)
+	r.Host = "speedybear:19816"
+	if got := srv.oauthRedirectBaseURL(r); got != "http://speedybear:19816" {
+		t.Errorf("oauthRedirectBaseURL = %q, want http://speedybear:19816", got)
+	}
+
+	// Ignores forgeable X-Forwarded-* (uses r.Host, not the header).
+	r2 := httptest.NewRequest("GET", "http://x/x", nil)
+	r2.Host = "speedybear:19816"
+	r2.Header.Set("X-Forwarded-Host", "attacker.example")
+	r2.Header.Set("X-Forwarded-Proto", "https")
+	got := srv.oauthRedirectBaseURL(r2)
+	if strings.Contains(got, "attacker.example") || strings.HasPrefix(got, "https") {
+		t.Errorf("oauthRedirectBaseURL trusted X-Forwarded-*: %q", got)
+	}
+
+	// Explicit public_base_url overrides the request.
+	if err := env.Settings.Set(settings.KeyPublicBaseURL, "https://sieve.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.oauthRedirectBaseURL(r); got != "https://sieve.example.com" {
+		t.Errorf("oauthRedirectBaseURL with override = %q, want the setting", got)
+	}
+}
+
 // readAll returns the response body as a string, failing the test if the
 // read errors out. Using io.ReadAll surfaces real I/O failures instead of
 // silently truncating, which makes assertion failures easier to diagnose.

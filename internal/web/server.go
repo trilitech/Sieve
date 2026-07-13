@@ -831,6 +831,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		// flag and runtime behavior never diverge.
 		"SlackOAuthConfigured":  s.slackOAuthIsConfigured(),
 		"NotionOAuthConfigured": s.notionOAuthIsConfigured(),
+		// The exact redirect URI to register in the provider's OAuth app —
+		// derived from how the operator reached this page, so the setup cards
+		// can show it verbatim instead of telling operators to guess.
+		"OAuthCallbackURL": s.oauthRedirectBaseURL(r) + "/oauth/callback",
 	}
 	s.render(w, r, "connections", data)
 }
@@ -1119,11 +1123,56 @@ func (s *Server) handleConnectionEnable(w http.ResponseWriter, r *http.Request) 
 // The *http.Request argument is intentionally accepted (and ignored) so
 // every call site reads with awareness of the forged-header threat — the
 // signature carries the reminder that r.Host MUST NOT be used here.
+// publicBaseURL is the scheme://host Sieve treats as its own externally-visible
+// admin base for URLs that DEFINE trust with a third party and therefore must
+// NOT be influenced by the inbound request — notably the GitHub App manifest's
+// callback/redirect/setup URLs, which are created (not matched) at submission
+// time. It uses the operator-configured public_base_url and otherwise the
+// loopback default; it deliberately ignores Host / X-Forwarded-* headers.
+//
+// For OAuth authorization-code redirect URIs (which must round-trip through the
+// operator's browser and are gated by the provider's pre-registered redirect
+// allowlist) use oauthRedirectBaseURL instead — it derives from the request so
+// the flow works from whatever host the operator actually uses.
 func (s *Server) publicBaseURL(_ *http.Request) string {
 	if s.settings != nil {
 		if u := s.settings.PublicBaseURL(); u != "" {
 			return strings.TrimRight(u, "/")
 		}
+	}
+	return "http://127.0.0.1:19816"
+}
+
+// oauthRedirectBaseURL is the scheme://host used to build OAuth
+// authorization-code redirect URIs (and the "register this redirect URI" hint
+// shown to operators). Explicit public_base_url wins (reverse-proxy
+// deployments). Otherwise it DERIVES FROM THE REQUEST — scheme from the actual
+// TLS state and host from r.Host — so the redirect matches however the operator
+// reached the admin UI (localhost, a LAN hostname, …) instead of a hidden
+// 127.0.0.1 default that silently breaks every non-loopback install.
+//
+// Safe despite r.Host being attacker-influenceable in theory: the OAuth
+// provider only ever redirects to a redirect_uri the operator PRE-REGISTERED on
+// their app, so a spoofed Host yields an unregistered URI the provider rejects
+// — it cannot exfiltrate a code. The /start endpoints are also behind operator
+// auth + CSRF. It intentionally trusts ONLY r.Host + r.TLS, never the
+// forgeable X-Forwarded-* headers; reverse-proxy users set public_base_url.
+func (s *Server) oauthRedirectBaseURL(r *http.Request) string {
+	// Read the RAW setting (not PublicBaseURL(), which substitutes a
+	// 127.0.0.1 default for an unset value) so an operator who never
+	// configured public_base_url falls through to request derivation instead
+	// of a hidden loopback default.
+	if s.settings != nil {
+		if raw, _ := s.settings.Get(settings.KeyPublicBaseURL); strings.TrimSpace(raw) != "" {
+			return strings.TrimRight(strings.TrimSpace(raw), "/")
+		}
+	}
+	if r != nil && r.Host != "" {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		return scheme + "://" + r.Host
 	}
 	return "http://127.0.0.1:19816"
 }
@@ -1857,11 +1906,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		"LLMModel":      allSettings[settings.KeyLLMModel],
 		"LLMMaxTokens":  maxTokens,
 		"PublicBaseURL": allSettings[settings.KeyPublicBaseURL],
-		// Derived from PublicBaseURL via the same publicBaseURL() helper
-		// used by googleOAuthConfig.RedirectURL, so what the operator sees
-		// here is byte-for-byte the URL Sieve will send to OAuth providers.
-		// Surfacing it on the settings page is the lowest-friction way to
-		// avoid Error 400: redirect_uri_mismatch on the provider side.
+		// Derived from PublicBaseURL via publicBaseURL() (the strict helper,
+		// matching Google's loopback flow + the GitHub App manifest). The Slack
+		// and Notion setup cards show the request-derived redirect URI directly
+		// on the connections page, which is where those OAuth apps are wired up.
 		"OAuthCallbackURL": s.publicBaseURL(r) + "/oauth/callback",
 		"CommandAllowlist": allSettings[settings.KeyCommandAllowlist],
 		"AdminTLSCertPath": allSettings[settings.KeyAdminTLSCertPath],

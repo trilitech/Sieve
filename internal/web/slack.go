@@ -253,13 +253,13 @@ func (s *Server) beginSlackOAuthWithScopes(w http.ResponseWriter, r *http.Reques
 			q[k] = vs
 		}
 	}
-	// redirect_uri MUST come from publicBaseURL — Slack's OAuth flow
-	// validates that the redirect_uri presented to oauth.v2.access (below)
-	// matches the one used at install time, so this value is also the value
-	// passed to slackOAuthExchange. Forging Host would let an attacker
-	// register a Slack install whose token-exchange callback hits their
-	// own server...
-	q.Set("redirect_uri", s.publicBaseURL(r)+"/oauth/callback")
+	// redirect_uri comes from oauthRedirectBaseURL (request-derived unless
+	// public_base_url is set) so it matches however the operator reached the
+	// admin UI. Slack validates that the redirect_uri presented to
+	// oauth.v2.access matches the one used at install time; slackOAuthExchange
+	// derives it the same way. Safe because Slack only redirects to a
+	// redirect_uri pre-registered on the app. See oauthRedirectBaseURL.
+	q.Set("redirect_uri", s.oauthRedirectBaseURL(r)+"/oauth/callback")
 	q.Set("state", state)
 	target := slackEndpoint(slackAuthorizeURL) + "?" + q.Encode()
 	http.Redirect(w, r, target, http.StatusFound)
@@ -587,7 +587,7 @@ func (s *Server) completeSlackOAuth(w http.ResponseWriter, r *http.Request, pend
 	// Pass publicBaseURL's host portion to slackOAuthExchange so the
 	// redirect_uri sent to oauth.v2.access matches what was used at install
 	// time (Slack validates equality). r.Host MUST NOT be used.
-	cfg, err := s.slackOAuthExchange(r.Context(), s.publicBaseURL(r), code, pending.CodeVerifier)
+	cfg, err := s.slackOAuthExchange(r.Context(), s.oauthRedirectBaseURL(r), code, pending.CodeVerifier)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

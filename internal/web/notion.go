@@ -171,10 +171,13 @@ func (s *Server) beginNotionOAuth(w http.ResponseWriter, r *http.Request, id, di
 	q.Set("client_id", clientID)
 	q.Set("response_type", "code")
 	q.Set("owner", "user")
-	// redirect_uri MUST come from publicBaseURL — Notion validates that the
-	// value presented at token exchange equals the one used at authorize time.
-	// Forging Host would let an attacker capture the callback. See slack.go.
-	q.Set("redirect_uri", s.publicBaseURL(r)+"/oauth/callback")
+	// redirect_uri comes from oauthRedirectBaseURL (request-derived unless
+	// public_base_url is set) so it matches however the operator reached the
+	// admin UI. Notion validates that the value presented at token exchange
+	// equals this one; completeNotionOAuth derives it the same way. Safe
+	// because Notion only redirects to a redirect_uri pre-registered on the
+	// integration. See oauthRedirectBaseURL.
+	q.Set("redirect_uri", s.oauthRedirectBaseURL(r)+"/oauth/callback")
 	q.Set("state", state)
 	http.Redirect(w, r, notionEndpoint(notionAuthorizeURL)+"?"+q.Encode(), http.StatusFound)
 }
@@ -183,7 +186,7 @@ func (s *Server) beginNotionOAuth(w http.ResponseWriter, r *http.Request, id, di
 // Exchanges the code for a bot token and persists it (Add for a fresh install,
 // UpdateConfig+active for a reauth, with workspace continuity enforced).
 func (s *Server) completeNotionOAuth(w http.ResponseWriter, r *http.Request, pending pendingOAuth, code string) {
-	cfg, err := s.notionOAuthExchange(r.Context(), s.publicBaseURL(r), code)
+	cfg, err := s.notionOAuthExchange(r.Context(), s.oauthRedirectBaseURL(r), code)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
