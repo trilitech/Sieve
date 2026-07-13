@@ -330,6 +330,25 @@ func (s *Server) handleToolsCall(ctx context.Context, id any, tok *tokens.Token,
 		}
 	}
 
+	// "connection" is ROUTING metadata (already consumed by resolveToolCall),
+	// not an operation parameter. Strip it so the connector's Execute, the
+	// policy context's `param` record, and the audit log see only real op
+	// params — identical whether or not the caller passed the advertised
+	// connection arg. (The deny itself is fixed in resolveToolCall; this keeps
+	// the routing arg out of everything downstream.) All downstream reads use
+	// call.Arguments, so swap in a cleaned copy once rather than mutating the
+	// caller's map.
+	if _, ok := call.Arguments["connection"]; ok {
+		cleaned := make(map[string]any, len(call.Arguments))
+		for k, v := range call.Arguments {
+			if k == "connection" {
+				continue
+			}
+			cleaned[k] = v
+		}
+		call.Arguments = cleaned
+	}
+
 	// The IAM decision is the SOLE gate and MUST run before anything
 	// connection-specific is revealed (the reauth envelope, the connector build).
 	// Look up connection METADATA (type + status) without building the connector,
@@ -592,17 +611,26 @@ func (s *Server) resolveToolCall(tok *tokens.Token, call ToolCallParams) (connID
 		}
 		connID = connIDStr
 
-		// The tool name may be prefixed with connector type; strip it.
-		conn, err := s.connections.Get(connID)
-		if err != nil {
-			// Don't leak existence — the caller maps this sentinel to the uniform
-			// not-authorized response (existence-oracle closure).
+		// Existence check. Don't leak existence — the caller maps this sentinel
+		// to the uniform not-authorized response (existence-oracle closure).
+		if _, err := s.connections.Get(connID); err != nil {
 			return "", "", errUnknownConnection
 		}
-		prefix := conn.ConnectorType + "_"
+
+		// The tool name may be the bare op, or — in multi-connection mode —
+		// prefixed with the CONNECTION ID ("<connID>_<op>", see the tool-name
+		// builder). Strip that connID prefix so op resolution is identical
+		// whether the caller used the advertised prefixed tool name plus a
+		// connection arg, or a bare op name plus a connection arg.
+		//
+		// The prior code stripped the connector *type* prefix, which never
+		// matches a connID-prefixed name (e.g. "TT-google_list_labels" doesn't
+		// start with "google_"), so opName became the whole tool name and the
+		// call fell through to default-deny — passing the advertised connection
+		// arg silently broke every prefixed tool. (tezos_ops P0 2026-07-13.)
 		opName = call.Name
-		if strings.HasPrefix(opName, prefix) {
-			opName = strings.TrimPrefix(opName, prefix)
+		if p := connID + "_"; strings.HasPrefix(opName, p) {
+			opName = strings.TrimPrefix(opName, p)
 		}
 		opName = denormalizeDots(opName)
 
