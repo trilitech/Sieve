@@ -59,7 +59,12 @@ func validateOAuthAppInputs(provider string, creds OAuthAppCredentials) error {
 	if len(creds.ClientID) > 256 {
 		return errors.New("oauth_app: client_id too long (max 256 chars)")
 	}
-	if len(strings.TrimSpace(creds.ClientSecret)) < 16 {
+	// client_secret is OPTIONAL at this layer: an empty secret selects a PKCE
+	// public-client flow (required for loopback / "non-web URI" redirects, e.g.
+	// Slack on localhost). Whether a given provider mandates a secret is a
+	// per-provider decision enforced in that provider's configure handler. A
+	// provided secret must still be a plausible full value.
+	if sec := strings.TrimSpace(creds.ClientSecret); sec != "" && len(sec) < 16 {
 		return errors.New("oauth_app: client_secret too short (min 16 chars)")
 	}
 	return nil

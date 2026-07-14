@@ -469,15 +469,21 @@ func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
 		t.Errorf("client_secret leaked into settings: %q", v)
 	}
 
-	// Subsequent /connections render shows the install button, no
-	// configure form.
+	// Subsequent /connections render shows the install button and drops the
+	// one-time setup UI. The configure form is still reachable (now inside the
+	// collapsed "Manage OAuth credentials" disclosure) for updates/PKCE switch,
+	// so we key on the one-time-setup heading, which only shows when unset.
 	rec2 := getRequest(handler, env, "/connections")
 	body := rec2.Body.String()
 	if !strings.Contains(body, `action="/connections/slack/oauth/start"`) {
 		t.Errorf("install button should appear after configure")
 	}
-	if strings.Contains(body, `action="/connections/slack/oauth/configure"`) {
-		t.Errorf("configure form should be hidden after credentials are set")
+	if strings.Contains(body, "One-time setup: Slack OAuth app") {
+		t.Errorf("one-time setup UI should be hidden after credentials are set")
+	}
+	// The clear/reset control must be present so operators can remove creds.
+	if !strings.Contains(body, `action="/connections/slack/oauth/clear"`) {
+		t.Errorf("reset/remove OAuth credentials control should be present when configured")
 	}
 }
 
@@ -493,10 +499,10 @@ func TestHandleSlackOAuthConfigure_ValidatesShape(t *testing.T) {
 		form url.Values
 	}{
 		{"missing client_id", url.Values{"client_secret": {"abcdef0123456789abcdef"}}},
-		{"missing client_secret", url.Values{"client_id": {"123.456"}}},
 		{"client_id without dot", url.Values{"client_id": {"plainstring"}, "client_secret": {"abcdef0123456789abcdef"}}},
 		{"client_id too short", url.Values{"client_id": {"1.2"}, "client_secret": {"abcdef0123456789abcdef"}}},
-		{"client_secret too short", url.Values{"client_id": {"1234567890.0987654321"}, "client_secret": {"short"}}},
+		// A secret is optional, but a PROVIDED one that's implausibly short is rejected.
+		{"client_secret present but too short", url.Values{"client_id": {"1234567890.0987654321"}, "client_secret": {"short"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -505,6 +511,33 @@ func TestHandleSlackOAuthConfigure_ValidatesShape(t *testing.T) {
 				t.Fatalf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestHandleSlackOAuthConfigure_ClientIDOnly proves the configure form accepts
+// a client_id with NO client_secret — the PKCE public-client flow, which is
+// mandatory for a localhost (non-web URI) redirect on Slack.
+func TestHandleSlackOAuthConfigure_ClientIDOnly(t *testing.T) {
+	t.Setenv("SLACK_CLIENT_ID", "")
+	t.Setenv("SLACK_CLIENT_SECRET", "")
+	handler, env := slackUITestServer(t)
+
+	rec := formPost(handler, env, "/connections/slack/oauth/configure", url.Values{
+		"client_id": {"1234567890.0987654321"},
+		// no client_secret
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("client_id-only configure should succeed (303), got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	creds, err := env.Connections.GetOAuthApp("slack")
+	if err != nil {
+		t.Fatalf("GetOAuthApp: %v", err)
+	}
+	if creds == nil || creds.ClientID != "1234567890.0987654321" {
+		t.Fatalf("client_id not persisted: %+v", creds)
+	}
+	if creds.ClientSecret != "" {
+		t.Errorf("client_secret should be empty (PKCE public client), got %q", creds.ClientSecret)
 	}
 }
 

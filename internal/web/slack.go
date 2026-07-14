@@ -546,16 +546,23 @@ func (s *Server) handleSlackOAuthConfigure(w http.ResponseWriter, r *http.Reques
 	}
 	clientID := strings.TrimSpace(r.FormValue("client_id"))
 	clientSecret := strings.TrimSpace(r.FormValue("client_secret"))
-	if clientID == "" || clientSecret == "" {
-		http.Error(w, "client_id and client_secret are both required", http.StatusBadRequest)
+	if clientID == "" {
+		http.Error(w, "client_id is required", http.StatusBadRequest)
 		return
 	}
 	if !strings.ContainsRune(clientID, '.') || len(clientID) < 10 {
 		http.Error(w, "client_id doesn't look like a Slack OAuth client ID (expected format: 1234567890.1234567890)", http.StatusBadRequest)
 		return
 	}
-	if len(clientSecret) < 16 {
-		http.Error(w, "client_secret too short — copy the full value from your Slack app's Basic Information page", http.StatusBadRequest)
+	// client_secret is OPTIONAL. Leaving it blank selects Slack's PKCE
+	// public-client flow (see pkce.go) — which is REQUIRED for a loopback
+	// (https://localhost) redirect: Slack classifies that as a "non-web URI"
+	// and rejects the authorize request with "Must use PKCE to redirect to a
+	// non-web URI" unless a code_challenge is sent. A secret is only usable for
+	// a public-domain (reverse-proxy) deployment, where it upgrades to the
+	// confidential flow. When present it must be a plausible full secret.
+	if clientSecret != "" && len(clientSecret) < 16 {
+		http.Error(w, "client_secret too short — copy the full value from your Slack app's Basic Information page, or leave it blank to use the PKCE public-client flow (required for a localhost redirect)", http.StatusBadRequest)
 		return
 	}
 	if err := s.connections.PutOAuthApp("slack", connections.OAuthAppCredentials{
