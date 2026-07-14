@@ -128,11 +128,13 @@ there's nothing to enable:
 1. **Nothing to generate.** On startup Sieve auto-provisions a self-signed
    loopback cert at `./data/tls/admin-{cert,key}.pem` and serves the admin UI
    over HTTPS. Browse to `https://localhost:19816` and accept the one-time
-   browser warning. (For a warning-free cert, set `admin.tls_cert_path` /
-   `admin.tls_key_path` to your own — e.g. `mkcert localhost` — and restart.)
-   `public_base_url` defaults to `https://localhost:19816`; leave it unset or
-   match it. Don't set an `http://…` value — that opts the admin UI back to
-   plaintext and breaks the Slack redirect.
+   browser warning. **For a warning-free cert, run
+   `./scripts/trust-localhost-cert.sh` once** (installs `mkcert`, registers a
+   locally-trusted CA — needs sudo — and writes a trusted cert to the same
+   path; Sieve serves it with HSTS on the next start). `public_base_url`
+   defaults to `https://localhost:19816`; leave it unset or match it. Don't set
+   an `http://…` value — that opts the admin UI back to plaintext and breaks the
+   Slack redirect.
 2. In your Slack app's **OAuth & Redirect URLs**, register
    `https://localhost:19816/oauth/callback`.
 3. Launch with your Slack client id (omit the secret for the PKCE public flow):

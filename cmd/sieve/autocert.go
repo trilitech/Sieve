@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -89,27 +90,71 @@ func ensureSelfSignedCert(dir, name string) (certPath, keyPath string, err error
 }
 
 // reuseSelfSignedCert reports whether an existing cert/key pair on disk can be
-// reused: both files present, the cert parses, and it is not within
-// autoCertRenewWindow of expiry. Any failure returns false so the caller
-// regenerates — a corrupt or stale pair is silently replaced rather than
-// crashing the listener.
+// reused rather than regenerated. Rules:
+//   - key missing / cert unreadable / unparseable / already expired → false
+//     (regenerate; a corrupt or dead pair must not crash the listener).
+//   - a self-signed cert within autoCertRenewWindow of expiry → false
+//     (proactively roll over our OWN cert before browsers reject it).
+//   - anything else (a healthy self-signed cert, or ANY not-yet-expired
+//     CA-signed cert) → true.
+//
+// The self-signed gate on the renew window is deliberate: a CA-signed cert an
+// operator dropped here (e.g. via scripts/trust-localhost-cert.sh with mkcert)
+// must never be silently overwritten with an untrusted self-signed cert just
+// because it neared expiry — the operator re-runs their script to renew it.
 func reuseSelfSignedCert(certPath, keyPath string) bool {
 	if _, err := os.Stat(keyPath); err != nil {
 		return false
 	}
+	cert := loadLeafCert(certPath)
+	if cert == nil {
+		return false
+	}
+	now := time.Now()
+	if !cert.NotAfter.After(now) {
+		return false // expired
+	}
+	if certIsSelfSignedCert(cert) && now.Add(autoCertRenewWindow).After(cert.NotAfter) {
+		return false // our own cert nearing expiry — roll it over
+	}
+	return true
+}
+
+// loadLeafCert reads, PEM-decodes, and parses the leaf certificate at path.
+// Returns nil on any error (missing, malformed, not a CERTIFICATE block).
+func loadLeafCert(certPath string) *x509.Certificate {
 	pemBytes, err := os.ReadFile(certPath)
 	if err != nil {
-		return false
+		return nil
 	}
 	block, _ := pem.Decode(pemBytes)
 	if block == nil || block.Type != "CERTIFICATE" {
-		return false
+		return nil
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return false
+		return nil
 	}
-	return time.Now().Add(autoCertRenewWindow).Before(cert.NotAfter)
+	return cert
+}
+
+// certIsSelfSignedCert reports whether a parsed cert is self-signed (issuer ==
+// subject), i.e. Sieve's own auto-generated cert rather than one issued by a
+// local CA such as mkcert.
+func certIsSelfSignedCert(cert *x509.Certificate) bool {
+	return bytes.Equal(cert.RawIssuer, cert.RawSubject)
+}
+
+// certIsSelfSigned reports whether the cert file at path is self-signed. A
+// missing/unreadable cert defaults to true — the safe answer, since it drives
+// the HSTS-off decision (see cmd/sieve/main.go): never assert HSTS for a cert
+// we can't confirm is CA-trusted.
+func certIsSelfSigned(certPath string) bool {
+	cert := loadLeafCert(certPath)
+	if cert == nil {
+		return true
+	}
+	return certIsSelfSignedCert(cert)
 }
 
 // writePEMFile writes a single PEM block to path with the given mode,

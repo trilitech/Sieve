@@ -614,6 +614,17 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string, oa
 	webHTTP := &http.Server{Addr: webAddr, Handler: webSrv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	apiHTTP := &http.Server{Addr: apiAddr, Handler: agentMux, ReadHeaderTimeout: 10 * time.Second}
 
+	// Silence the benign per-connection "TLS handshake error" noise. With the
+	// self-signed default cert, browsers rejecting the untrusted cert (before
+	// the operator clicks through), stale http:// clients hitting the https
+	// port, and abandoned preconnect probes all produce a steady stream of
+	// these — none actionable server-side. quietTLSHandshakeLog drops only
+	// those lines; genuine ErrorLog output (handler panics, Accept errors)
+	// still passes through.
+	quietLog := quietTLSHandshakeLog()
+	webHTTP.ErrorLog = quietLog
+	apiHTTP.ErrorLog = quietLog
+
 	// Wire the command allowlist for script-policy validation. Empty
 	// settings value falls back to the bundled-Python default via
 	// policy.ValidateCommand semantics — see CurrentCommandAllowlist.
@@ -644,8 +655,16 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string, oa
 		}
 		adminTLS.CertPath = certPath
 		adminTLS.KeyPath = keyPath
-		adminTLS.SelfSigned = true
-		log.Printf("admin UI TLS: serving HTTPS with an auto-generated self-signed certificate (%s). Your browser will warn once on first visit — accept it to proceed. Set admin.tls_cert_path/admin.tls_key_path for a real cert, or set public_base_url to an http:// URL to serve plaintext.", certPath)
+		// A cert an operator dropped here via scripts/trust-localhost-cert.sh
+		// (mkcert) is CA-signed and locally trusted — serve it with HSTS and no
+		// warning. Our own auto-generated cert is self-signed — HSTS off (see
+		// tlsPair.SelfSigned) and warn the operator about the browser prompt.
+		adminTLS.SelfSigned = certIsSelfSigned(certPath)
+		if adminTLS.SelfSigned {
+			log.Printf("admin UI TLS: serving HTTPS with an auto-generated self-signed certificate (%s). Your browser will warn once on first visit — accept it to proceed. For a warning-free cert run scripts/trust-localhost-cert.sh (mkcert), set admin.tls_cert_path/admin.tls_key_path to your own, or set public_base_url to an http:// URL to serve plaintext.", certPath)
+		} else {
+			log.Printf("admin UI TLS: serving HTTPS with the locally-trusted certificate at %s (no browser warning). Re-run scripts/trust-localhost-cert.sh to renew it before it expires.", certPath)
+		}
 	}
 	if _, err := adminTLS.enabled(); err != nil {
 		return fmt.Errorf("admin TLS config: %w", err)
