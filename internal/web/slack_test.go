@@ -469,10 +469,10 @@ func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
 		t.Errorf("client_secret leaked into settings: %q", v)
 	}
 
-	// Subsequent /connections render shows the install button and drops the
-	// one-time setup UI. The configure form is still reachable (now inside the
-	// collapsed "Manage OAuth credentials" disclosure) for updates/PKCE switch,
-	// so we key on the one-time-setup heading, which only shows when unset.
+	// Subsequent /connections render shows the install forms and drops the
+	// one-time setup UI. The configure form is still reachable (in the visible
+	// "Manage OAuth credentials" section) for updates/PKCE switch, so we key on
+	// the one-time-setup heading, which only shows when unset.
 	rec2 := getRequest(handler, env, "/connections")
 	body := rec2.Body.String()
 	if !strings.Contains(body, `action="/connections/slack/oauth/start"`) {
@@ -484,6 +484,19 @@ func TestHandleSlackOAuthConfigure_HappyPath(t *testing.T) {
 	// The clear/reset control must be present so operators can remove creds.
 	if !strings.Contains(body, `action="/connections/slack/oauth/clear"`) {
 		t.Errorf("reset/remove OAuth credentials control should be present when configured")
+	}
+	// The Manage section must be visibly present (not tucked in a <details>).
+	if !strings.Contains(body, "Manage OAuth credentials") {
+		t.Errorf("Manage OAuth credentials section should be visible when configured")
+	}
+	// The user-install form must render BEFORE the bot-install form.
+	userIdx := strings.Index(body, `action="/connections/slack/oauth/user/start"`)
+	botIdx := strings.Index(body, `action="/connections/slack/oauth/start"`)
+	if userIdx < 0 || botIdx < 0 {
+		t.Fatalf("both install forms must be present (user=%d bot=%d)", userIdx, botIdx)
+	}
+	if userIdx > botIdx {
+		t.Errorf("user-install form should render before bot-install form (user idx %d > bot idx %d)", userIdx, botIdx)
 	}
 }
 
