@@ -9,13 +9,18 @@
 # with a cert signed by mkcert's locally-trusted CA. It:
 #
 #   1. installs mkcert if it's missing,
-#   2. registers mkcert's local CA in your system trust store (needs sudo/admin
-#      — mkcert prompts for it),
+#   2. registers mkcert's local CA in your system trust store (mkcert prompts
+#      for elevation itself when it needs it),
 #   3. writes a localhost cert to ./data/tls/admin-{cert,key}.pem — the SAME
 #      paths Sieve's built-in auto-cert uses.
 #
 # On the next start Sieve finds the cert, sees it is CA-signed, and serves it
 # with HSTS and no browser warning. Nothing else to configure.
+#
+# Run it as your NORMAL user (NOT `sudo ./scripts/...`): mkcert elevates on its
+# own for the CA install, and running the whole script as root would leave the
+# cert files owned by root so Sieve (your user) can't read them. If you do run
+# it under sudo, the script hands ownership back to $SUDO_USER at the end.
 #
 # Usage:
 #   ./scripts/trust-localhost-cert.sh          # uses ./data
@@ -66,6 +71,19 @@ echo "==> Issuing certificate for localhost / 127.0.0.1 / ::1 ..."
 mkcert -cert-file "$CERT" -key-file "$KEY" localhost 127.0.0.1 ::1
 chmod 600 "$KEY"
 chmod 644 "$CERT"
+
+# If this script was run via sudo, the files above are now owned by root. Sieve
+# runs as your normal user and cannot read a root-owned 0600 key ("permission
+# denied"), so hand ownership of the TLS dir + files back to the invoking user.
+# (You don't need sudo to run this whole script — mkcert elevates on its own for
+# the CA install — but people commonly prefix sudo anyway, so we recover here.)
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+  owner_group="$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")"
+  echo "==> Ran under sudo — restoring ownership of cert files to $SUDO_USER..."
+  chown "$SUDO_USER:$owner_group" "$TLS_DIR" "$CERT" "$KEY" 2>/dev/null \
+    || chown "$SUDO_USER" "$TLS_DIR" "$CERT" "$KEY" \
+    || echo "WARNING: could not chown cert files to $SUDO_USER; run: chown $SUDO_USER $KEY $CERT" >&2
+fi
 
 echo
 echo "==> Done. Trusted certificate written:"
