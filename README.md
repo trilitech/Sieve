@@ -116,6 +116,23 @@ go build -o sieve ./cmd/sieve
 # API/MCP: http://localhost:19817
 ```
 
+**Admin UI over HTTPS.** The admin UI (port 19816) serves **HTTPS by default**,
+so Slack — and any other https-only OAuth flow — works out of the box. On first
+start Sieve auto-generates a self-signed loopback cert under `./data/tls`, so
+your browser shows a one-time "your connection is not private" warning — click
+through to proceed. For a **warning-free, locally-trusted cert**, run the helper
+once (as your normal user, **not** `sudo`):
+
+```bash
+./scripts/trust-localhost-cert.sh   # installs mkcert, registers a local CA, writes a trusted cert
+```
+
+Sieve picks the trusted cert up on the next start (HSTS on, no warning). To use
+your own cert, set `admin.tls_cert_path` / `admin.tls_key_path` in the admin UI
+Settings. To serve plaintext HTTP instead (e.g. behind a TLS-terminating proxy),
+set `public_base_url` to an `http://` URL. See
+[docs/connectors-slack.md](docs/connectors-slack.md#redirect-requirement).
+
 **First-run admin setup.** On the very first visit to the Web UI, Sieve has no
 admin operator yet, so https://localhost:19816 redirects you to **`/setup`** (a
 loopback-only page) to create the first admin credential + display name. Set it,
@@ -162,9 +179,10 @@ The Docker image comes with a batteries-included Python environment (requests, h
 Two install paths — see [`docs/connectors-slack.md`](docs/connectors-slack.md) for the full walkthrough including required bot scopes and troubleshooting.
 
 **OAuth path:**
-1. Set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in Sieve's environment (from your Slack app's Basic Information page).
-2. Open https://localhost:19816/connections → pick **Slack** → **Install via OAuth** → approve in Slack.
-3. Connection lands `status: active`. Agents can list channels, read history, search threads, and post messages — subject to policies.
+1. Create a Slack app, **enable PKCE** under *OAuth & Permissions*, and register the redirect URL `https://localhost:19816/oauth/callback`.
+2. On the connections page → **Slack** card → **Set up Slack OAuth**, paste your **Client ID**. Leave the **Client Secret blank** — a `localhost` redirect requires Slack's PKCE public-client flow (a secret is only for a public-domain deployment). *(Alternatively, pre-set `SLACK_CLIENT_ID` in the environment.)*
+3. Click **Install via OAuth** (bot) or **Install via OAuth (as user)** → approve in Slack.
+4. Connection lands `status: active`. Agents can list channels, read history, search threads, and post messages — subject to policies. To change or remove the stored OAuth credentials later, use **Manage OAuth credentials** on the Slack card.
 
 **Direct bot-token path** (for Slack apps you've already installed):
 1. From your Slack app's **OAuth & Permissions** page, copy the bot token (`xoxb-…`).

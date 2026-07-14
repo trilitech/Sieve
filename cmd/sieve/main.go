@@ -156,6 +156,12 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "       %s mcp-launch [flags]   stdio→HTTP MCP bridge for Claude Desktop\n\n", os.Args[0])
 		fmt.Fprintln(flag.CommandLine.Output(), "Flags:")
 		flag.PrintDefaults()
+		fmt.Fprintln(flag.CommandLine.Output(), "\nAdmin UI TLS:")
+		fmt.Fprintln(flag.CommandLine.Output(), "  The admin UI serves HTTPS by default with an auto-generated self-signed")
+		fmt.Fprintln(flag.CommandLine.Output(), "  cert (one-time browser warning). For a warning-free, locally-trusted cert,")
+		fmt.Fprintln(flag.CommandLine.Output(), "  run:  ./scripts/trust-localhost-cert.sh   (as your normal user, not sudo)")
+		fmt.Fprintln(flag.CommandLine.Output(), "  To serve plaintext HTTP instead, set public_base_url to an http:// URL in")
+		fmt.Fprintln(flag.CommandLine.Output(), "  the admin UI Settings. See docs/connectors-slack.md.")
 	}
 	flag.Parse()
 
