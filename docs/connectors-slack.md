@@ -74,13 +74,14 @@ Submit to the Marketplace only when you need other organizations to install it.
 
 ### Redirect requirement
 
-Slack rejects a plain `http://localhost` / `http://127.0.0.1` redirect — it requires an `https` redirect URL registered on the app. **`https://localhost` loopback works fine, though — no public tunnel is needed.** Serve the admin UI over TLS and register `https://localhost:19816/oauth/callback` on your Slack app:
+Slack rejects a plain `http://localhost` / `http://127.0.0.1` redirect — it requires an `https` redirect URL registered on the app. **`https://localhost` loopback works fine, though — no public tunnel is needed.** Since the admin UI now serves HTTPS by default, this works out of the box:
 
-1. Generate a localhost cert/key (e.g. `mkcert localhost`, or a self-signed pair).
-2. In the admin UI **Settings** (`/settings`), set `public_base_url` to `https://localhost:19816` and `admin.tls_cert_path` / `admin.tls_key_path` to your cert/key; restart Sieve.
-3. Register `https://localhost:19816/oauth/callback` under your Slack app's **OAuth & Permissions → Redirect URLs**.
+1. **Nothing to generate.** On startup Sieve auto-provisions a self-signed loopback cert (`./data/tls/admin-cert.pem` + `admin-key.pem`) and serves the admin UI over HTTPS. Browse to `https://localhost:19816` and accept the one-time browser warning ("your connection is not private" → *Proceed to localhost*). To use your own cert instead (e.g. `mkcert localhost` for a warning-free experience), set `admin.tls_cert_path` / `admin.tls_key_path` in **Settings** (`/settings`) and restart.
+2. Register `https://localhost:19816/oauth/callback` under your Slack app's **OAuth & Permissions → Redirect URLs**.
 
-This is a Slack platform constraint, independent of the PKCE vs confidential flow. (Google, by contrast, permits `http://127.0.0.1` loopback, so Gmail installs need no TLS locally.) See [Verifying the flow locally](oauth-pkce.md#verifying-the-flow-locally) for the full round-trip.
+Leave `public_base_url` unset (it defaults to `https://localhost:19816`) or set it explicitly to match. **Don't** set it to an `http://…` URL — that both breaks the Slack redirect *and* opts the admin UI out of auto-HTTPS back to plaintext.
+
+This is a Slack platform constraint, independent of the PKCE vs confidential flow. (Google, by contrast, also permits `http://127.0.0.1` loopback, so Gmail installs work with or without the local TLS.) See [Verifying the flow locally](oauth-pkce.md#verifying-the-flow-locally) for the full round-trip.
 
 **Resetting credentials.** Below the install button, a small "Reset Slack OAuth credentials" link wipes the persisted encrypted row. Use this when rotating the Slack app or moving to a different OAuth app.
 

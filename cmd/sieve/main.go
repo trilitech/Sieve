@@ -45,6 +45,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -458,6 +459,16 @@ func runResetKeyring(dbPath string) int {
 	return rotateExitSuccess
 }
 
+// operatorPrefersPlaintextAdmin reports whether the operator has explicitly
+// opted the admin UI out of the auto-provisioned HTTPS default by setting
+// public_base_url to an http:// URL. It reads the RAW setting (not
+// PublicBaseURL(), which substitutes an https default for an unset value) so an
+// operator who never configured public_base_url still gets HTTPS.
+func operatorPrefersPlaintextAdmin(s *settings.Service) bool {
+	raw, _ := s.Get(settings.KeyPublicBaseURL)
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(raw)), "http://")
+}
+
 func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string, oauthClients web.OAuthClientConfig) error {
 	// --- Keyring passphrase (BEFORE opening the DB) ---
 	// Acquire the passphrase first. When an operator opts into the fd source
@@ -619,6 +630,23 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string, oa
 		CertPath: settingsSvc.APITLSCertPath(),
 		KeyPath:  settingsSvc.APITLSKeyPath(),
 	}
+	// Admin UI is HTTPS by default. When the operator hasn't configured an
+	// explicit cert/key, auto-provision a self-signed loopback cert so
+	// https-only OAuth (Slack, etc.) works out of the box. Opt out by setting
+	// public_base_url to an explicit http:// URL (reverse-proxy / plaintext-dev
+	// deployments). Agent API TLS is untouched — agents on loopback would choke
+	// on an untrusted cert, so that listener stays plaintext unless configured.
+	if adminTLS.CertPath == "" && adminTLS.KeyPath == "" && !operatorPrefersPlaintextAdmin(settingsSvc) {
+		tlsDir := filepath.Join(filepath.Dir(dbPath), "tls")
+		certPath, keyPath, err := ensureSelfSignedCert(tlsDir, "admin")
+		if err != nil {
+			return fmt.Errorf("auto-provision admin TLS cert: %w", err)
+		}
+		adminTLS.CertPath = certPath
+		adminTLS.KeyPath = keyPath
+		adminTLS.SelfSigned = true
+		log.Printf("admin UI TLS: serving HTTPS with an auto-generated self-signed certificate (%s). Your browser will warn once on first visit — accept it to proceed. Set admin.tls_cert_path/admin.tls_key_path for a real cert, or set public_base_url to an http:// URL to serve plaintext.", certPath)
+	}
 	if _, err := adminTLS.enabled(); err != nil {
 		return fmt.Errorf("admin TLS config: %w", err)
 	}
@@ -627,6 +655,23 @@ func run(dbPath, webAddr, apiAddr string, setup bool, googleCredsPath string, oa
 	}
 	adminTLSOn, _ := adminTLS.enabled()
 	apiTLSOn, _ := apiTLS.enabled()
+
+	// Scheme-consistency guard: OAuth redirects are built from public_base_url
+	// (or, when unset, from the request scheme, which mirrors the listener).
+	// A public_base_url whose scheme disagrees with the actual admin listener
+	// sends the browser to a scheme nothing is listening on — the exact
+	// ERR_SSL_PROTOCOL_ERROR footgun of an https base URL over a plaintext
+	// listener. Warn loudly and actionably instead of failing at redirect time.
+	if pbu, err := url.Parse(settingsSvc.PublicBaseURL()); err == nil && pbu.Scheme != "" {
+		adminScheme := "http"
+		if adminTLSOn {
+			adminScheme = "https"
+		}
+		if pbu.Scheme != adminScheme {
+			log.Printf("WARNING: public_base_url is %q (%s) but the admin UI is serving %s on %s. OAuth callbacks will point at %s://… and fail to connect. Align public_base_url's scheme with the admin listener: use %s://, or configure admin.tls_cert_path/admin.tls_key_path to actually serve %s.",
+				settingsSvc.PublicBaseURL(), pbu.Scheme, adminScheme, webAddr, pbu.Scheme, adminScheme, pbu.Scheme)
+		}
+	}
 
 	// Startup exposure check: the admin UI is documented to bind
 	// 127.0.0.1 in production. When the operator overrides that to a

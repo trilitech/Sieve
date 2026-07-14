@@ -55,7 +55,7 @@ const (
 // place: change the Dockerfile, change policy.DefaultCommand, and this
 // fallback follows.
 const (
-	defaultPublicBaseURL          = "http://127.0.0.1:19816"
+	defaultPublicBaseURL          = "https://localhost:19816"
 	defaultSessionIdleMinutes     = 480
 	defaultRateLimitWindowSeconds = 60
 	defaultRateLimitFailures      = 10

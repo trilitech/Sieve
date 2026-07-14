@@ -17,6 +17,12 @@ import (
 type tlsPair struct {
 	CertPath string
 	KeyPath  string
+	// SelfSigned marks a cert Sieve auto-generated for loopback (see
+	// ensureSelfSignedCert). Such a listener serves TLS but must NOT send
+	// HSTS: HSTS makes the browser's cert-error interstitial
+	// non-bypassable, which would permanently lock the operator out of an
+	// untrusted self-signed localhost cert.
+	SelfSigned bool
 }
 
 // enabled reports whether both cert and key are configured. Returns
@@ -96,6 +102,11 @@ func serveListener(srv *http.Server, p tlsPair) error {
 	if srv.TLSConfig.MinVersion < tls.VersionTLS12 {
 		srv.TLSConfig.MinVersion = tls.VersionTLS12
 	}
-	srv.Handler = hstsMiddleware(srv.Handler)
+	// HSTS only for an operator-supplied (real-CA) cert. On the auto-generated
+	// self-signed cert HSTS would make the browser's cert warning
+	// non-bypassable — a permanent lockout — so it is deliberately skipped.
+	if !p.SelfSigned {
+		srv.Handler = hstsMiddleware(srv.Handler)
+	}
 	return srv.ListenAndServeTLS(p.CertPath, p.KeyPath)
 }

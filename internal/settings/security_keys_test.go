@@ -10,7 +10,7 @@ import (
 
 func TestPublicBaseURLDefault(t *testing.T) {
 	svc := setup(t)
-	if got := svc.PublicBaseURL(); got != "http://127.0.0.1:19816" {
+	if got := svc.PublicBaseURL(); got != "https://localhost:19816" {
 		t.Errorf("PublicBaseURL() = %q, want loopback default", got)
 	}
 }

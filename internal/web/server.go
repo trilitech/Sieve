@@ -1148,7 +1148,7 @@ func (s *Server) publicBaseURL(_ *http.Request) string {
 			return strings.TrimRight(u, "/")
 		}
 	}
-	return "http://127.0.0.1:19816"
+	return "https://localhost:19816"
 }
 
 // oauthRedirectBaseURL is the scheme://host used to build OAuth
@@ -1182,7 +1182,7 @@ func (s *Server) oauthRedirectBaseURL(r *http.Request) string {
 		}
 		return scheme + "://" + r.Host
 	}
-	return "http://127.0.0.1:19816"
+	return "https://localhost:19816"
 }
 
 // --- OAuth handlers ---

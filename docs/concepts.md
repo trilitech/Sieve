@@ -145,7 +145,7 @@ Role: "developer"
 
 One role can be referenced by many tokens. When you update a role's bindings, every token referencing that role picks up the change immediately. This makes it easy to manage permissions across many agents at once -- change the role, and all agents using it are updated.
 
-Manage roles via the CLI (`sieve role create`, `sieve role list`, `sieve role delete`) or the web UI at `http://localhost:19816/roles`.
+Manage roles via the CLI (`sieve role create`, `sieve role list`, `sieve role delete`) or the web UI at `https://localhost:19816/roles`.
 
 ## Tokens
 

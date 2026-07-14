@@ -528,7 +528,7 @@ go install ./cmd/sieve
 
 **2. Mint a token and store it in Keychain.**
 
-Mint a token at [http://localhost:19816/tokens](http://localhost:19816/tokens) — it's shown exactly once. Save it to Keychain:
+Mint a token at [https://localhost:19816/tokens](https://localhost:19816/tokens) — it's shown exactly once. Save it to Keychain:
 
 ```bash
 security add-generic-password -a "$USER" -s sieve-token -w 'sieve_tok_xxxxx'
@@ -700,7 +700,7 @@ The agent receives confirmation that the proposal was submitted:
 
 ### Step 4: Admin reviews the proposal
 
-The proposal appears in the admin approval queue at `http://localhost:19816/approvals`. The admin can see:
+The proposal appears in the admin approval queue at `https://localhost:19816/approvals`. The admin can see:
 - Which agent (token) proposed the policy.
 - The policy name and description.
 - The full rules array.
@@ -709,7 +709,7 @@ The admin reviews the rules and clicks **Approve** or **Reject**.
 
 ### Step 5: Admin creates the policy and assigns it
 
-After approving, the admin creates the policy from the proposal. This can be done through the web UI at `http://localhost:19816/policies`.
+After approving, the admin creates the policy from the proposal. This can be done through the web UI at `https://localhost:19816/policies`.
 
 To make the policy take effect for the agent, the admin adds it to the agent's role. For example, if the agent's token uses role `developer` with connection `work`, the admin edits the role to add the new `drafter-for-project-x` policy to the `work` connection binding.
 

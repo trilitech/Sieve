@@ -172,7 +172,7 @@ Rotation is cheap regardless of how many connections you have — it's not "re-e
 
 ### From the admin UI (recommended)
 
-1. Open the admin UI at `http://127.0.0.1:19816/settings`.
+1. Open the admin UI at `https://127.0.0.1:19816/settings`.
 2. Scroll to the **Security** card.
 3. Fill in your current passphrase, then your new passphrase twice (the second time confirms there was no typo).
 4. Click **Rotate passphrase**.

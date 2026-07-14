@@ -2,7 +2,7 @@
 
 This guide walks through setting up every connection type in Sieve. Connections hold the real credentials for external services. Agents never see these credentials -- they use scoped Sieve tokens instead.
 
-All connection setup happens in the Sieve web UI at `http://localhost:19816/connections`.
+All connection setup happens in the Sieve web UI at `https://localhost:19816/connections`.
 
 > **Prerequisite:** Sieve must be unlocked before you can save a connection. On first startup you set a passphrase; on every restart you re-enter it. The passphrase derives the encryption key that protects every stored credential. If the UI returns `503 service locked`, Sieve is running without a passphrase source -- see [credential-encryption.md](credential-encryption.md).
 
@@ -19,7 +19,7 @@ If you have not set up Google OAuth credentials yet, follow the [Google OAuth se
 
 ### Setup steps
 
-1. Open `http://localhost:19816/connections`.
+1. Open `https://localhost:19816/connections`.
 2. Under the **Google** category, find the **Google Account** card.
 3. Enter a **Connection Alias** (e.g., `work`). This is how agents and API paths will reference this connection.
 4. Enter a **Display Name** (e.g., "Work Gmail"). This is shown in the Sieve UI.
@@ -65,7 +65,7 @@ LLM provider connections are HTTP proxy connections with pre-configured target U
 
 ### Anthropic (Claude)
 
-1. Go to `http://localhost:19816/connections`.
+1. Go to `https://localhost:19816/connections`.
 2. Under **LLM Providers**, find the **Anthropic (Claude)** card.
 3. Enter a **Connection Alias** (e.g., `anthropic`).
 4. Enter a **Display Name** (e.g., "Claude").
@@ -147,7 +147,7 @@ What is created: an HTTP proxy to your specified endpoint with auth header `Auth
 
 For general AWS service access (S3, Lambda, DynamoDB, SES, EC2, and more).
 
-1. Go to `http://localhost:19816/connections`.
+1. Go to `https://localhost:19816/connections`.
 2. Under **Cloud**, find the **AWS Account** card.
 3. Enter a **Connection Alias** (e.g., `aws-prod`).
 4. Enter a **Display Name** (e.g., "AWS Production").
