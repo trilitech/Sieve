@@ -76,6 +76,14 @@
                     Re-authenticate
                   </button>
                 </form>
+                {{else if and (eq .Status "active") (eq .ConnectorType "google")}}
+                <form method="POST" action="/connections/{{.ID}}/reauth" class="inline mr-3">
+                  <button type="submit"
+                          title="Re-run Google OAuth for this connection — e.g. to migrate it to a new OAuth client or refresh scopes. Its ID and IAM grants are preserved."
+                          class="text-sm text-slate-400 hover:text-indigo-300 font-medium transition-colors">
+                    Re-authenticate
+                  </button>
+                </form>
                 {{end}}
                 {{if or (eq .ConnectorType "http_proxy") (eq .ConnectorType "mcp_proxy") (eq .ConnectorType "github") (eq .ConnectorType "gitlab")}}
                 <a href="/connections/{{.ID}}/edit"
