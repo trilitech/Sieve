@@ -99,7 +99,7 @@ sieve connection add --alias <alias> --connector <type> [--display-name <name>]
 **Examples:**
 
 ```bash
-# Add a Google connection (complete OAuth at http://localhost:19816/connections)
+# Add a Google connection (complete OAuth at https://localhost:19816/connections)
 sieve connection add --alias work --connector google --display-name "Work Gmail"
 
 # Add an HTTP proxy connection

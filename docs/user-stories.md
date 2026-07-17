@@ -1247,7 +1247,7 @@ A policy created 3 months ago shows "3mo ago" in the Created column. The timeAgo
 ## Two-Port Architecture
 
 **331. Web UI runs on port 19816**
-Admin accesses the web UI at `http://localhost:19816`. All connection management, policy editing, token creation, and approval handling happens on this port.
+Admin accesses the web UI at `https://localhost:19816`. All connection management, policy editing, token creation, and approval handling happens on this port.
 
 **332. API/MCP runs on port 19817**
 Agents connect to `http://localhost:19817` for REST API calls, Gmail-compatible API calls, proxy requests, and MCP tool calls. This port requires a valid bearer token for all requests.

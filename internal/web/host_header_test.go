@@ -40,8 +40,8 @@ func newHostHeaderTestServer(t *testing.T) (*httptest.Server, *testenv.Env, *Ser
 func TestPublicBaseURLDefault(t *testing.T) {
 	_, _, srv := newHostHeaderTestServer(t)
 	got := srv.publicBaseURL(httptest.NewRequest("GET", "http://attacker.example/x", nil))
-	if got != "http://127.0.0.1:19816" {
-		t.Errorf("publicBaseURL default = %q, want %q", got, "http://127.0.0.1:19816")
+	if got != "https://localhost:19816" {
+		t.Errorf("publicBaseURL default = %q, want %q", got, "https://localhost:19816")
 	}
 }
 
@@ -103,7 +103,7 @@ func TestGitHubAppManifestIgnoresHostHeader(t *testing.T) {
 	if strings.Contains(body, "attacker.example") {
 		t.Errorf("GitHub App manifest contains forged host. Response body:\n%s", body)
 	}
-	if !strings.Contains(body, "127.0.0.1:19816") {
+	if !strings.Contains(body, "localhost:19816") {
 		t.Errorf("GitHub App manifest should contain default base URL; got:\n%s", body)
 	}
 }

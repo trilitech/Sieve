@@ -101,13 +101,16 @@ DevTools → Network → the 302) carries the proof:
 If you see `code_challenge` + `code_challenge_method=S256`, the public-client
 PKCE leg is wired.
 
-### Full round-trip — Google (~10 min, plain HTTP loopback)
+### Full round-trip — Google (~10 min)
 
-Google accepts an `http://127.0.0.1` / `http://localhost` loopback redirect, so
-no TLS is needed:
+The admin UI serves HTTPS by default, so Google's callback rides the same
+`https://localhost:19816/oauth/callback` loopback (Google accepts both `http`
+and `https` loopback redirects). Your browser shows a one-time self-signed-cert
+warning on the callback — accept it (visit `https://localhost:19816` once up
+front to get it out of the way):
 
 1. Register an OAuth client ([Google OAuth setup](google-oauth-setup.md)) with
-   redirect `http://localhost:19816/oauth/callback`; download the JSON or note
+   redirect `https://localhost:19816/oauth/callback`; download the JSON or note
    the client id/secret.
 2. `./sieve --google-credentials ./data/credentials.json`
    (or `--google-oauth-client-id … --google-oauth-client-secret …`).
@@ -119,19 +122,24 @@ no TLS is needed:
 ### Full round-trip — Slack (HTTPS loopback)
 
 Slack requires an `https` redirect, but **`https://localhost` loopback works
-locally — no public tunnel needed.** Enable TLS on the admin listener:
+locally — no public tunnel needed.** The admin UI serves HTTPS by default, so
+there's nothing to enable:
 
-1. Generate a localhost cert/key (e.g. `mkcert localhost` or a self-signed pair).
-2. In the admin UI **Settings** (`/settings`), set:
-   - `public_base_url` → `https://localhost:19816`
-   - `admin.tls_cert_path` / `admin.tls_key_path` → your cert/key paths
-
-   then restart Sieve (it now serves the admin UI over HTTPS).
-3. In your Slack app's **OAuth & Redirect URLs**, register
+1. **Nothing to generate.** On startup Sieve auto-provisions a self-signed
+   loopback cert at `./data/tls/admin-{cert,key}.pem` and serves the admin UI
+   over HTTPS. Browse to `https://localhost:19816` and accept the one-time
+   browser warning. **For a warning-free cert, run
+   `./scripts/trust-localhost-cert.sh` once** (installs `mkcert`, registers a
+   locally-trusted CA — needs sudo — and writes a trusted cert to the same
+   path; Sieve serves it with HSTS on the next start). `public_base_url`
+   defaults to `https://localhost:19816`; leave it unset or match it. Don't set
+   an `http://…` value — that opts the admin UI back to plaintext and breaks the
+   Slack redirect.
+2. In your Slack app's **OAuth & Redirect URLs**, register
    `https://localhost:19816/oauth/callback`.
-4. Launch with your Slack client id (omit the secret for the PKCE public flow):
+3. Launch with your Slack client id (omit the secret for the PKCE public flow):
    `./sieve --slack-client-id "…"`
-5. Connections → Slack → **Install via OAuth** → approve. The connection lands
+4. Connections → Slack → **Install via OAuth** → approve. The connection lands
    `active`; the exchange sent `code_verifier` and no `client_secret`.
 
 ## Distribution: internal (org-only) vs external (public)

@@ -338,5 +338,5 @@ import sys
 print("debug: checking email", file=sys.stderr)
 ```
 
-Check the audit log at http://localhost:19816/audit to see policy decisions
+Check the audit log at https://localhost:19816/audit to see policy decisions
 and reasons for each request.

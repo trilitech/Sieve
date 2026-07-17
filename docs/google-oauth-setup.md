@@ -184,7 +184,7 @@ Go to **APIs & Services → Credentials** (or https://console.cloud.google.com/a
 - Application type: **Desktop app** (recommended — it uses loopback, so there's
   no redirect URI to register). Name it anything and click **Create**.
   - *Alternative:* a **Web application** client also works, but then you must add
-    `http://localhost:19816/oauth/callback` (or your host/port) under **Authorized
+    `https://localhost:19816/oauth/callback` (or your host/port) under **Authorized
     redirect URIs** so it matches what Sieve sends.
 
 ### 6. Grab the Client ID + Secret
@@ -228,7 +228,7 @@ saving the file there and starting `./sieve` with no flag works too.)
 ### 8. Connect your account
 
 1. Start Sieve (with the flag/file from step 7): `./sieve …`
-2. Open http://localhost:19816/connections
+2. Open https://localhost:19816/connections
 3. Click **Connect Google Account**
 4. Sign in with the Google account you want to connect
 5. Approve the requested permissions

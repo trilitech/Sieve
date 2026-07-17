@@ -112,12 +112,29 @@ go build -o sieve ./cmd/sieve
 # Subsequent runs (or non-interactive start via SIEVE_PASSPHRASE_FILE
 # / FD 3 — never an environment variable):
 ./sieve
-# Web UI: http://localhost:19816  (admin only — do not expose to agents)
+# Web UI: https://localhost:19816  (admin only — do not expose to agents)
 # API/MCP: http://localhost:19817
 ```
 
+**Admin UI over HTTPS.** The admin UI (port 19816) serves **HTTPS by default**,
+so Slack — and any other https-only OAuth flow — works out of the box. On first
+start Sieve auto-generates a self-signed loopback cert under `./data/tls`, so
+your browser shows a one-time "your connection is not private" warning — click
+through to proceed. For a **warning-free, locally-trusted cert**, run the helper
+once (as your normal user, **not** `sudo`):
+
+```bash
+./scripts/trust-localhost-cert.sh   # installs mkcert, registers a local CA, writes a trusted cert
+```
+
+Sieve picks the trusted cert up on the next start (HSTS on, no warning). To use
+your own cert, set `admin.tls_cert_path` / `admin.tls_key_path` in the admin UI
+Settings. To serve plaintext HTTP instead (e.g. behind a TLS-terminating proxy),
+set `public_base_url` to an `http://` URL. See
+[docs/connectors-slack.md](docs/connectors-slack.md#redirect-requirement).
+
 **First-run admin setup.** On the very first visit to the Web UI, Sieve has no
-admin operator yet, so http://localhost:19816 redirects you to **`/setup`** (a
+admin operator yet, so https://localhost:19816 redirects you to **`/setup`** (a
 loopback-only page) to create the first admin credential + display name. Set it,
 log in, and you land on the connections dashboard. Every subsequent visit uses
 the normal `/login` page.
@@ -152,7 +169,7 @@ The Docker image comes with a batteries-included Python environment (requests, h
 
 ### Google (Gmail, Drive, Calendar, Contacts, Sheets, Docs)
 
-1. Open http://localhost:19816/connections
+1. Open https://localhost:19816/connections
 2. Click **Connect Google Account**
 3. Complete the OAuth flow
 4. One connection, six services — policies control which ones the agent can use
@@ -162,9 +179,10 @@ The Docker image comes with a batteries-included Python environment (requests, h
 Two install paths — see [`docs/connectors-slack.md`](docs/connectors-slack.md) for the full walkthrough including required bot scopes and troubleshooting.
 
 **OAuth path:**
-1. Set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` in Sieve's environment (from your Slack app's Basic Information page).
-2. Open http://localhost:19816/connections → pick **Slack** → **Install via OAuth** → approve in Slack.
-3. Connection lands `status: active`. Agents can list channels, read history, search threads, and post messages — subject to policies.
+1. Create a Slack app, **enable PKCE** under *OAuth & Permissions*, and register the redirect URL `https://localhost:19816/oauth/callback`.
+2. On the connections page → **Slack** card → **Set up Slack OAuth**, paste your **Client ID**. Leave the **Client Secret blank** — a `localhost` redirect requires Slack's PKCE public-client flow (a secret is only for a public-domain deployment). *(Alternatively, pre-set `SLACK_CLIENT_ID` in the environment.)*
+3. Click **Install via OAuth** (bot) or **Install via OAuth (as user)** → approve in Slack.
+4. Connection lands `status: active`. Agents can list channels, read history, search threads, and post messages — subject to policies. To change or remove the stored OAuth credentials later, use **Manage OAuth credentials** on the Slack card.
 
 **Direct bot-token path** (for Slack apps you've already installed):
 1. From your Slack app's **OAuth & Permissions** page, copy the bot token (`xoxb-…`).
@@ -258,11 +276,11 @@ A role looks like this in storage:
 
 One role can be shared by many tokens. When you update a role's bindings, every token referencing that role picks up the change immediately. This makes it easy to manage permissions across many agents at once.
 
-Manage roles via the web UI at http://localhost:19816/roles.
+Manage roles via the web UI at https://localhost:19816/roles.
 
 ## Create tokens
 
-Tokens reference a role, which bundles connections with policies. One token per agent. Create them in the web UI at http://localhost:19816/tokens — the plaintext `sieve_tok_…` is shown exactly once when minted.
+Tokens reference a role, which bundles connections with policies. One token per agent. Create them in the web UI at https://localhost:19816/tokens — the plaintext `sieve_tok_…` is shown exactly once when minted.
 
 ## Agent integration
 
@@ -294,7 +312,7 @@ Claude Desktop only supports stdio MCP servers, so use the built-in `sieve mcp-l
 # 1. Install sieve to a directory on Claude Desktop's PATH
 go install ./cmd/sieve   # lands at ~/go/bin/sieve
 
-# 2. Store the token in Keychain (mint one at http://localhost:19816/tokens first)
+# 2. Store the token in Keychain (mint one at https://localhost:19816/tokens first)
 security add-generic-password -a "$USER" -s sieve-token -w 'sieve_tok_xxxxx'
 ```
 
@@ -374,7 +392,7 @@ When a policy returns "require approval", the operation is held:
 
 1. Agent submits the request
 2. Sieve returns immediately (MCP: text response, Gmail API: 429 with Retry-After)
-3. The request appears in the approval queue at http://localhost:19816/approvals
+3. The request appears in the approval queue at https://localhost:19816/approvals
 4. You review and click Approve or Reject
 5. On approval, the operation executes
 
@@ -382,7 +400,7 @@ Agents can also propose new policies via MCP (`propose_policy` tool). Proposals 
 
 ## Audit log
 
-Every request is logged at http://localhost:19816/audit with:
+Every request is logged at https://localhost:19816/audit with:
 - Token name and ID
 - Connection
 - Operation

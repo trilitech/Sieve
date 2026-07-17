@@ -1,12 +1,35 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os"
 )
+
+// quietTLSHandshakeWriter forwards http.Server ErrorLog output to dst but drops
+// the benign, non-actionable per-connection "TLS handshake error" lines. These
+// are client-side conditions (untrusted self-signed cert, a plaintext http://
+// client hitting the https port, an abandoned preconnect) — never a server
+// misconfiguration, which surfaces at ListenAndServeTLS startup instead.
+type quietTLSHandshakeWriter struct{ dst io.Writer }
+
+func (q quietTLSHandshakeWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("TLS handshake error")) {
+		return len(p), nil // swallow; report success so the logger sees no error
+	}
+	return q.dst.Write(p)
+}
+
+// quietTLSHandshakeLog builds a *log.Logger suitable for http.Server.ErrorLog
+// that matches the stdlib log format but filters handshake noise.
+func quietTLSHandshakeLog() *log.Logger {
+	return log.New(quietTLSHandshakeWriter{dst: os.Stderr}, "", log.LstdFlags)
+}
 
 // optional TLS on
 // the admin and agent listeners. Both-or-neither per listener; HSTS
@@ -17,6 +40,12 @@ import (
 type tlsPair struct {
 	CertPath string
 	KeyPath  string
+	// SelfSigned marks a cert Sieve auto-generated for loopback (see
+	// ensureSelfSignedCert). Such a listener serves TLS but must NOT send
+	// HSTS: HSTS makes the browser's cert-error interstitial
+	// non-bypassable, which would permanently lock the operator out of an
+	// untrusted self-signed localhost cert.
+	SelfSigned bool
 }
 
 // enabled reports whether both cert and key are configured. Returns
@@ -96,6 +125,11 @@ func serveListener(srv *http.Server, p tlsPair) error {
 	if srv.TLSConfig.MinVersion < tls.VersionTLS12 {
 		srv.TLSConfig.MinVersion = tls.VersionTLS12
 	}
-	srv.Handler = hstsMiddleware(srv.Handler)
+	// HSTS only for an operator-supplied (real-CA) cert. On the auto-generated
+	// self-signed cert HSTS would make the browser's cert warning
+	// non-bypassable — a permanent lockout — so it is deliberately skipped.
+	if !p.SelfSigned {
+		srv.Handler = hstsMiddleware(srv.Handler)
+	}
 	return srv.ListenAndServeTLS(p.CertPath, p.KeyPath)
 }
