@@ -174,6 +174,11 @@ The Docker image comes with a batteries-included Python environment (requests, h
 3. Complete the OAuth flow
 4. One connection, six services — policies control which ones the agent can use
 
+Connecting accounts from **multiple Google Workspace orgs** from one Sieve? Give
+each connection its own org's OAuth client via the **"Use a specific Google OAuth
+client for this connection"** option on the add form. See
+[docs/oauth-pkce.md § Per-connection Google client](docs/oauth-pkce.md#per-connection-google-client).
+
 ### Slack (channels, users, history, threads, messages)
 
 Two install paths — see [`docs/connectors-slack.md`](docs/connectors-slack.md) for the full walkthrough including required bot scopes and troubleshooting.

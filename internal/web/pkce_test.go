@@ -226,6 +226,43 @@ func TestSlackOAuthCreds_LaunchValueAndPublic(t *testing.T) {
 	}
 }
 
+// TestGoogleOAuthConfigFor_PerConnectionClientWins proves an explicit
+// per-connection client (e.g. another Workspace org's Internal-app client)
+// overrides the server-wide/global client — the core of multi-org support.
+func TestGoogleOAuthConfigFor_PerConnectionClientWins(t *testing.T) {
+	t.Setenv("GOOGLE_OAUTH_CLIENT_ID", "global.apps.googleusercontent.com")
+	t.Setenv("GOOGLE_OAUTH_CLIENT_SECRET", "global-secret")
+
+	s := &Server{}
+	conf, err := s.googleOAuthConfigFor(httptest.NewRequest(http.MethodGet, "/", nil),
+		"org-b.apps.googleusercontent.com", "org-b-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conf.ClientID != "org-b.apps.googleusercontent.com" {
+		t.Errorf("ClientID = %q, want the per-connection client (must beat the global one)", conf.ClientID)
+	}
+	if conf.ClientSecret != "org-b-secret" {
+		t.Errorf("ClientSecret = %q, want the per-connection secret", conf.ClientSecret)
+	}
+}
+
+// TestGoogleOAuthConfigFor_EmptyFallsBackToGlobal proves that with no
+// per-connection client, resolution falls back to the server-wide client.
+func TestGoogleOAuthConfigFor_EmptyFallsBackToGlobal(t *testing.T) {
+	t.Setenv("GOOGLE_OAUTH_CLIENT_ID", "global.apps.googleusercontent.com")
+	t.Setenv("GOOGLE_OAUTH_CLIENT_SECRET", "global-secret")
+
+	s := &Server{}
+	conf, err := s.googleOAuthConfigFor(httptest.NewRequest(http.MethodGet, "/", nil), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conf.ClientID != "global.apps.googleusercontent.com" {
+		t.Errorf("ClientID = %q, want the global client when no per-connection client is given", conf.ClientID)
+	}
+}
+
 // TestGoogleOAuthConfig_UnconfiguredErrors proves a clear error when neither a
 // shipped client nor a credentials file is present.
 func TestGoogleOAuthConfig_UnconfiguredErrors(t *testing.T) {
