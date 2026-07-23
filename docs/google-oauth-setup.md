@@ -63,6 +63,19 @@ employees are then pre-authorized org-wide and never see a consent prompt.
 The detailed browser walkthrough below covers these same steps in more depth,
 plus the **External** (public) and **BYO `credentials.json`** variants.
 
+**Connecting accounts from more than one Workspace org from one Sieve.** An
+Internal client only admits its own domain's accounts, so to connect accounts
+from several orgs (any number) from a single instance, give each connection its
+*own* org's client: create an Internal Desktop client in each org's GCP project,
+then when adding the connection expand **"Use a specific Google OAuth client for
+this connection"** in the UI and paste that org's `client_id` + `client_secret`.
+Details: [Per-connection Google client](oauth-pkce.md#per-connection-google-client).
+
+A **personal `@gmail.com` account** can't use an Internal client at all (it has no
+org — you'll get `403 org_internal`). Connect it by giving *that* connection an
+**External** client instead: see
+[Personal Gmail](oauth-pkce.md#personal-gmail-and-other-non-workspace-accounts).
+
 ## Is this sensitive?
 
 **Not really.** Google explicitly documents that OAuth client credentials for

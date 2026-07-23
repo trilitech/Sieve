@@ -190,6 +190,66 @@ Required only if non-org users install Sieve:
 > Not legal advice: the External path binds your company to each provider's
 > user-data policies. Have counsel review before publishing.
 
+## Per-connection Google client
+
+One Sieve instance can connect Google accounts from **any number of Workspace
+orgs at once**, each connection using its own org's OAuth client. This is how you
+keep every org on an Internal app (no CASA) yet serve accounts from several
+domains (`@org-a.com`, `@org-b.com`, …) from a single instance. There's no limit
+— add one connection per org, each with that org's client.
+
+**Why it's needed:** an Internal Google app only admits accounts from the one
+Workspace domain that owns its GCP project, so a single global client is locked
+to a single org. To add an account from another org, that connection must
+authorize against *that org's* Internal client — in that org's project, with the
+APIs enabled there. (This is exactly the failure behind "it worked for Gmail but
+not Drive on the other domain": different projects, different enabled APIs.)
+
+**How to use it:** when adding a Google connection in the admin UI, expand
+**"Use a specific Google OAuth client for this connection"** and paste that org's
+`client_id` + `client_secret` (from its `credentials.json`). Leave it blank to
+use the server's global client (flags / env / BYO file). The chosen client is:
+
+- used for the authorize + token exchange,
+- stored (encrypted) with the connection and reused for token refresh, and
+- reused automatically on **reauth** by default — a connection re-authorizes
+  against the same org's client, never silently repointed at the global one. To
+  *migrate* a connection to a different client (e.g. off an old project whose
+  APIs were never enabled), expand the connection's **Re-authenticate** control
+  and paste the new client; a blank field keeps the current one.
+
+**Setup, per org:** each Workspace admin creates a GCP project in their org,
+enables the APIs (Gmail/Drive/Docs/Sheets), and makes an **Internal** OAuth
+client (Desktop app); each connection is then given its org's client. See
+[google-oauth-setup.md](google-oauth-setup.md).
+
+### Personal Gmail (and other non-Workspace accounts)
+
+A personal `@gmail.com` account has no Workspace org, so **no Internal client can
+ever admit it** — an Internal app is domain-locked, so a personal account hits
+`Error 403: org_internal` at the consent screen. This is *independent of PKCE*:
+PKCE only governs how the code is exchanged, never which accounts a client
+accepts. What decides it is the consent screen's **Internal vs External** setting.
+(A personal account that "used to work" was almost certainly going through an
+**External** client — a Cloud project owned by a personal Google account can only
+be External — which accepts any account after an unverified-app warning.)
+
+To connect a personal account, give *that connection* an **External** client:
+
+1. In an OAuth client whose consent screen is **External**, add the account as a
+   **test user** and enable the APIs you need.
+2. Add the Google connection with **"Use a specific Google OAuth client for this
+   connection"** set to that External client's `client_id` + `client_secret`.
+
+The account then authorizes normally. The trade-offs are inherent to External +
+testing (not to Sieve): a one-time "Google hasn't verified this app" warning, and
+— for restricted Gmail/Drive scopes — refresh tokens that expire after ~7 days,
+so the connection needs periodic re-auth. Publishing the External app removes
+both, at the cost of verification + CASA.
+
+You can mix freely in one instance: **Internal** clients for org accounts, an
+**External** client for a personal account — each connection carries its own.
+
 ## What PKCE does *not* solve
 
 PKCE removes the *secret* from the flow. It does **not** remove a provider's app

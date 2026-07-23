@@ -868,6 +868,15 @@ type pendingOAuth struct {
 	IsReauth            bool
 	OperatorSessionHash string // hex(sha256(cookie value)); empty when no session was active
 	CodeVerifier        string // PKCE (RFC 7636) verifier; only its S256 challenge left this process. See pkce.go.
+
+	// GoogleClientID / GoogleClientSecret carry the per-connection Google OAuth
+	// client chosen for THIS install (empty ⇒ use the server's global client).
+	// Set from the add form for a fresh install, or read back from the existing
+	// connection's stored config on reauth so a connection always re-authorizes
+	// against the same GCP project/client it was created with. See
+	// googleOAuthConfigFor and docs/oauth-pkce.md § Per-connection Google client.
+	GoogleClientID     string
+	GoogleClientSecret string
 }
 
 // writeConnectionError centralizes keyring-state → HTTP mapping for the admin
@@ -964,7 +973,13 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 	// after receiving valid credentials. This avoids orphaned connections that
 	// appear in the UI but have no working credentials.
 	if connectorType == "google" {
-		conf, err := s.googleOAuthConfig(r)
+		// Optional per-connection OAuth client (e.g. this org's Internal-app
+		// client, pasted from its credentials.json). Empty ⇒ use the server's
+		// global client. Lets one instance serve multiple Workspace orgs.
+		gClientID := strings.TrimSpace(r.FormValue("google_client_id"))
+		gClientSecret := strings.TrimSpace(r.FormValue("google_client_secret"))
+
+		conf, err := s.googleOAuthConfigFor(r, gClientID, gClientSecret)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -986,6 +1001,8 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:           time.Now(),
 			OperatorSessionHash: operatorSessionHash(r),
 			CodeVerifier:        verifier,
+			GoogleClientID:      gClientID,
+			GoogleClientSecret:  gClientSecret,
 		}
 		s.oauthMu.Unlock()
 
@@ -1026,8 +1043,15 @@ func (s *Server) handleConnectionDelete(w http.ResponseWriter, r *http.Request) 
 // expire.
 func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	conn, err := s.connections.Get(id)
+	// Read the stored config so we can re-authorize against the SAME OAuth client
+	// the connection was created with — critical for multi-org: a connection from
+	// one Workspace org must reauth via that org's client, not the global one.
+	conn, err := s.connections.GetWithConfig(id)
 	if err != nil {
+		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
+			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "connection not found", http.StatusNotFound)
 		return
 	}
@@ -1036,7 +1060,20 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	conf, err := s.googleOAuthConfig(r)
+	// Reauth reuses the connection's stored client by DEFAULT so it stays on the
+	// same org's OAuth client — a connection from one org must not silently jump
+	// to the global client of another org (that would re-trigger org_internal).
+	// To deliberately MIGRATE a connection to a different client (e.g. off an old
+	// project whose APIs were never enabled), the operator can supply a new client
+	// on the reauth form; a non-empty client_id there overrides the stored one.
+	gClientID := strings.TrimSpace(r.FormValue("google_client_id"))
+	gClientSecret := strings.TrimSpace(r.FormValue("google_client_secret"))
+	if gClientID == "" {
+		gClientID, _ = conn.Config["client_id"].(string)
+		gClientSecret, _ = conn.Config["client_secret"].(string)
+	}
+
+	conf, err := s.googleOAuthConfigFor(r, gClientID, gClientSecret)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1059,6 +1096,8 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 		IsReauth:            true,
 		OperatorSessionHash: operatorSessionHash(r),
 		CodeVerifier:        verifier,
+		GoogleClientID:      gClientID,
+		GoogleClientSecret:  gClientSecret,
 	}
 	s.oauthMu.Unlock()
 
@@ -1249,7 +1288,33 @@ var googleOAuthScopes = []string{
 // attacker reaching the admin listener could otherwise forge the Host header and
 // redirect the OAuth callback to a server they control.
 func (s *Server) googleOAuthConfig(r *http.Request) (*oauth2.Config, error) {
+	return s.googleOAuthConfigFor(r, "", "")
+}
+
+// googleOAuthConfigFor builds the Google OAuth2 config, preferring an explicit
+// per-connection client (clientID/clientSecret) when one is supplied. This is
+// what lets a single Sieve instance connect accounts from several Workspace orgs
+// — each connection carries its own Internal-app client, in its own GCP project,
+// instead of everyone sharing one global client (which an Internal consent
+// screen would restrict to a single domain). When clientID is empty it falls
+// back to the server-wide resolution in order: shipped/flag/env client → BYO
+// credentials file. A per-connection client with no secret runs that install as
+// a PKCE public client (see pkce.go), though Google token refresh generally
+// needs the (non-confidential) Desktop secret.
+func (s *Server) googleOAuthConfigFor(r *http.Request, clientID, clientSecret string) (*oauth2.Config, error) {
 	redirectURL := s.publicBaseURL(r) + "/oauth/callback"
+
+	// Per-connection client wins: this connection was created against (or is
+	// re-authing against) a specific GCP project's OAuth client.
+	if clientID != "" {
+		return &oauth2.Config{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			Scopes:       googleOAuthScopes,
+			Endpoint:     google.Endpoint,
+			RedirectURL:  redirectURL,
+		}, nil
+	}
 
 	// Preferred: Sieve's shipped Desktop client (no per-user credentials file).
 	if id := s.googleOAuthClientID(); id != "" {
@@ -1335,7 +1400,10 @@ func (s *Server) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conf, err := s.googleOAuthConfig(r)
+	// Use the same OAuth client this flow started with (per-connection when set,
+	// else the global client) so the exchange and the persisted refresh client
+	// match what the authorize step used.
+	conf, err := s.googleOAuthConfigFor(r, pending.GoogleClientID, pending.GoogleClientSecret)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
