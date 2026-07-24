@@ -204,9 +204,16 @@ func (s *Server) checkRotationOrigin(r *http.Request) bool {
 	if origin == "" {
 		origin = r.Header.Get("Referer")
 	}
-	if origin == "" {
-		// Both absent: cannot be an attacker-forged cross-origin POST (browsers
-		// always attach Origin cross-origin). Rely on the session CSRF token.
+	if origin == "" || origin == "null" {
+		// Absent, or the opaque origin "null". Chrome sends `Origin: null` on a
+		// form-navigation POST when the document's Referrer-Policy is
+		// no-referrer (which this app sets) — so a legitimate same-origin admin
+		// form submission arrives with Origin: null and NO host to match. It is
+		// indistinguishable from the absent case and must be treated the same:
+		// fall through to the session CSRF token, which is the primary guard.
+		// This is safe as defence-in-depth — an attacker cannot read the
+		// victim's per-session CSRF token, so the token check still blocks the
+		// forged POST regardless of what Origin it carries.
 		return true
 	}
 	u, err := url.Parse(origin)

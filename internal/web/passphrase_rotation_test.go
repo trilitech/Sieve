@@ -533,6 +533,10 @@ func TestCheckRotationOriginAbsentHeadersAllowed(t *testing.T) {
 		{"matching referer fallback", "", "http://localhost:19816/connections", true},
 		{"mismatching referer rejected", "", "http://evil.example/x", false},
 		{"both absent allowed", "", "", true},
+		// Chrome sends Origin: null on form-navigation POSTs under the app's
+		// Referrer-Policy: no-referrer. It's opaque (no host) and legitimate —
+		// must be allowed, deferring to the session CSRF token.
+		{"opaque null origin allowed", "null", "", true},
 	}
 	for _, tc := range cases {
 		if got := s.checkRotationOrigin(newReq(tc.origin, tc.referer)); got != tc.want {
