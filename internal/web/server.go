@@ -455,6 +455,9 @@ func (s *Server) Handler() http.Handler {
 
 	// GitHub-specific setup flows
 	mux.HandleFunc("POST /connections/github/pat", s.handleGitHubPAT)
+	// Rotate the PAT on an existing github connection in place (distinct 4-segment
+	// pattern; the {id} path param keeps it separate from the create route above).
+	mux.HandleFunc("POST /connections/{id}/github/pat", s.handleGitHubPATRotate)
 	// Slack connector flows.
 	mux.HandleFunc("POST /connections/slack/oauth/configure", s.handleSlackOAuthConfigure)
 	mux.HandleFunc("POST /connections/slack/oauth/clear", s.handleSlackOAuthClearConfig)

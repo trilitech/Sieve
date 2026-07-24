@@ -687,3 +687,155 @@ func TestHandleConnectionAdd_RejectsGithub(t *testing.T) {
 		t.Fatal("github connection must not be persisted via the generic route")
 	}
 }
+
+// --- GitHub PAT rotation (in-place credential update) ---
+
+// mockGitHubValidateBase points githubValidateAPIBase at a stub that answers
+// the PAT probe (/user or /orgs/{name}) with the given status, restoring the
+// global on cleanup. Mirrors the asana OAuth-endpoint override pattern.
+func mockGitHubValidateBase(t *testing.T, status int) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			_, _ = w.Write([]byte(`{"login":"acme"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	prev := githubValidateAPIBase
+	githubValidateAPIBase = srv.URL
+	t.Cleanup(func() { githubValidateAPIBase = prev })
+}
+
+func githubStoredToken(t *testing.T, env *testenv.Env, id string, idx int) string {
+	t.Helper()
+	conn, err := env.Connections.GetWithConfig(id)
+	if err != nil {
+		t.Fatalf("get %s: %v", id, err)
+	}
+	creds, ok := conn.Config["credentials"].([]any)
+	if !ok || idx >= len(creds) {
+		t.Fatalf("credentials missing/short: %v", conn.Config["credentials"])
+	}
+	m, _ := creds[idx].(map[string]any)
+	tok, _ := m["token"].(string)
+	return tok
+}
+
+func TestEditPageShowsGitHubRotateControl(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addGithubConnection(t, env, "gh1")
+
+	resp, err := env.AdminClient().Get(ts.URL + "/connections/gh1/edit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{
+		"Rotate token",
+		`action="/connections/gh1/github/pat"`,
+		"org:acme",          // the credential's scope is surfaced
+		`name="cred_index"`, // index carried through
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("edit page missing fragment %q", want)
+		}
+	}
+}
+
+func TestGitHubPATRotate_Success(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addGithubConnection(t, env, "gh1")
+	mockGitHubValidateBase(t, http.StatusOK)
+
+	form := url.Values{"cred_index": {"0"}, "token": {"github_pat_NEW"}}
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/gh1/github/pat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	resp, err := env.AdminClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 303, got %d (%s)", resp.StatusCode, body)
+	}
+	if got := githubStoredToken(t, env, "gh1", 0); got != "github_pat_NEW" {
+		t.Errorf("token not rotated; stored %q, want github_pat_NEW", got)
+	}
+	// Scope and connection identity are preserved (only the secret changed).
+	conn, _ := env.Connections.GetWithConfig("gh1")
+	creds, _ := conn.Config["credentials"].([]any)
+	m, _ := creds[0].(map[string]any)
+	scope, _ := m["scope"].(map[string]any)
+	if scope["type"] != "org" || scope["name"] != "acme" {
+		t.Errorf("scope mutated during rotate: %v", scope)
+	}
+}
+
+func TestGitHubPATRotate_RejectsInvalidToken(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	addGithubConnection(t, env, "gh1")
+	mockGitHubValidateBase(t, http.StatusUnauthorized)
+
+	form := url.Values{"cred_index": {"0"}, "token": {"github_pat_BAD"}}
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/gh1/github/pat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	resp, err := env.AdminClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on rejected token, got %d", resp.StatusCode)
+	}
+	if got := githubStoredToken(t, env, "gh1", 0); got != "ghp_test" {
+		t.Errorf("token must be unchanged after a failed validate; got %q", got)
+	}
+}
+
+func TestGitHubPATRotate_RejectsAppCredential(t *testing.T) {
+	ts, env := newConnectionEditTestServer(t)
+	if err := env.Connections.Add("ghapp", "github", "GH App", map[string]any{
+		"credentials": []any{
+			map[string]any{
+				"kind":            "app_installation",
+				"scope":           map[string]any{"type": "org", "name": "acme"},
+				"app_id":          float64(123),
+				"installation_id": float64(456),
+				"private_key_pem": "-----BEGIN KEY-----",
+			},
+		},
+		"default_credential_index": float64(0),
+	}); err != nil {
+		t.Fatalf("add app connection: %v", err)
+	}
+	// Validate must never be reached for an App credential — leave the base at a
+	// server that would 200, proving the kind gate short-circuits first.
+	mockGitHubValidateBase(t, http.StatusOK)
+
+	form := url.Values{"cred_index": {"0"}, "token": {"github_pat_NEW"}}
+	req, _ := http.NewRequest("POST", ts.URL+"/connections/ghapp/github/pat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", ts.URL)
+	resp, err := env.AdminClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 rotating an App credential, got %d", resp.StatusCode)
+	}
+	conn, _ := env.Connections.GetWithConfig("ghapp")
+	creds, _ := conn.Config["credentials"].([]any)
+	m, _ := creds[0].(map[string]any)
+	if _, hasToken := m["token"]; hasToken {
+		t.Error("App credential must not gain a token field")
+	}
+}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connector"
+	"github.com/trilitech/Sieve/internal/connectors/github"
 	"github.com/trilitech/Sieve/internal/connectors/httpproxy"
 	"github.com/trilitech/Sieve/internal/secrets"
 )
@@ -46,6 +47,12 @@ type connectionEditData struct {
 	// alongside the http_proxy edit form. Read-only; not a form field.
 	HTTPProxyBaseline *httpProxyBaselineView
 
+	// GitHubCredentials summarizes a github connection's stored credentials
+	// (non-secret: kind + scope only) so the edit page can offer per-credential
+	// PAT rotation. Nil for every other connector type. The token itself is
+	// never projected here.
+	GitHubCredentials []gitHubCredentialView
+
 	// CSRFToken is the plaintext token used by nav.html to seed
 	// window.SIEVE_CSRF, which the delegated submit handler echoes
 	// back into every POST form as `csrf_token`. Populated by render()
@@ -69,6 +76,17 @@ type editFieldView struct {
 	StringValue   string // text / password / select / number / json
 	BoolValue     bool   // checkbox
 	TextareaValue string // textarea (newline-joined)
+}
+
+// gitHubCredentialView is the non-secret summary of one stored github
+// credential, used to render the edit page's rotate-PAT control. It carries
+// the kind + scope so the operator can tell credentials apart, but never the
+// token / private key.
+type gitHubCredentialView struct {
+	Index     int
+	IsPAT     bool // Kind == github.KindFPAT (only PATs are rotatable via paste)
+	ScopeType string
+	ScopeName string
 }
 
 // httpProxyBaselineView lists the always-denied header keys for the
@@ -278,7 +296,35 @@ func (s *Server) connectionEditViewFromConfig(conn *connections.Connection, cfg 
 			AuthHeaderConfigured: authH,
 		}
 	}
+	if conn.ConnectorType == "github" {
+		d.GitHubCredentials = gitHubCredentialViews(cfg)
+	}
 	return d
+}
+
+// gitHubCredentialViews projects a github connection's stored `credentials`
+// list into non-secret summaries for the edit page. Malformed entries are
+// skipped rather than erroring — the page is still useful for the valid ones.
+func gitHubCredentialViews(cfg map[string]any) []gitHubCredentialView {
+	raw, ok := cfg["credentials"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]gitHubCredentialView, 0, len(raw))
+	for i, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind, _ := m["kind"].(string)
+		v := gitHubCredentialView{Index: i, IsPAT: kind == github.KindFPAT}
+		if scope, ok := m["scope"].(map[string]any); ok {
+			v.ScopeType, _ = scope["type"].(string)
+			v.ScopeName, _ = scope["name"].(string)
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // fieldViewFromStored renders a single field's value from the stored

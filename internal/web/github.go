@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trilitech/Sieve/internal/connections"
 	"github.com/trilitech/Sieve/internal/connectors/github"
 )
 
@@ -24,6 +25,13 @@ import (
 // PAT probe). Shared with the connector's internal client shape so the whole
 // package speaks to GitHub with consistent timeouts and redirect behavior.
 var githubHTTPClient = github.NewHardenedClient()
+
+// githubValidateAPIBase is the base URL used when probing a PAT during
+// create/rotate. Empty ⇒ github.ValidatePAT falls back to the production
+// api.github.com. Tests point it at a mock server. Kept package-level (rather
+// than threaded through every handler signature) so the two PAT handlers stay
+// simple and share one override point.
+var githubValidateAPIBase = ""
 
 // pendingGitHubApp holds in-flight state between the two GitHub App manifest
 // callbacks: the redirect_url callback (App created, code exchange) and the
@@ -172,7 +180,7 @@ func (s *Server) handleGitHubPAT(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	if err := github.ValidatePAT(ctx, githubHTTPClient, "", token, scopeType, scopeName); err != nil {
+	if err := github.ValidatePAT(ctx, githubHTTPClient, githubValidateAPIBase, token, scopeType, scopeName); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -193,6 +201,107 @@ func (s *Server) handleGitHubPAT(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
+// handleGitHubPATRotate replaces the token on an EXISTING github connection's
+// fine-grained-PAT credential, in place. It is the counterpart to
+// handleGitHubPAT (which is create-only, refusing an id that already exists):
+// rotating a PAT must not force a delete + re-add, which would drop the
+// connection's ID and every IAM grant bound to it. The generic edit form can't
+// do this because `credentials` is a non-Editable JSON blob (see github.Meta),
+// so the connection-edit page renders a bespoke rotate control per PAT
+// credential that POSTs here.
+func (s *Server) handleGitHubPATRotate(w http.ResponseWriter, r *http.Request) {
+	// Origin/Referer CSRF guard, mirroring handleConnectionEditSave. (The
+	// admin auth middleware also enforces the session + CSRF token.)
+	if !s.checkRotationOrigin(r) {
+		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		return
+	}
+
+	id := r.PathValue("id")
+	conn, err := s.connections.GetWithConfig(id)
+	if err != nil {
+		// Locked/rotating keyring is a transient 503, not a 404 — see writeConnectionError.
+		s.writeConnectionError(w, http.StatusNotFound, "connection not found", err)
+		return
+	}
+	if conn.ConnectorType != "github" {
+		http.Error(w, "not a github connection", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	token := strings.TrimSpace(r.FormValue("token"))
+	if token == "" {
+		http.Error(w, "token is required", http.StatusBadRequest)
+		return
+	}
+	idx := 0
+	if raw := strings.TrimSpace(r.FormValue("cred_index")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			http.Error(w, "invalid cred_index", http.StatusBadRequest)
+			return
+		}
+		idx = n
+	}
+
+	// Locate the target credential in the stored config. We mutate the decoded
+	// map in place (creds[idx] is the same map reference we edit) and persist
+	// the whole config, so every other credential and field flows through
+	// unchanged.
+	creds, ok := conn.Config["credentials"].([]any)
+	if !ok || idx >= len(creds) {
+		http.Error(w, "credential not found at that index", http.StatusBadRequest)
+		return
+	}
+	cred, ok := creds[idx].(map[string]any)
+	if !ok {
+		http.Error(w, "credential is malformed", http.StatusInternalServerError)
+		return
+	}
+	if kind, _ := cred["kind"].(string); kind != github.KindFPAT {
+		http.Error(w, "only fine-grained PAT credentials can be rotated here; a GitHub App installation is rotated by reinstalling the App", http.StatusBadRequest)
+		return
+	}
+	scope, _ := cred["scope"].(map[string]any)
+	scopeType, _ := scope["type"].(string)
+	scopeName, _ := scope["name"].(string)
+	if scopeType == "" || scopeName == "" {
+		http.Error(w, "credential is missing its scope; delete and re-add the connection", http.StatusBadRequest)
+		return
+	}
+
+	// Validate the new token against the SAME scope the credential already
+	// covers — a rotate keeps the identity/scope, only the secret changes.
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := github.ValidatePAT(ctx, githubHTTPClient, githubValidateAPIBase, token, scopeType, scopeName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	cred["token"] = token
+	if err := s.connections.UpdateConfig(id, conn.Config); err != nil {
+		s.writeConnectionError(w, http.StatusInternalServerError, "save failed: "+err.Error(), err)
+		return
+	}
+	// A freshly validated token means the connection works again. Clear a
+	// reauth_required flag if one was set, but never resurrect a connection an
+	// admin deliberately disabled.
+	if conn.Status == connections.StatusReauthRequired {
+		_ = s.connections.SetStatus(id, connections.StatusActive)
+	}
+
+	// Audit the field names / scope only — never the token value.
+	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.github_pat_rotate", id,
+		map[string]any{"cred_index": idx, "scope": scopeType + ":" + scopeName}, "success")
+
+	http.Redirect(w, r, fmt.Sprintf("/connections/%s/edit?saved=1", id), http.StatusSeeOther)
 }
 
 // handleGitHubAppStart renders an intermediate page that auto-submits a
