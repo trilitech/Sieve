@@ -70,28 +70,17 @@
               <td class="px-6 py-4 text-sm text-slate-400">{{timeAgo .CreatedAt}}</td>
               <td class="px-6 py-4 text-right whitespace-nowrap">
                 {{if and (eq .Status "reauth_required") (eq .ConnectorType "google")}}
-                <form method="POST" action="/connections/{{.ID}}/reauth" class="inline mr-3">
-                  <button type="submit"
-                          class="text-sm text-amber-300 hover:text-amber-200 font-medium transition-colors">
-                    Re-authenticate
-                  </button>
-                </form>
+                <a href="/connections/{{.ID}}/reauth"
+                   title="This connection's Google token expired or was revoked — re-authenticate to restore access."
+                   class="inline-block mr-3 text-sm text-amber-300 hover:text-amber-200 font-medium transition-colors">
+                  Re-authenticate
+                </a>
                 {{else if and (eq .Status "active") (eq .ConnectorType "google")}}
-                <details class="inline-block mr-3 text-left align-middle">
-                  <summary title="Re-run Google OAuth for this connection to refresh scopes/tokens, or migrate it to a different OAuth client. Its ID and IAM grants are preserved."
-                           class="cursor-pointer text-sm text-slate-400 hover:text-indigo-300 font-medium transition-colors">Re-authenticate</summary>
-                  <form method="POST" action="/connections/{{.ID}}/reauth" class="mt-2 space-y-2 rounded-lg border border-slate-700 bg-slate-900/80 p-3 w-72">
-                    <p class="text-xs text-slate-500">Re-runs OAuth against this connection's current client. To <em>migrate</em> it to a different Google Workspace org's client, paste that client below (blank = keep the current one).</p>
-                    <input type="text" name="google_client_id" placeholder="new OAuth client_id (optional)"
-                           class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                    <input type="password" name="google_client_secret" placeholder="new OAuth client_secret (optional)"
-                           class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                    <button type="submit"
-                            class="w-full rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 transition-colors">
-                      Re-authenticate
-                    </button>
-                  </form>
-                </details>
+                <a href="/connections/{{.ID}}/reauth"
+                   title="Re-run Google sign-in for this connection — refresh scopes/tokens, or move it to a different OAuth client for the same account. ID and IAM grants are preserved."
+                   class="inline-block mr-3 text-sm text-slate-400 hover:text-indigo-300 font-medium transition-colors">
+                  Re-authenticate
+                </a>
                 {{end}}
                 {{if or (eq .ConnectorType "http_proxy") (eq .ConnectorType "mcp_proxy") (eq .ConnectorType "github") (eq .ConnectorType "gitlab")}}
                 <a href="/connections/{{.ID}}/edit"

@@ -342,7 +342,7 @@ func NewServer(
 	// given partial just ignore it. The ops picker partial is included so
 	// policies.html and policy_edit.html resolve to the same scope-aware
 	// markup — making create/edit divergence structurally impossible.
-	pages := []string{"connections", "connection_edit", "tokens", "tokens_edit", "approvals", "audit", "settings", "iam", "iam_edit", "iam_filter_edit", "docs"}
+	pages := []string{"connections", "connection_edit", "connection_reauth", "tokens", "tokens_edit", "approvals", "audit", "settings", "iam", "iam_edit", "iam_filter_edit", "docs"}
 	for _, page := range pages {
 		t := template.Must(
 			template.New("").Funcs(funcMap()).ParseFS(templateFS,
@@ -446,6 +446,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /connections", s.handleConnections)
 	mux.HandleFunc("POST /connections/add", s.handleConnectionAdd)
 	mux.HandleFunc("POST /connections/{id}/delete", s.handleConnectionDelete)
+	mux.HandleFunc("GET /connections/{id}/reauth", s.handleConnectionReauthPage)
 	mux.HandleFunc("POST /connections/{id}/reauth", s.handleConnectionReauth)
 	mux.HandleFunc("GET /connections/{id}/edit", s.handleConnectionEditPage)
 	mux.HandleFunc("POST /connections/{id}/edit", s.handleConnectionEditSave)
@@ -981,6 +982,13 @@ func (s *Server) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
 		// global client. Lets one instance serve multiple Workspace orgs.
 		gClientID := strings.TrimSpace(r.FormValue("google_client_id"))
 		gClientSecret := strings.TrimSpace(r.FormValue("google_client_secret"))
+		// Both-or-neither: a client_id without a secret builds a config that can't
+		// refresh tokens (the gmail connector needs both), so the connection would
+		// authorize but then die at expiry. Reject the half-specified input.
+		if (gClientID == "") != (gClientSecret == "") {
+			http.Error(w, "provide both a Google client_id and client_secret, or leave both blank to use the server default", http.StatusBadRequest)
+			return
+		}
 
 		conf, err := s.googleOAuthConfigFor(r, gClientID, gClientSecret)
 		if err != nil {
@@ -1044,6 +1052,32 @@ func (s *Server) handleConnectionDelete(w http.ResponseWriter, r *http.Request) 
 // Limited to Google connections today; GitHub PAT/App connections have their
 // own setup flow and would need a separate re-auth surface if their tokens
 // expire.
+// handleConnectionReauthPage renders the dedicated re-authentication page for a
+// Google connection (GET). A clear single-purpose page beats an inline table
+// control: the primary action is one obvious button (re-auth with the stored
+// client), with an optional advanced disclosure for same-account client
+// migration. Admin-listener-only via requireOperatorSession.
+func (s *Server) handleConnectionReauthPage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	conn, err := s.connections.GetWithConfig(id)
+	if err != nil {
+		// Locked/rotating keyring is transient (503), not a missing resource.
+		s.writeConnectionError(w, http.StatusNotFound, "connection not found", err)
+		return
+	}
+	if conn.ConnectorType != "google" {
+		http.Error(w, "re-auth not supported for connector type "+conn.ConnectorType, http.StatusBadRequest)
+		return
+	}
+	email, _ := conn.Config["email"].(string)
+	s.render(w, r, "connection_reauth", map[string]any{
+		"ID":          conn.ID,
+		"DisplayName": conn.DisplayName,
+		"Email":       email,
+		"Status":      conn.Status,
+	})
+}
+
 func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// Read the stored config so we can re-authorize against the SAME OAuth client
@@ -1051,11 +1085,9 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 	// one Workspace org must reauth via that org's client, not the global one.
 	conn, err := s.connections.GetWithConfig(id)
 	if err != nil {
-		if errors.Is(err, secrets.ErrKeyringNotLoaded) {
-			http.Error(w, "service locked: passphrase required", http.StatusServiceUnavailable)
-			return
-		}
-		http.Error(w, "connection not found", http.StatusNotFound)
+		// Locked/rotating keyring is a transient service state (503), not a
+		// missing resource — writeConnectionError covers both sentinels.
+		s.writeConnectionError(w, http.StatusNotFound, "connection not found", err)
 		return
 	}
 	if conn.ConnectorType != "google" {
@@ -1066,11 +1098,18 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 	// Reauth reuses the connection's stored client by DEFAULT so it stays on the
 	// same org's OAuth client — a connection from one org must not silently jump
 	// to the global client of another org (that would re-trigger org_internal).
-	// To deliberately MIGRATE a connection to a different client (e.g. off an old
-	// project whose APIs were never enabled), the operator can supply a new client
-	// on the reauth form; a non-empty client_id there overrides the stored one.
+	// To deliberately MIGRATE a connection to a different client (same account,
+	// e.g. a new GCP project in the same org), the operator can supply a new
+	// client here; a non-empty client_id overrides the stored one.
 	gClientID := strings.TrimSpace(r.FormValue("google_client_id"))
 	gClientSecret := strings.TrimSpace(r.FormValue("google_client_secret"))
+	// Both-or-neither: a client_id without a secret builds a config that can't
+	// refresh (the gmail connector needs both), so the connection would die at
+	// token expiry. Reject the half-specified case instead of silently accepting.
+	if (gClientID == "") != (gClientSecret == "") {
+		http.Error(w, "provide both client_id and client_secret, or neither", http.StatusBadRequest)
+		return
+	}
 	if gClientID == "" {
 		gClientID, _ = conn.Config["client_id"].(string)
 		gClientSecret, _ = conn.Config["client_secret"].(string)

@@ -1,0 +1,73 @@
+{{define "connection_reauth"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Re-authenticate: {{.DisplayName}} - Sieve</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>body { font-family: 'Inter', sans-serif; }</style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+  {{template "nav" .}}
+
+  <main class="ml-64 p-8">
+    <div class="max-w-2xl">
+      <div class="mb-6">
+        <a href="/connections" class="text-sm text-slate-400 hover:text-slate-200">← Back to connections</a>
+        <h1 class="text-2xl font-bold text-white mt-2">Re-authenticate {{.DisplayName}}</h1>
+        <p class="text-sm text-slate-400 mt-1">
+          ID: <code class="text-slate-300">{{.ID}}</code>{{if .Email}} · Account: <code class="text-slate-300">{{.Email}}</code>{{end}}
+        </p>
+      </div>
+
+      {{if .Error}}
+      <div class="mb-6 rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3">
+        <p class="text-sm text-red-400">{{.Error}}</p>
+      </div>
+      {{end}}
+
+      {{if eq .Status "reauth_required"}}
+      <div class="mb-6 rounded-lg bg-amber-500/10 border border-amber-500/20 px-4 py-3">
+        <p class="text-sm text-amber-300">This connection needs re-authentication — its Google token expired or was revoked. Re-authenticate to restore access.</p>
+      </div>
+      {{end}}
+
+      <div class="rounded-lg border border-slate-700 bg-slate-800/40 p-6 space-y-5">
+        <p class="text-sm text-slate-300">
+          This re-runs Google sign-in for this connection. Its <strong>ID and IAM grants are preserved</strong>{{if .Email}}, and you must sign in with the same account (<code class="text-slate-300">{{.Email}}</code>){{end}} — Sieve rejects the re-auth if a different account is chosen.
+        </p>
+
+        <form method="POST" action="/connections/{{.ID}}/reauth" class="space-y-4">
+          <button type="submit"
+                  class="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors">
+            Re-authenticate with Google
+          </button>
+
+          <details class="rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-3">
+            <summary class="cursor-pointer text-xs font-medium text-slate-300">Advanced: use a different OAuth client <span class="text-slate-500">(optional)</span></summary>
+            <div class="mt-3 space-y-3">
+              <p class="text-xs text-slate-500">
+                Only to move this account onto a <em>different OAuth client for the same account</em> — e.g. a new GCP project <strong>in the same Google Workspace org</strong>. Cross-org migration isn't possible here (a different org's client won't admit this account); to switch orgs, delete and re-add the connection. Leave both blank to keep the current client. <strong>Provide both fields or neither.</strong>
+              </p>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">New OAuth client_id</label>
+                <input type="text" name="google_client_id" placeholder="…apps.googleusercontent.com"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-400 mb-1">New OAuth client_secret</label>
+                <input type="password" name="google_client_secret" placeholder="GOCSPX-…"
+                       class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              </div>
+            </div>
+          </details>
+        </form>
+      </div>
+    </div>
+  </main>
+</body>
+</html>
+{{end}}
