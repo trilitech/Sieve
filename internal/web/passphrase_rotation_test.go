@@ -540,3 +540,35 @@ func TestCheckRotationOriginAbsentHeadersAllowed(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckRotationOriginAcceptsPublicBaseURLBehindProxy covers the
+// reverse-proxy / exposure-portal case: the app sees a rewritten Host header
+// (e.g. 127.0.0.1:19816) while the operator browses the configured
+// public_base_url host. An Origin matching public_base_url must be accepted
+// even though it doesn't equal r.Host — otherwise every admin POST behind a
+// proxy 403s as "cross-origin". A genuinely foreign Origin is still rejected.
+func TestCheckRotationOriginAcceptsPublicBaseURLBehindProxy(t *testing.T) {
+	env := testenv.New(t)
+	if err := env.Settings.Set("public_base_url", "http://sieve.example"); err != nil {
+		t.Fatalf("set public_base_url: %v", err)
+	}
+	s := &Server{settings: env.Settings}
+
+	newReq := func(origin string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "http://x/connections/x/github/pat", nil)
+		r.Host = "127.0.0.1:19816" // what the app sees behind a Host-rewriting proxy
+		r.Header.Set("Origin", origin)
+		return r
+	}
+
+	if !s.checkRotationOrigin(newReq("http://sieve.example")) {
+		t.Error("Origin matching public_base_url must be accepted even when Host differs (proxy case)")
+	}
+	if s.checkRotationOrigin(newReq("http://evil.example")) {
+		t.Error("a genuinely foreign Origin must still be rejected")
+	}
+	// The rewritten Host itself is still accepted (direct-to-app path).
+	if !s.checkRotationOrigin(newReq("http://127.0.0.1:19816")) {
+		t.Error("Origin matching r.Host must still be accepted")
+	}
+}

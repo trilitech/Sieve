@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"time"
@@ -174,10 +175,19 @@ func (s *Server) renderRotationError(w http.ResponseWriter, r *http.Request, sta
 // checkRotationOrigin is a lightweight, defense-in-depth CSRF check layered
 // on top of the session CSRF token that requireOperatorSession already
 // enforces on every state-mutating admin POST. It rejects a request whose
-// Origin (or, as a fallback, Referer) is PRESENT but does not match the
-// request's Host — the signature of a cross-origin form submission. Matching
-// against r.Host (rather than the configured webAddr) keeps it robust to
-// ephemeral test ports and to operators binding any local interface.
+// Origin (or, as a fallback, Referer) is PRESENT but matches neither the
+// request's own Host NOR the operator-configured canonical host
+// (public_base_url) — the signature of a cross-origin form submission.
+//
+// Why accept public_base_url too, not just r.Host: behind an HTTP reverse
+// proxy (or the exposure portal) the app sees a REWRITTEN Host header — e.g.
+// the browser is at https://sieve.example while the app receives
+// Host: 127.0.0.1:19816. A strict r.Host match then rejects every legitimate
+// admin POST with a spurious "cross-origin request rejected". public_base_url
+// is the operator's own declaration of the canonical URL, so an Origin that
+// matches it is same-origin by definition; an attacker's page still carries a
+// foreign Origin and is rejected. (An SSH -L tunnel forwards bytes verbatim,
+// so Origin and Host already agree there — this only helps the proxy case.)
 //
 // It deliberately does NOT reject when both Origin and Referer are absent.
 // A cross-origin attacker cannot suppress the Origin header: browsers force
@@ -190,23 +200,33 @@ func (s *Server) renderRotationError(w http.ResponseWriter, r *http.Request, sta
 // "cross-origin request rejected" with no security benefit; the session CSRF
 // token remains the primary guarantee in the absent case.
 func (s *Server) checkRotationOrigin(r *http.Request) bool {
-	if origin := r.Header.Get("Origin"); origin != "" {
-		u, err := url.Parse(origin)
-		if err != nil {
-			return false
-		}
-		return u.Host == r.Host
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		origin = r.Header.Get("Referer")
 	}
-	if referer := r.Header.Get("Referer"); referer != "" {
-		u, err := url.Parse(referer)
-		if err != nil {
-			return false
-		}
-		return u.Host == r.Host
+	if origin == "" {
+		// Both absent: cannot be an attacker-forged cross-origin POST (browsers
+		// always attach Origin cross-origin). Rely on the session CSRF token.
+		return true
 	}
-	// Both absent: cannot be an attacker-forged cross-origin POST (browsers
-	// always attach Origin cross-origin). Rely on the session CSRF token.
-	return true
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Host == r.Host {
+		return true
+	}
+	// Accept the operator-configured canonical host (public_base_url). This is
+	// what makes the check work behind a Host-rewriting reverse proxy.
+	if pub, perr := url.Parse(s.publicBaseURL(r)); perr == nil && pub.Host != "" && u.Host == pub.Host {
+		return true
+	}
+	// Log the ground truth so a genuine misconfiguration (operator browsing a
+	// host that is neither r.Host nor public_base_url) is diagnosable instead of
+	// an opaque 403. Origin/Host are not secrets.
+	log.Printf("admin POST rejected as cross-origin: origin_host=%q request_host=%q public_base_url=%q path=%s — set public_base_url to the URL you browse the admin UI at",
+		u.Host, r.Host, s.publicBaseURL(r), r.URL.Path)
+	return false
 }
 
 // zeroBytes overwrites a byte slice in place. Same shape as the helper
