@@ -101,3 +101,49 @@ func TestParseDraftBody_AcceptsKnownFields(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDraftBody_AcceptsAttachments(t *testing.T) {
+	// The mirabello P1: attachments must be an accepted structured field, not a
+	// rejected unknown one.
+	params, code, body := parseBody(t, `{"to":["x@y.com"],"attachments":[{"filename":"a.pdf","mime_type":"application/pdf","content":"AAAA"}]}`)
+	if code != 200 {
+		t.Fatalf("code = %d (%s), want 200 — attachments should be accepted", code, body)
+	}
+	if _, ok := params["attachments"]; !ok {
+		t.Errorf("attachments missing after parse: %v", params)
+	}
+}
+
+func TestParseDraftBody_NormalizesForwardMessageId(t *testing.T) {
+	// forward_message_id (and its camelCase alias) normalize to the op's
+	// message_id param, which is how the handlers detect a forward.
+	for _, in := range []string{
+		`{"to":["x@y.com"],"forward_message_id":"src1"}`,
+		`{"to":["x@y.com"],"forwardMessageId":"src1"}`,
+	} {
+		params, code, body := parseBody(t, in)
+		if code != 200 {
+			t.Fatalf("code = %d (%s), want 200 for %s", code, body, in)
+		}
+		if params["message_id"] != "src1" {
+			t.Errorf("forward id not normalized to message_id for %s: %v", in, params)
+		}
+	}
+}
+
+// TestMailOpFor verifies drafts/send dispatch selects the dedicated forward op
+// exactly when a forward id (already normalized to message_id) is present.
+func TestMailOpFor(t *testing.T) {
+	if got := mailOpFor(map[string]any{"message_id": "src1"}, "create_draft", "forward_draft"); got != "forward_draft" {
+		t.Errorf("with forward id: got %q, want forward_draft", got)
+	}
+	if got := mailOpFor(map[string]any{"body": "b"}, "create_draft", "forward_draft"); got != "create_draft" {
+		t.Errorf("without forward id: got %q, want create_draft", got)
+	}
+	if got := mailOpFor(map[string]any{"message_id": "src1"}, "send_email", "forward_email"); got != "forward_email" {
+		t.Errorf("send with forward id: got %q, want forward_email", got)
+	}
+	if got := mailOpFor(map[string]any{"body": "b"}, "send_email", "forward_email"); got != "send_email" {
+		t.Errorf("send without forward id: got %q, want send_email", got)
+	}
+}

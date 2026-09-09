@@ -20,9 +20,11 @@ package gmail
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"strconv"
 	"strings"
 	"time"
@@ -74,7 +76,7 @@ var Meta = connector.ConnectorMeta{
 			Kind:    "domain_allowlist",
 			CtxPath: "context.recipient_domains",
 			Help:    "Sends allowed only if every recipient domain is in this list",
-			Ops:     []string{"send_email", "create_draft", "update_draft", "reply"},
+			Ops:     []string{"send_email", "create_draft", "update_draft", "reply", "forward_draft", "forward_email"},
 		},
 		{
 			Key:     "recipient_count",
@@ -82,7 +84,7 @@ var Meta = connector.ConnectorMeta{
 			Kind:    "number",
 			CtxPath: "context.recipient_count",
 			Help:    "Cap how many distinct recipients (To+Cc) a send may have",
-			Ops:     []string{"send_email", "create_draft", "update_draft", "reply"},
+			Ops:     []string{"send_email", "create_draft", "update_draft", "reply", "forward_draft", "forward_email"},
 		},
 	},
 	// ContentFields are the response text fields safe for content filtering.
@@ -330,10 +332,12 @@ func (g *GoogleConnector) Operations() []connector.OperationDef {
 // connector it is a Gmail message ID to reply to, not an address. There is no
 // "bcc" param in the catalog. Read-only ops are absent (no recipients to gate).
 var recipientParamsByOp = map[string][]string{
-	"create_draft": {"to", "cc"},
-	"update_draft": {"to", "cc"},
-	"send_email":   {"to", "cc"},
-	"reply":        {"to", "cc"},
+	"create_draft":  {"to", "cc"},
+	"update_draft":  {"to", "cc"},
+	"send_email":    {"to", "cc"},
+	"reply":         {"to", "cc"},
+	"forward_draft": {"to", "cc"},
+	"forward_email": {"to", "cc"},
 }
 
 // EnrichContext implements connector.ContextEnricher. For the send/draft/reply
@@ -465,6 +469,7 @@ var operations = []connector.OperationDef{
 			"in_reply_to":            {Type: "string", Description: "Parent RFC5322 Message-ID for the In-Reply-To header (advanced)", Required: false},
 			"references":             {Type: "string", Description: "RFC5322 References chain (advanced)", Required: false},
 			"reply_to":               {Type: "string", Description: "DEPRECATED legacy alias; use in_reply_to_message_id", Required: false},
+			"attachments":            {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -482,6 +487,7 @@ var operations = []connector.OperationDef{
 			"thread_id":              {Type: "string", Description: "Gmail thread id to attach the draft to (advanced)", Required: false},
 			"in_reply_to":            {Type: "string", Description: "Parent RFC5322 Message-ID for the In-Reply-To header (advanced)", Required: false},
 			"references":             {Type: "string", Description: "RFC5322 References chain (advanced)", Required: false},
+			"attachments":            {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -499,6 +505,35 @@ var operations = []connector.OperationDef{
 			"in_reply_to":            {Type: "string", Description: "Parent RFC5322 Message-ID for the In-Reply-To header (advanced)", Required: false},
 			"references":             {Type: "string", Description: "RFC5322 References chain (advanced)", Required: false},
 			"reply_to":               {Type: "string", Description: "DEPRECATED legacy alias; use in_reply_to_message_id", Required: false},
+			"attachments":            {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "forward_draft",
+		Description: "Draft a forward of an existing message. Sieve looks up the source message and assembles a faithful forwarded copy — the original From/Date/Subject/To, the original body in BOTH plain text and HTML (so links survive), and the original attachments — beneath your own note. This is a separate privilege from create_draft: forwarding existing mail to new recipients is an exfiltration primitive and is granted independently of composing/replying.",
+		Params: map[string]connector.ParamDef{
+			"message_id":  {Type: "string", Description: "Gmail message id of the source message to forward", Required: true},
+			"to":          {Type: "[]string", Description: "Recipient email addresses", Required: false},
+			"cc":          {Type: "[]string", Description: "CC email addresses", Required: false},
+			"bcc":         {Type: "[]string", Description: "BCC email addresses", Required: false},
+			"subject":     {Type: "string", Description: "Subject (defaults to Fwd: <source subject>)", Required: false},
+			"body":        {Type: "string", Description: "Your note, placed above the forwarded content", Required: false},
+			"attachments": {Type: "[]object", Description: "Additional files to attach beyond the source's own attachments, each {filename, mime_type, content} (base64)", Required: false},
+		},
+		ReadOnly: false,
+	},
+	{
+		Name:        "forward_email",
+		Description: "Send a forward of an existing message directly. Identical assembly to forward_draft (real headers, text + HTML body, original attachments) but sends instead of drafting; gated separately from send_email.",
+		Params: map[string]connector.ParamDef{
+			"message_id":  {Type: "string", Description: "Gmail message id of the source message to forward", Required: true},
+			"to":          {Type: "[]string", Description: "Recipient email addresses", Required: false},
+			"cc":          {Type: "[]string", Description: "CC email addresses", Required: false},
+			"bcc":         {Type: "[]string", Description: "BCC email addresses", Required: false},
+			"subject":     {Type: "string", Description: "Subject (defaults to Fwd: <source subject>)", Required: false},
+			"body":        {Type: "string", Description: "Your note, placed above the forwarded content", Required: false},
+			"attachments": {Type: "[]object", Description: "Additional files to attach beyond the source's own attachments, each {filename, mime_type, content} (base64)", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -530,11 +565,13 @@ var operations = []connector.OperationDef{
 		Name:        "reply",
 		Description: "Reply to an existing email",
 		Params: map[string]connector.ParamDef{
-			"message_id": {Type: "string", Description: "The ID of the message to reply to", Required: true},
-			"to":         {Type: "[]string", Description: "Recipient email addresses (defaults to original sender)", Required: false},
-			"cc":         {Type: "[]string", Description: "CC email addresses", Required: false},
-			"subject":    {Type: "string", Description: "Email subject (defaults to Re: original subject)", Required: false},
-			"body":       {Type: "string", Description: "Reply body text", Required: true},
+			"message_id":  {Type: "string", Description: "The ID of the message to reply to", Required: true},
+			"to":          {Type: "[]string", Description: "Recipient email addresses (defaults to original sender)", Required: false},
+			"cc":          {Type: "[]string", Description: "CC email addresses", Required: false},
+			"bcc":         {Type: "[]string", Description: "BCC email addresses", Required: false},
+			"subject":     {Type: "string", Description: "Email subject (defaults to Re: original subject)", Required: false},
+			"body":        {Type: "string", Description: "Reply body text", Required: true},
+			"attachments": {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -862,6 +899,11 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			Body:    getStringParam(params, "body"),
 			ReplyTo: getStringParam(params, "reply_to"),
 		}
+		atts, err := getAttachmentsParam(params)
+		if err != nil {
+			return nil, err
+		}
+		req.Attachments = atts
 		if err := g.applyThreading(ctx, params, &req); err != nil {
 			return nil, err
 		}
@@ -879,6 +921,11 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			Subject: getStringParam(params, "subject"),
 			Body:    getStringParam(params, "body"),
 		}
+		atts, err := getAttachmentsParam(params)
+		if err != nil {
+			return nil, err
+		}
+		req.Attachments = atts
 		if err := g.applyThreading(ctx, params, &req); err != nil {
 			return nil, err
 		}
@@ -893,8 +940,37 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			Body:    getStringParam(params, "body"),
 			ReplyTo: getStringParam(params, "reply_to"),
 		}
+		atts, err := getAttachmentsParam(params)
+		if err != nil {
+			return nil, err
+		}
+		req.Attachments = atts
 		if err := g.applyThreading(ctx, params, &req); err != nil {
 			return nil, err
+		}
+		return g.client.SendEmail(ctx, req)
+
+	case "forward_draft", "forward_email":
+		messageID, err := requireStringParam(params, "message_id")
+		if err != nil {
+			return nil, err
+		}
+		req := gmailclient.DraftRequest{
+			To:      getStringSliceParam(params, "to"),
+			Cc:      getStringSliceParam(params, "cc"),
+			Bcc:     getStringSliceParam(params, "bcc"),
+			Subject: getStringParam(params, "subject"),
+			Body:    getStringParam(params, "body"),
+		}
+		extra, err := getAttachmentsParam(params)
+		if err != nil {
+			return nil, err
+		}
+		if err := g.buildForward(ctx, messageID, &req, extra); err != nil {
+			return nil, err
+		}
+		if op == "forward_draft" {
+			return g.client.CreateDraft(ctx, req)
 		}
 		return g.client.SendEmail(ctx, req)
 
@@ -959,6 +1035,11 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			Subject: getStringParam(params, "subject"),
 			Body:    getStringParam(params, "body"),
 		}
+		atts, err := getAttachmentsParam(params)
+		if err != nil {
+			return nil, err
+		}
+		req.Attachments = atts
 		// Reply threads into message_id's conversation with correct thread_id +
 		// In-Reply-To/References headers (derived from the parent), instead of the
 		// old behavior that mis-used the message id as both threadId and Message-ID.
@@ -1285,6 +1366,160 @@ func ensureRePrefix(subject string) string {
 		return subject
 	}
 	return "Re: " + subject
+}
+
+// ensureFwdPrefix prepends "Fwd: " unless the subject already carries a
+// case-insensitive "Fwd:" or "Fw:" prefix, so forwards don't accumulate one.
+func ensureFwdPrefix(subject string) string {
+	low := strings.ToLower(strings.TrimSpace(subject))
+	if strings.HasPrefix(low, "fwd:") || strings.HasPrefix(low, "fw:") {
+		return subject
+	}
+	return "Fwd: " + subject
+}
+
+// getAttachmentsParam parses the "attachments" op param — an array of
+// {filename, mime_type, content} objects, where content is base64-encoded
+// bytes — into decoded gmail.Attachment values. Returns (nil, nil) when the
+// param is absent. Errors (rather than silently dropping) on a malformed shape
+// or undecodable content, so a caller learns its attachment didn't ride along.
+func getAttachmentsParam(params map[string]any) ([]gmailclient.Attachment, error) {
+	raw, ok := params["attachments"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("gmail connector: %q must be an array of {filename, mime_type, content} objects", "attachments")
+	}
+	out := make([]gmailclient.Attachment, 0, len(list))
+	for i, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("gmail connector: attachments[%d] must be an object with filename, mime_type, content", i)
+		}
+		filename, _ := m["filename"].(string)
+		mimeType, _ := m["mime_type"].(string)
+		contentStr, _ := m["content"].(string)
+		if filename == "" {
+			return nil, fmt.Errorf("gmail connector: attachments[%d] missing required %q", i, "filename")
+		}
+		if contentStr == "" {
+			return nil, fmt.Errorf("gmail connector: attachments[%d] missing required %q (base64 bytes)", i, "content")
+		}
+		data, err := decodeBase64(contentStr)
+		if err != nil {
+			return nil, fmt.Errorf("gmail connector: attachments[%d] content is not valid base64: %w", i, err)
+		}
+		out = append(out, gmailclient.Attachment{Filename: filename, MimeType: mimeType, Data: data})
+	}
+	return out, nil
+}
+
+// decodeBase64 decodes s tolerantly across the four base64 alphabets/paddings
+// callers commonly emit (std/url, padded/raw), since JSON has no canonical
+// base64 and clients differ.
+func decodeBase64(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding, base64.URLEncoding,
+		base64.RawStdEncoding, base64.RawURLEncoding,
+	} {
+		if b, err := enc.DecodeString(s); err == nil {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("not valid base64")
+}
+
+// buildForward populates req to forward the message sourceID. It looks up the
+// source, derives a "Fwd:" subject when the caller gave none, and appends the
+// standard forwarded block (the real From/Date/Subject/To plus the original
+// body) beneath the caller's note in BOTH plain text and — when the source had
+// an HTML part — HTML, so the original's links and formatting survive. The
+// source's own attachments are fetched in full and carried, followed by any
+// caller-supplied extras. Everything is server-assembled from a message the
+// token was already permitted to read, so it stays fully policy-inspectable —
+// this is not the opaque-raw-MIME path.
+func (g *GoogleConnector) buildForward(ctx context.Context, sourceID string, req *gmailclient.DraftRequest, extra []gmailclient.Attachment) error {
+	src, err := g.client.GetEmail(ctx, sourceID)
+	if err != nil {
+		return err
+	}
+	if req.Subject == "" {
+		req.Subject = ensureFwdPrefix(src.Subject)
+	}
+	note := req.Body
+	req.Body = forwardTextBody(note, src)
+	if src.BodyHTML != "" {
+		req.BodyHTML = forwardHTMLBody(note, src)
+	}
+	atts := make([]gmailclient.Attachment, 0, len(src.Attachments)+len(extra))
+	for _, meta := range src.Attachments {
+		full, err := g.client.GetAttachment(ctx, sourceID, meta.ID)
+		if err != nil {
+			return fmt.Errorf("gmail connector: fetching attachment %q to forward: %w", meta.Filename, err)
+		}
+		atts = append(atts, *full)
+	}
+	atts = append(atts, extra...)
+	req.Attachments = atts
+	return nil
+}
+
+// forwardTextBody renders the plain-text body of a forward: the caller's note
+// (if any), the "---------- Forwarded message ----------" separator with the
+// source's genuine headers, then the source's plain-text body.
+func forwardTextBody(note string, src *gmailclient.Email) string {
+	var b strings.Builder
+	if note != "" {
+		b.WriteString(note)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("---------- Forwarded message ----------\n")
+	b.WriteString("From: " + src.From + "\n")
+	if !src.Date.IsZero() {
+		b.WriteString("Date: " + src.Date.Format(time.RFC1123Z) + "\n")
+	}
+	b.WriteString("Subject: " + src.Subject + "\n")
+	if len(src.To) > 0 {
+		b.WriteString("To: " + strings.Join(src.To, ", ") + "\n")
+	}
+	if len(src.Cc) > 0 {
+		b.WriteString("Cc: " + strings.Join(src.Cc, ", ") + "\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(src.Body)
+	return b.String()
+}
+
+// forwardHTMLBody renders the HTML body of a forward. The caller's note and the
+// forwarded header lines are HTML-escaped (they are attacker-influenced text);
+// the source's HTML body is included verbatim so its links/markup — the whole
+// point of preserving HTML — survive intact.
+func forwardHTMLBody(note string, src *gmailclient.Email) string {
+	var b strings.Builder
+	if note != "" {
+		b.WriteString("<div>")
+		b.WriteString(strings.ReplaceAll(html.EscapeString(note), "\n", "<br>\n"))
+		b.WriteString("</div><br>\n")
+	}
+	b.WriteString(`<div class="gmail_quote">`)
+	b.WriteString("---------- Forwarded message ----------<br>\n")
+	b.WriteString("From: " + html.EscapeString(src.From) + "<br>\n")
+	if !src.Date.IsZero() {
+		b.WriteString("Date: " + html.EscapeString(src.Date.Format(time.RFC1123Z)) + "<br>\n")
+	}
+	b.WriteString("Subject: " + html.EscapeString(src.Subject) + "<br>\n")
+	if len(src.To) > 0 {
+		b.WriteString("To: " + html.EscapeString(strings.Join(src.To, ", ")) + "<br>\n")
+	}
+	if len(src.Cc) > 0 {
+		b.WriteString("Cc: " + html.EscapeString(strings.Join(src.Cc, ", ")) + "<br>\n")
+	}
+	b.WriteString("</div>\n")
+	b.WriteString(src.BodyHTML)
+	return b.String()
 }
 
 // Validate checks that the credentials are valid by listing 1 email.

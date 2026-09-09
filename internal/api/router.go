@@ -112,6 +112,7 @@ func (rt *Router) Handler() http.Handler {
 	mux.HandleFunc("DELETE /gmail/v1/users/{userId}/drafts/{id}", rt.gmailDeleteDraft)
 	mux.HandleFunc("GET /gmail/v1/users/{userId}/labels", rt.gmailListLabels)
 	mux.HandleFunc("POST /gmail/v1/users/{userId}/messages/{id}/modify", rt.gmailModifyMessage)
+	mux.HandleFunc("POST /gmail/v1/users/{userId}/messages/{id}/forward", rt.gmailForwardMessage)
 	mux.HandleFunc("GET /gmail/v1/users/{userId}/messages/{messageId}/attachments/{attachmentId}", rt.gmailGetAttachment)
 
 	// Transparent HTTP proxy — forwards requests to any API with credential
@@ -1310,7 +1311,36 @@ func (rt *Router) gmailSendMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rt.gmailExecute(w, r, "send_email", body)
+	// A forward_message_id in the body (normalized to message_id) selects the
+	// dedicated, separately-gated forward op instead of a plain send.
+	rt.gmailExecute(w, r, mailOpFor(body, "send_email", "forward_email"), body)
+}
+
+// mailOpFor picks the op for a drafts/send request: the forward variant when a
+// forward id (normalized to the message_id param by mailBodyFields) is present,
+// otherwise the plain compose variant. Pure so the dispatch is unit-testable
+// without the full auth/policy stack gmailExecute runs.
+func mailOpFor(body map[string]any, plainOp, forwardOp string) string {
+	if _, isForward := body["message_id"]; isForward {
+		return forwardOp
+	}
+	return plainOp
+}
+
+// gmailForwardMessage forwards the message named in the path. Gmail's own REST
+// API has no forward verb (a bare messages/{id}/forward 404s), which pushed
+// integrators to hand-type imitation forwards; this route maps to the
+// server-side forward_email op so the real headers, body (text + HTML) and
+// attachments are preserved. The path id is the source; the body carries the
+// new recipients and an optional note (same structured fields as send).
+func (rt *Router) gmailForwardMessage(w http.ResponseWriter, r *http.Request) {
+	body, ok := rt.parseMailBody(w, r)
+	if !ok {
+		return
+	}
+	// The source message is the path id; it wins over any body value.
+	body["message_id"] = r.PathValue("id")
+	rt.gmailExecute(w, r, "forward_email", body)
 }
 
 // mailBodyFields is the allow-list of JSON keys accepted by the endpoints that
@@ -1335,6 +1365,12 @@ var mailBodyFields = map[string]string{
 	"inReplyTo":              "in_reply_to",
 	"references":             "references",
 	"reply_to":               "reply_to",
+	"attachments":            "attachments",
+	// Forwarding: presence of forward_message_id routes drafts/send to the
+	// dedicated forward_draft/forward_email ops (separately policy-gated) rather
+	// than composing a hand-typed imitation. Mapped to the ops' message_id param.
+	"forward_message_id": "message_id",
+	"forwardMessageId":   "message_id",
 }
 
 func (rt *Router) gmailCreateDraft(w http.ResponseWriter, r *http.Request) {
@@ -1342,7 +1378,10 @@ func (rt *Router) gmailCreateDraft(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rt.gmailExecute(w, r, "create_draft", body)
+	// A forward_message_id in the body (normalized to message_id) drafts a
+	// faithful, server-assembled forward via the separately-gated forward_draft
+	// op — rather than the caller composing a hand-typed imitation.
+	rt.gmailExecute(w, r, mailOpFor(body, "create_draft", "forward_draft"), body)
 }
 
 // parseMailBody decodes and validates an outgoing-message request body (drafts
@@ -1361,13 +1400,13 @@ func (rt *Router) parseMailBody(w http.ResponseWriter, r *http.Request) (map[str
 	for k, v := range raw {
 		if k == "raw" {
 			writeError(w, http.StatusBadRequest,
-				"field \"raw\" is not supported: this endpoint takes structured fields (to, cc, bcc, subject, body) so policies can inspect the content. To reply into a thread, set in_reply_to_message_id.")
+				"field \"raw\" is not supported: this endpoint takes structured fields (to, cc, bcc, subject, body, attachments) so policies can inspect the content. To reply into a thread, set in_reply_to_message_id; to forward a message, set forward_message_id.")
 			return nil, false
 		}
 		param, allowed := mailBodyFields[k]
 		if !allowed {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf(
-				"unknown field %q. Accepted: to, cc, bcc, subject, body, in_reply_to_message_id, thread_id, in_reply_to, references.", k))
+				"unknown field %q. Accepted: to, cc, bcc, subject, body, attachments, in_reply_to_message_id, forward_message_id, thread_id, in_reply_to, references.", k))
 			return nil, false
 		}
 		params[param] = v

@@ -21,4 +21,5 @@ specs/
 *.DS_Store
 .claude/
 passphrase
-FEEDBACK_from_tezos_ops.md
+# Downstream-integrator field reports are local working notes, not committed.
+FEEDBACK_from_*.md

@@ -144,11 +144,40 @@ curl -X POST "http://localhost:19817/gmail/v1/users/me/drafts" \
   }'
 ```
 
-Accepted body fields: `to`, `cc`, `bcc`, `subject`, `body`, and the threading
-fields below. **Unknown fields are rejected with `400`** (they are never
-silently dropped), so a typo can't leave you thinking a field took effect when
-it didn't. An opaque `raw` MIME blob is **not** accepted — the endpoint takes
-structured fields so response/pre-execution policies can inspect the content.
+Accepted body fields: `to`, `cc`, `bcc`, `subject`, `body`, `attachments` (see
+below), the threading fields below, and `forward_message_id` (see [Forward a
+message](#forward-a-message)). **Unknown fields are rejected with `400`** (they
+are never silently dropped), so a typo can't leave you thinking a field took
+effect when it didn't. An opaque `raw` MIME blob is **not** accepted — the
+endpoint takes structured fields so response/pre-execution policies can inspect
+the content; attachments below are the structured, inspectable way to send files.
+
+#### Attachments
+
+To attach files, pass an `attachments` array. Each entry is a structured object
+— `filename`, `mime_type`, and `content` (the file's bytes, base64-encoded) —
+so every attachment stays fully inspectable by policy (filename, type, size,
+bytes). This is the structured alternative to an opaque `raw` MIME blob. Sieve
+assembles the `multipart/mixed` message server-side; the caller never builds MIME.
+
+```bash
+curl -X POST "http://localhost:19817/gmail/v1/users/me/drafts" \
+  -H "Authorization: Bearer sieve_tok_xxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": ["adviser@example.com"],
+    "subject": "Funding schedule",
+    "body": "Please review the attached.",
+    "attachments": [
+      { "filename": "schedule.pdf",
+        "mime_type": "application/pdf",
+        "content": "<base64 bytes>" }
+    ]
+  }'
+```
+
+`attachments` works the same on `drafts`, `drafts` update, `messages/send`,
+`reply`, and the forward endpoints.
 
 #### Draft (or send) a reply into an existing thread
 
@@ -173,6 +202,37 @@ The same `in_reply_to_message_id` field works on `messages/send` (send a reply
 directly) and `drafts` update. Advanced callers who already have the raw values
 may instead pass `thread_id`, `in_reply_to` (parent `Message-ID`), and
 `references` explicitly; these override the looked-up values.
+
+### Forward a message
+
+To forward an existing message, set `forward_message_id` to its Gmail message
+id. **Do not hand-assemble a forwarded block** — Sieve looks up the source and
+assembles a faithful forward server-side: the genuine `From`/`Date`/`Subject`/
+`To`, the original body in **both** plain text and HTML (so links and formatting
+survive), and the original attachments, all beneath your own note. The subject
+defaults to `Fwd: <source subject>` unless you supply one.
+
+```bash
+# Draft a forward (human reviews and sends)
+curl -X POST "http://localhost:19817/gmail/v1/users/me/drafts" \
+  -H "Authorization: Bearer sieve_tok_xxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": ["trustee@example.com"],
+    "body": "Forwarding the below — please action before Monday.",
+    "forward_message_id": "1a04998e3adc301a"
+  }'
+```
+
+`forward_message_id` also works on `messages/send` (send the forward directly).
+There is additionally a path-style route: `POST /messages/{id}/forward`, where
+`{id}` is the source message and the body carries the recipients and note.
+
+Forwarding is a **separately-grantable** operation (`forward_draft` /
+`forward_email`), distinct from `create_draft`/`send_email` — because forwarding
+existing mail to new recipients is an exfiltration primitive, a role can grant
+composing and replying without granting forwarding. You may also add extra files
+via `attachments`, alongside the source's own attachments.
 
 ### List drafts
 
@@ -224,8 +284,9 @@ carrying all listed labels) and `includeSpamTrash=true`, matching the Gmail
 | GET | `/gmail/v1/users/{userId}/messages` | list_emails |
 | GET | `/gmail/v1/users/{userId}/messages/{id}` | read_email (or read_email_raw when `?format=raw`) |
 | GET | `/gmail/v1/users/{userId}/threads/{id}` | read_thread |
-| POST | `/gmail/v1/users/{userId}/messages/send` | send_email |
-| POST | `/gmail/v1/users/{userId}/drafts` | create_draft |
+| POST | `/gmail/v1/users/{userId}/messages/send` | send_email (or forward_email when `forward_message_id` is set) |
+| POST | `/gmail/v1/users/{userId}/messages/{id}/forward` | forward_email |
+| POST | `/gmail/v1/users/{userId}/drafts` | create_draft (or forward_draft when `forward_message_id` is set) |
 | GET | `/gmail/v1/users/{userId}/drafts` | list_drafts |
 | DELETE | `/gmail/v1/users/{userId}/drafts/{id}` | delete_draft |
 | GET | `/gmail/v1/users/{userId}/labels` | list_labels |

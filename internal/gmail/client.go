@@ -1,11 +1,14 @@
 package gmail
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
 	"mime"
+	"mime/multipart"
 	"net/mail"
+	"net/textproto"
 	"strings"
 	"time"
 
@@ -85,6 +88,21 @@ type DraftRequest struct {
 	Bcc     []string `json:"bcc,omitempty"`
 	Subject string   `json:"subject"`
 	Body    string   `json:"body"`
+
+	// BodyHTML is an optional text/html alternative to Body. When set, the
+	// message is assembled as multipart/alternative (text/plain + text/html) so
+	// clients can render either. Used by forward assembly to preserve the
+	// original message's HTML part (and its actionable links) rather than
+	// flattening the message to plain text. Empty ⇒ a plain-text message.
+	BodyHTML string `json:"body_html,omitempty"`
+
+	// Attachments are files to include in the outgoing message. Each carries a
+	// filename, MIME type, and raw bytes (Data); the connector decodes the
+	// caller's base64 into Data before building the message. When present, the
+	// message is assembled as multipart/mixed with one part per attachment.
+	// Every attachment stays fully inspectable by policy (filename, type, size,
+	// bytes) — this is the structured alternative to an opaque `raw` MIME blob.
+	Attachments []Attachment `json:"attachments,omitempty"`
 
 	// ReplyTo is the LEGACY threading field: a Gmail message id that was
 	// (incorrectly) used both as the draft's threadId and as the In-Reply-To
@@ -791,12 +809,19 @@ func isASCII(s string) bool {
 	return true
 }
 
-// buildMIMEMessage creates an RFC 2822 message from a DraftRequest.
+// buildMIMEMessage creates an RFC 2822 message from a DraftRequest. The body
+// section adapts to the request's shape:
+//   - plain body only            → text/plain
+//   - body + BodyHTML            → multipart/alternative
+//   - + Attachments              → multipart/mixed wrapping the above + each file
+//
+// The top-level address/subject/threading headers are identical in every case;
+// only the content section differs, so a plain-text send is byte-for-byte what
+// it was before attachments/HTML existed.
 func buildMIMEMessage(req DraftRequest) ([]byte, error) {
-	var buf strings.Builder
+	var buf bytes.Buffer
 
 	buf.WriteString("MIME-Version: 1.0\r\n")
-	buf.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
 
 	if len(req.To) > 0 {
 		buf.WriteString(fmt.Sprintf("To: %s\r\n", encodeAddressList(req.To)))
@@ -830,10 +855,121 @@ func buildMIMEMessage(req DraftRequest) ([]byte, error) {
 		buf.WriteString(fmt.Sprintf("References: %s\r\n", normalizeMessageIDs(references)))
 	}
 
-	buf.WriteString("\r\n")
-	buf.WriteString(req.Body)
+	if err := writeBodySection(&buf, req); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
-	return []byte(buf.String()), nil
+// writeBodySection appends the Content-Type header for the message body, the
+// blank line ending the header block, and the body content itself.
+func writeBodySection(buf *bytes.Buffer, req DraftRequest) error {
+	if len(req.Attachments) == 0 {
+		// No attachments: the body IS the top-level entity.
+		ct, content, err := renderBodyEntity(req.Body, req.BodyHTML)
+		if err != nil {
+			return err
+		}
+		buf.WriteString("Content-Type: " + ct + "\r\n\r\n")
+		buf.Write(content)
+		return nil
+	}
+
+	// Attachments present: multipart/mixed of [body entity][file, file, ...].
+	var mixed bytes.Buffer
+	mw := multipart.NewWriter(&mixed)
+
+	bodyCT, bodyContent, err := renderBodyEntity(req.Body, req.BodyHTML)
+	if err != nil {
+		return err
+	}
+	bodyPart, err := mw.CreatePart(textproto.MIMEHeader{"Content-Type": {bodyCT}})
+	if err != nil {
+		return err
+	}
+	if _, err := bodyPart.Write(bodyContent); err != nil {
+		return err
+	}
+	for _, att := range req.Attachments {
+		if err := writeAttachmentPart(mw, att); err != nil {
+			return err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return err
+	}
+
+	buf.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=%q\r\n\r\n", mw.Boundary()))
+	buf.Write(mixed.Bytes())
+	return nil
+}
+
+// renderBodyEntity produces the Content-Type value and byte content for the
+// message body: a bare text/plain part when there is no HTML, otherwise a
+// multipart/alternative (text/plain + text/html) so clients pick a rendering.
+func renderBodyEntity(text, html string) (contentType string, content []byte, err error) {
+	if html == "" {
+		return "text/plain; charset=\"UTF-8\"", []byte(text), nil
+	}
+	var alt bytes.Buffer
+	aw := multipart.NewWriter(&alt)
+	tp, err := aw.CreatePart(textproto.MIMEHeader{"Content-Type": {"text/plain; charset=\"UTF-8\""}})
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := tp.Write([]byte(text)); err != nil {
+		return "", nil, err
+	}
+	hp, err := aw.CreatePart(textproto.MIMEHeader{"Content-Type": {"text/html; charset=\"UTF-8\""}})
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := hp.Write([]byte(html)); err != nil {
+		return "", nil, err
+	}
+	if err := aw.Close(); err != nil {
+		return "", nil, err
+	}
+	return fmt.Sprintf("multipart/alternative; boundary=%q", aw.Boundary()), alt.Bytes(), nil
+}
+
+// writeAttachmentPart writes one base64-encoded attachment part into mw, with
+// Content-Type (carrying the filename), a base64 Content-Transfer-Encoding, and
+// an attachment Content-Disposition. Non-ASCII filenames are RFC 2231-encoded by
+// mime.FormatMediaType; if that fails the raw filename is used as a fallback.
+func writeAttachmentPart(mw *multipart.Writer, att Attachment) error {
+	ct := att.MimeType
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	h := textproto.MIMEHeader{}
+	if v := mime.FormatMediaType(ct, map[string]string{"name": att.Filename}); v != "" {
+		h.Set("Content-Type", v)
+	} else {
+		h.Set("Content-Type", ct)
+	}
+	h.Set("Content-Transfer-Encoding", "base64")
+	if v := mime.FormatMediaType("attachment", map[string]string{"filename": att.Filename}); v != "" {
+		h.Set("Content-Disposition", v)
+	} else {
+		h.Set("Content-Disposition", "attachment")
+	}
+	pw, err := mw.CreatePart(h)
+	if err != nil {
+		return err
+	}
+	// RFC 2045 caps encoded lines at 76 chars; wrap so strict parsers accept it.
+	enc := base64.StdEncoding.EncodeToString(att.Data)
+	for i := 0; i < len(enc); i += 76 {
+		end := i + 76
+		if end > len(enc) {
+			end = len(enc)
+		}
+		if _, err := pw.Write([]byte(enc[i:end] + "\r\n")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // normalizeMessageIDs ensures every whitespace-separated token in an
