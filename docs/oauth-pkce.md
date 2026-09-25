@@ -213,10 +213,13 @@ use the server's global client (flags / env / BYO file). The chosen client is:
 - used for the authorize + token exchange,
 - stored (encrypted) with the connection and reused for token refresh, and
 - reused automatically on **reauth** by default — a connection re-authorizes
-  against the same org's client, never silently repointed at the global one. To
-  *migrate* a connection to a different client (e.g. off an old project whose
-  APIs were never enabled), expand the connection's **Re-authenticate** control
-  and paste the new client; a blank field keeps the current one.
+  against the same org's client, never silently repointed at the global one. The
+  **Re-authenticate** page has an optional "use a different OAuth client" field to
+  move a connection to *another client for the same account* — e.g. a new GCP
+  project **in the same Workspace org** (blank keeps the current client). Note
+  this can't cross orgs: re-auth requires signing in as the same account, and a
+  different org's Internal client won't admit that account (`org_internal`). To
+  move an account to a different org, delete and re-add the connection.
 
 **Setup, per org:** each Workspace admin creates a GCP project in their org,
 enables the APIs (Gmail/Drive/Docs/Sheets), and makes an **Internal** OAuth
