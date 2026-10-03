@@ -1063,15 +1063,31 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Reauth reuses the connection's stored client by DEFAULT so it stays on the
-	// same org's OAuth client — a connection from one org must not silently jump
-	// to the global client of another org (that would re-trigger org_internal).
-	// To deliberately MIGRATE a connection to a different client (e.g. off an old
-	// project whose APIs were never enabled), the operator can supply a new client
-	// on the reauth form; a non-empty client_id there overrides the stored one.
+	// Which OAuth client to re-authorize against. The DEFAULT is the connection's
+	// own stored client, so a connection stays on its org's client — one from a
+	// Workspace org must not silently jump to another org's global client (that
+	// re-triggers org_internal). The plain "Re-authenticate" button sends nothing
+	// and therefore takes this path: one click, no credentials to chase.
+	//
+	// client_source lets an operator deliberately MIGRATE a connection:
+	//   "server" — move it onto the server's currently configured client (the
+	//              auto-discovered client_secret*.json / GOOGLE_OAUTH_CLIENT_ID).
+	//              This is the common migration (retiring an old GCP project) and
+	//              needs NO credentials typed: leaving both values empty makes
+	//              googleOAuthConfigFor fall back to the server's client.
+	//   explicit — a pasted client_id/secret, for a client the server doesn't hold.
+	// An explicitly pasted client_id always wins if present.
+	clientSource := strings.TrimSpace(r.FormValue("client_source"))
 	gClientID := strings.TrimSpace(r.FormValue("google_client_id"))
 	gClientSecret := strings.TrimSpace(r.FormValue("google_client_secret"))
-	if gClientID == "" {
+	switch {
+	case gClientID != "":
+		// Explicit BYO client; use as supplied.
+	case clientSource == "server":
+		// Deliberate migration onto the server's configured client: leave both
+		// empty so googleOAuthConfigFor resolves it.
+		gClientID, gClientSecret = "", ""
+	default:
 		gClientID, _ = conn.Config["client_id"].(string)
 		gClientSecret, _ = conn.Config["client_secret"].(string)
 	}
@@ -1104,8 +1120,15 @@ func (s *Server) handleConnectionReauth(w http.ResponseWriter, r *http.Request) 
 	}
 	s.oauthMu.Unlock()
 
+	clientChoice := "stored"
+	switch {
+	case strings.TrimSpace(r.FormValue("google_client_id")) != "":
+		clientChoice = "custom"
+	case clientSource == "server":
+		clientChoice = "server"
+	}
 	_ = s.audit.LogOperator(operatorDisplayName(r, s), "connection.reauth_start", id,
-		map[string]any{"connector_type": conn.ConnectorType},
+		map[string]any{"connector_type": conn.ConnectorType, "oauth_client": clientChoice},
 		"success")
 
 	url := conf.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce, oauth2.S256ChallengeOption(verifier))

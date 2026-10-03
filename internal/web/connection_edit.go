@@ -53,6 +53,11 @@ type connectionEditData struct {
 	// never projected here.
 	GitHubCredentials []gitHubCredentialView
 
+	// GoogleOAuth backs the Google section of the edit page: which OAuth client
+	// this connection re-authorizes against vs. which one the server is
+	// configured with. Nil for every other connector type.
+	GoogleOAuth *googleOAuthView
+
 	// CSRFToken is the plaintext token used by nav.html to seed
 	// window.SIEVE_CSRF, which the delegated submit handler echoes
 	// back into every POST form as `csrf_token`. Populated by render()
@@ -146,6 +151,21 @@ func (s *Server) handleConnectionEditPage(w http.ResponseWriter, r *http.Request
 	}
 
 	data := s.connectionEditViewFromConnection(conn)
+	if conn.ConnectorType == "google" {
+		gv := &googleOAuthView{
+			ReauthReason: conn.ReauthReason,
+			NeedsReauth:  conn.Status == connections.StatusReauthRequired,
+		}
+		gv.StoredClientID, _ = conn.Config["client_id"].(string)
+		// Resolve with empty args: googleOAuthConfigFor then reports the
+		// server's own client (shipped desktop client or credentials file).
+		if oc, oerr := s.googleOAuthConfigFor(r, "", ""); oerr == nil {
+			gv.ServerClientID = oc.ClientID
+			gv.ServerConfigured = oc.ClientID != ""
+		}
+		gv.Matches = gv.ServerClientID != "" && gv.StoredClientID == gv.ServerClientID
+		data.GoogleOAuth = gv
+	}
 	if r.URL.Query().Get("saved") == "1" {
 		data.Success = true
 	}
@@ -300,6 +320,28 @@ func (s *Server) connectionEditViewFromConfig(conn *connections.Connection, cfg 
 		d.GitHubCredentials = gitHubCredentialViews(cfg)
 	}
 	return d
+}
+
+// googleOAuthView summarizes which Google OAuth client a connection
+// re-authorizes against, so an operator can see at a glance whether it is
+// stranded on a retired GCP project (the symptom being a connection that
+// re-auths "successfully" but still points at the old project). A client_id is
+// public by design; the client_secret is never projected here.
+type googleOAuthView struct {
+	// StoredClientID is the client this connection currently uses. Empty when
+	// the connection was created against the server's client.
+	StoredClientID string
+	// ServerClientID is the client the server is configured with right now
+	// (auto-discovered client_secret*.json or GOOGLE_OAUTH_CLIENT_ID).
+	ServerClientID string
+	// ServerConfigured reports whether the server has any client at all.
+	ServerConfigured bool
+	// Matches reports whether the connection is already on the server's client.
+	Matches bool
+	// ReauthReason is the recorded cause of the last credential failure, if any.
+	ReauthReason string
+	// NeedsReauth mirrors the connection status for the banner.
+	NeedsReauth bool
 }
 
 // gitHubCredentialViews projects a github connection's stored `credentials`

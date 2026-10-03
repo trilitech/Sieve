@@ -132,6 +132,10 @@ func (s *Service) Add(id, connectorType, displayName string, config map[string]a
 	// OAuth flow: the connection is persisted first, then the user completes
 	// OAuth, and UpdateConfig is called with real credentials. The live
 	// connector will be created lazily on first GetConnector call.
+	// Same callback injection as UpdateConfig/GetConnector: a connector created
+	// here must observe refresh outcomes too. Runs after the INSERT above, so
+	// the "_"-prefixed function values are never persisted.
+	s.injectRefreshCallback(id, config)
 	conn, err := s.registry.Create(connectorType, config)
 	if err == nil {
 		s.mu.Lock()
@@ -365,11 +369,20 @@ func (s *Service) UpdateConfig(id string, config map[string]any) error {
 		return fmt.Errorf("connection %q not found", id)
 	}
 
-	// Recreate live connector with new config
+	// Recreate live connector with new config.
 	conn, err := s.GetWithConfig(id)
 	if err != nil {
 		return err
 	}
+	// Re-inject the token-lifecycle callbacks. They live only in the in-memory
+	// config map (the "_"-prefixed keys are never persisted), so the recreated
+	// connector would otherwise be deaf to refresh outcomes: a rotated token
+	// would never be persisted, and — the bug this fixes — an irrecoverable
+	// refresh failure (invalid_grant) would never flip the connection to
+	// reauth_required, leaving the UI showing "Active" while every agent call
+	// fails. This runs AFTER the encrypt/persist above, so the function values
+	// are never marshalled into the stored blob.
+	s.injectRefreshCallback(id, config)
 	liveConn, err := s.registry.Create(conn.ConnectorType, config)
 	if err != nil {
 		return fmt.Errorf("recreate connector: %w", err)
@@ -469,9 +482,12 @@ func (s *Service) injectRefreshCallback(id string, config map[string]any) {
 	}
 	config["_on_token_refresh_failure"] = func(reason string) {
 		// Best-effort: a deleted connection or a closed DB shouldn't block
-		// the calling goroutine. The error path is logged elsewhere when
-		// the wrapped sentinel surfaces at the API/MCP boundary.
-		_ = s.SetStatusWithReason(id, StatusReauthRequired, reason)
+		// the calling goroutine. Log a failure rather than discarding it —
+		// silently losing this write is what makes a connection sit at
+		// "Active" in the UI while every agent call fails to re-authenticate.
+		if err := s.SetStatusWithReason(id, StatusReauthRequired, reason); err != nil {
+			log.Printf("connections: could not flag %q as reauth_required (%s): %v", id, reason, err)
+		}
 	}
 }
 

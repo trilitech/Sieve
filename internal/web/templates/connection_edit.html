@@ -83,6 +83,98 @@
         {{end}}
       </form>
 
+      {{if .GoogleOAuth}}
+      <section class="mt-6 rounded-lg bg-slate-800 border border-slate-700 p-6 space-y-5">
+        <div>
+          <h2 class="text-lg font-semibold text-white">Google OAuth</h2>
+          <p class="text-sm text-slate-400 mt-1">
+            Re-authenticating keeps this connection's ID and every IAM grant — it only replaces the
+            stored tokens.
+          </p>
+        </div>
+
+        {{if .GoogleOAuth.NeedsReauth}}
+        <div class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <p class="text-sm text-amber-200 font-medium">This connection needs re-authentication.</p>
+          {{if .GoogleOAuth.ReauthReason}}
+          <p class="text-xs text-amber-300/80 mt-1">Reported cause: <code>{{.GoogleOAuth.ReauthReason}}</code></p>
+          {{end}}
+        </div>
+        {{end}}
+
+        <div class="rounded-lg border border-slate-700 bg-slate-900/60 px-4 py-3 text-sm space-y-1">
+          <div class="flex gap-2">
+            <span class="text-slate-500 w-40 shrink-0">This connection's client</span>
+            <span class="font-mono text-slate-300 break-all">{{if .GoogleOAuth.StoredClientID}}{{.GoogleOAuth.StoredClientID}}{{else}}<span class="text-slate-500 font-sans italic">none stored — uses the server's client</span>{{end}}</span>
+          </div>
+          <div class="flex gap-2">
+            <span class="text-slate-500 w-40 shrink-0">Server's current client</span>
+            <span class="font-mono text-slate-300 break-all">{{if .GoogleOAuth.ServerConfigured}}{{.GoogleOAuth.ServerClientID}}{{else}}<span class="text-slate-500 font-sans italic">not configured</span>{{end}}</span>
+          </div>
+          {{if and .GoogleOAuth.ServerConfigured .GoogleOAuth.StoredClientID}}
+            {{if .GoogleOAuth.Matches}}
+            <p class="text-xs text-emerald-400/90 pt-1">Already on the server's current client.</p>
+            {{else}}
+            <p class="text-xs text-amber-400/90 pt-1">
+              This connection is pinned to a different OAuth client than the server's. If that project was
+              retired, re-authenticating normally will keep failing — use the migrate option below.
+            </p>
+            {{end}}
+          {{end}}
+        </div>
+
+        <form method="POST" action="/connections/{{.ID}}/reauth">
+          <button type="submit"
+                  class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">
+            Re-authenticate
+          </button>
+          <p class="text-xs text-slate-500 mt-2">
+            Uses this connection's existing OAuth client. Nothing to fill in.
+          </p>
+        </form>
+
+        <details class="border-t border-slate-700 pt-4">
+          <summary class="cursor-pointer text-sm text-slate-400 hover:text-indigo-300 font-medium">
+            Move this connection to a different OAuth client
+          </summary>
+          <div class="mt-4 space-y-5">
+            {{if .GoogleOAuth.ServerConfigured}}
+            <form method="POST" action="/connections/{{.ID}}/reauth" class="rounded-lg border border-slate-700 bg-slate-900/60 p-4">
+              <input type="hidden" name="client_source" value="server">
+              <p class="text-sm text-slate-300 font-medium">Use the server's current OAuth client</p>
+              <p class="text-xs text-slate-500 mt-1 mb-3">
+                Re-authorizes against <span class="font-mono text-slate-400 break-all">{{.GoogleOAuth.ServerClientID}}</span>
+                — the client Sieve is configured with. This is the usual way to move a connection off a
+                retired project. No credentials to enter.
+              </p>
+              <button type="submit"
+                      class="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600 transition-colors">
+                Re-authenticate with the server's client
+              </button>
+            </form>
+            {{end}}
+
+            <form method="POST" action="/connections/{{.ID}}/reauth" class="rounded-lg border border-slate-700 bg-slate-900/60 p-4 space-y-3">
+              <div>
+                <p class="text-sm text-slate-300 font-medium">Use a specific OAuth client</p>
+                <p class="text-xs text-slate-500 mt-1">
+                  Only needed for a client Sieve doesn't hold — e.g. another Google&nbsp;Workspace org's.
+                </p>
+              </div>
+              <input type="text" name="google_client_id" placeholder="OAuth client_id"
+                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <input type="password" name="google_client_secret" placeholder="OAuth client_secret"
+                     class="w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <button type="submit"
+                      class="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600 transition-colors">
+                Re-authenticate with this client
+              </button>
+            </form>
+          </div>
+        </details>
+      </section>
+      {{end}}
+
       {{if eq .ConnectorType "github"}}
       <section class="mt-6 rounded-lg bg-slate-800 border border-slate-700 p-6 space-y-5">
         <div>
