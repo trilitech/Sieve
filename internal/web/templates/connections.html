@@ -24,6 +24,11 @@
         <div class="px-6 py-4 border-b border-slate-700">
           <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Active Connections</h2>
         </div>
+        {{/* The card is overflow-hidden for its rounded corners, so the table
+             needs its own scroll container: the admin layout has a fixed 16rem
+             sidebar plus padding, and below ~1340px the action column would
+             otherwise be clipped with no way to reach Disable/Delete. */}}
+        <div class="overflow-x-auto">
         <table class="w-full">
           <thead>
             <tr class="border-b border-slate-700">
@@ -114,6 +119,7 @@
             {{end}}
           </tbody>
         </table>
+        </div>
       </div>
       {{end}}
 
