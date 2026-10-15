@@ -70,6 +70,15 @@ curl "http://localhost:19817/gmail/v1/users/me/messages/MESSAGE_ID" \
 
 By default, Sieve returns its simplified parsed shape (`id`, `from`, `to`,
 `subject`, `body`, attachment metadata) — suitable for interactive agent use.
+
+`body`/`body_html` are the message's **own** top-level text parts. Attachments
+are never read as body content — including an attached email (`message/rfc822`,
+e.g. a forwarded `.eml`), which is reported as a single entry in `attachments`
+rather than having its text become the carrying message's `body`. The files
+*inside* an attached email belong to it and are not flattened into the outer
+message's `attachments`; fetch the `.eml` by its attachment id (or use
+`format=raw`) to see inside it.
+
 For byte-faithful archival, request Google's `format=raw`:
 
 ```bash

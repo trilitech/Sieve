@@ -697,23 +697,64 @@ func parseEmail(msg *gmail.Message) Email {
 	return email
 }
 
-// extractBody recursively walks message parts to find text/plain and text/html content.
+// baseMimeType returns a part's media type lowercased and without parameters
+// ("text/plain; charset=UTF-8" → "text/plain"), so comparisons are robust to
+// the parameters some servers include.
+func baseMimeType(part *gmail.MessagePart) string {
+	if part == nil {
+		return ""
+	}
+	mt := part.MimeType
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = mt[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(mt))
+}
+
+// isAttachedMessage reports whether a part is an attached email (a forwarded
+// .eml and friends). Its sub-parts describe that message, not the one carrying
+// it, so neither body extraction nor attachment collection may descend into it.
+func isAttachedMessage(part *gmail.MessagePart) bool {
+	return baseMimeType(part) == "message/rfc822"
+}
+
+// extractBody walks a message's OWN body parts, filling textBody/htmlBody with
+// the first text/plain and text/html it finds. Two rules keep it on the outer
+// message:
+//
+//   - Attachment subtrees are skipped. A part carrying a filename is an
+//     attached file, and a message/rfc822 part is an attached email; the text
+//     inside either is not this message's body. Without this, a reply with a
+//     forwarded .eml reported the FORWARDED message's text as its body.
+//   - The first match per type wins. The old code assigned on every match, so
+//     whichever text part came last in the walk silently overwrote the real
+//     body — which is exactly what an attached message's parts did.
+//
+// Content inside an attached message stays reachable: the .eml is reported as
+// an attachment, and ?format=raw still returns the byte-faithful MIME.
 func extractBody(part *gmail.MessagePart, textBody, htmlBody *string) {
 	if part == nil {
 		return
 	}
-
-	if part.MimeType == "text/plain" && part.Body != nil && part.Body.Data != "" {
-		decoded, err := base64.URLEncoding.DecodeString(part.Body.Data)
-		if err == nil {
-			*textBody = string(decoded)
-		}
+	// Never treat an attachment's contents as the message body.
+	if part.Filename != "" || isAttachedMessage(part) {
+		return
 	}
 
-	if part.MimeType == "text/html" && part.Body != nil && part.Body.Data != "" {
-		decoded, err := base64.URLEncoding.DecodeString(part.Body.Data)
-		if err == nil {
-			*htmlBody = string(decoded)
+	if part.Body != nil && part.Body.Data != "" {
+		switch baseMimeType(part) {
+		case "text/plain":
+			if *textBody == "" {
+				if decoded, err := base64.URLEncoding.DecodeString(part.Body.Data); err == nil {
+					*textBody = string(decoded)
+				}
+			}
+		case "text/html":
+			if *htmlBody == "" {
+				if decoded, err := base64.URLEncoding.DecodeString(part.Body.Data); err == nil {
+					*htmlBody = string(decoded)
+				}
+			}
 		}
 	}
 
@@ -722,21 +763,6 @@ func extractBody(part *gmail.MessagePart, textBody, htmlBody *string) {
 	}
 }
 
-// hasAttachment checks whether any part in the message is an attachment.
-func hasAttachment(part *gmail.MessagePart) bool {
-	if part == nil {
-		return false
-	}
-	if part.Filename != "" && part.Body != nil && part.Body.AttachmentId != "" {
-		return true
-	}
-	for _, p := range part.Parts {
-		if hasAttachment(p) {
-			return true
-		}
-	}
-	return false
-}
 
 // collectAttachments recursively walks message parts to find attachments
 // and returns their metadata (ID, filename, MIME type, size).
@@ -745,6 +771,25 @@ func collectAttachments(part *gmail.MessagePart) []AttachmentMeta {
 		return nil
 	}
 	var attachments []AttachmentMeta
+	// An attached email is ONE attachment. Its own parts (its body, and any
+	// files it carries) belong to it, so we record it and stop: flattening them
+	// into this message's list would misreport which message they came from.
+	// Fetch the .eml by its attachment id to see inside it.
+	if isAttachedMessage(part) {
+		if part.Body != nil && part.Body.AttachmentId != "" {
+			filename := part.Filename
+			if filename == "" {
+				filename = "attached-message.eml"
+			}
+			attachments = append(attachments, AttachmentMeta{
+				ID:       part.Body.AttachmentId,
+				Filename: filename,
+				MimeType: part.MimeType,
+				Size:     part.Body.Size,
+			})
+		}
+		return attachments
+	}
 	if part.Filename != "" && part.Body != nil && part.Body.AttachmentId != "" {
 		attachments = append(attachments, AttachmentMeta{
 			ID:       part.Body.AttachmentId,
