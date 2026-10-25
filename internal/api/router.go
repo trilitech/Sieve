@@ -90,6 +90,19 @@ func (rt *Router) SetRateLimiter(l *ratelimit.Limiter) {
 
 // Handler returns an http.Handler with all API routes registered.
 func (rt *Router) Handler() http.Handler {
+	// Wrap responses in the sensitive-data header set so intermediate
+	// proxies don't cache agent-API responses (which can carry entity
+	// data tied to a specific bearer token). The cache headers wrap
+	// authMiddleware so 401 responses also carry them — caches MUST NOT
+	// retain failed auth attempts.
+	return noCacheMiddleware(rt.authMiddleware(rt.mux()))
+}
+
+// mux builds the route table. Split out of Handler so routing can be asserted
+// on its own: authMiddleware runs BEFORE the mux, so every request through
+// Handler() 401s on an unauthenticated test and a missing route is
+// indistinguishable from a rejected one.
+func (rt *Router) mux() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Sieve API
@@ -109,6 +122,10 @@ func (rt *Router) Handler() http.Handler {
 	mux.HandleFunc("POST /gmail/v1/users/{userId}/messages/send", rt.gmailSendMessage)
 	mux.HandleFunc("POST /gmail/v1/users/{userId}/drafts", rt.gmailCreateDraft)
 	mux.HandleFunc("GET /gmail/v1/users/{userId}/drafts", rt.gmailListDrafts)
+	// Google's drafts.update is PUT; PATCH is accepted as a convenience since
+	// the body semantics are identical (the draft is replaced either way).
+	mux.HandleFunc("PUT /gmail/v1/users/{userId}/drafts/{id}", rt.gmailUpdateDraft)
+	mux.HandleFunc("PATCH /gmail/v1/users/{userId}/drafts/{id}", rt.gmailUpdateDraft)
 	mux.HandleFunc("DELETE /gmail/v1/users/{userId}/drafts/{id}", rt.gmailDeleteDraft)
 	mux.HandleFunc("GET /gmail/v1/users/{userId}/labels", rt.gmailListLabels)
 	mux.HandleFunc("POST /gmail/v1/users/{userId}/messages/{id}/modify", rt.gmailModifyMessage)
@@ -121,12 +138,7 @@ func (rt *Router) Handler() http.Handler {
 	// connector that works with any HTTP API without provider-specific code.
 	mux.HandleFunc("/proxy/", rt.handleProxy)
 
-	// Wrap responses in the sensitive-data header set so intermediate
-	// proxies don't cache agent-API responses (which can carry entity
-	// data tied to a specific bearer token). The cache headers wrap
-	// authMiddleware so 401 responses also carry them — caches MUST NOT
-	// retain failed auth attempts.
-	return noCacheMiddleware(rt.authMiddleware(mux))
+	return mux
 }
 
 // noCacheMiddleware sets Cache-Control: no-store and companion headers
@@ -1366,6 +1378,8 @@ var mailBodyFields = map[string]string{
 	"references":             "references",
 	"reply_to":               "reply_to",
 	"attachments":            "attachments",
+	"reply_to_address":       "reply_to_address",
+	"replyToAddress":         "reply_to_address",
 	// Forwarding: presence of forward_message_id routes drafts/send to the
 	// dedicated forward_draft/forward_email ops (separately policy-gated) rather
 	// than composing a hand-typed imitation. Mapped to the ops' message_id param.
@@ -1406,12 +1420,38 @@ func (rt *Router) parseMailBody(w http.ResponseWriter, r *http.Request) (map[str
 		param, allowed := mailBodyFields[k]
 		if !allowed {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf(
-				"unknown field %q. Accepted: to, cc, bcc, subject, body, attachments, in_reply_to_message_id, forward_message_id, thread_id, in_reply_to, references.", k))
+				"unknown field %q. Accepted: to, cc, bcc, subject, body, attachments, reply_to_address, in_reply_to_message_id, forward_message_id, thread_id, in_reply_to, references.", k))
 			return nil, false
 		}
 		params[param] = v
 	}
 	return params, true
+}
+
+// gmailUpdateDraft maps Google's drafts.update (PUT /drafts/{id}) onto the
+// update_draft op. Without it the op was reachable only through the generic
+// /api/v1/connections/{conn}/ops/update_draft surface, so a client written
+// against the Gmail API got a bare 405 and reasonably concluded that editing a
+// draft was unsupported.
+//
+// Body semantics match POST /drafts (same structured allow-list, same
+// threading fields) — Google replaces the draft wholesale here too, so an
+// omitted field clears it rather than leaving it untouched.
+func (rt *Router) gmailUpdateDraft(w http.ResponseWriter, r *http.Request) {
+	body, ok := rt.parseMailBody(w, r)
+	if !ok {
+		return
+	}
+	// parseMailBody normalizes forward_message_id to message_id, which
+	// update_draft has no parameter for — it would be dropped on the floor.
+	// Refuse instead of silently editing the draft without the forward.
+	if _, isForward := body["message_id"]; isForward {
+		writeError(w, http.StatusBadRequest,
+			"forward_message_id is not supported when updating a draft: forwarding assembles the source message server-side at creation time. Create a new forward draft (POST /drafts with forward_message_id) and delete this one.")
+		return
+	}
+	body["draft_id"] = r.PathValue("id")
+	rt.gmailExecute(w, r, "update_draft", body)
 }
 
 func (rt *Router) gmailListDrafts(w http.ResponseWriter, r *http.Request) {

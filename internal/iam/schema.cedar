@@ -251,7 +251,7 @@ namespace Sieve {
   action "google/create_draft" in ["google/gmail.write"] appliesTo {
     principal: [Sieve::Token],
     resource: [Sieve::Connection],
-    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "in_reply_to"?: String, "in_reply_to_message_id"?: String, "references"?: String, "reply_to"?: String, "subject"?: String, "thread_id"?: String, "to"?: Set<String> } }
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "in_reply_to"?: String, "in_reply_to_message_id"?: String, "references"?: String, "reply_to"?: String, "reply_to_address"?: Set<String>, "subject"?: String, "thread_id"?: String, "to"?: Set<String> } }
   };
   action "google/delete_draft" in ["google/gmail.write"] appliesTo {
     principal: [Sieve::Token],
@@ -306,12 +306,12 @@ namespace Sieve {
   action "google/forward_draft" in ["google/gmail.write"] appliesTo {
     principal: [Sieve::Token],
     resource: [Sieve::Connection],
-    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "message_id"?: String, "subject"?: String, "to"?: Set<String> } }
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "message_id"?: String, "reply_to_address"?: Set<String>, "subject"?: String, "to"?: Set<String> } }
   };
   action "google/forward_email" in ["google/gmail.write"] appliesTo {
     principal: [Sieve::Token],
     resource: [Sieve::Connection],
-    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "message_id"?: String, "subject"?: String, "to"?: Set<String> } }
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "message_id"?: String, "reply_to_address"?: Set<String>, "subject"?: String, "to"?: Set<String> } }
   };
   action "google/get_attachment" in ["google/gmail.read"] appliesTo {
     principal: [Sieve::Token],
@@ -381,7 +381,7 @@ namespace Sieve {
   action "google/reply" in ["google/gmail.write"] appliesTo {
     principal: [Sieve::Token],
     resource: [Sieve::Connection],
-    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "message_id"?: String, "subject"?: String, "to"?: Set<String> } }
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "message_id"?: String, "reply_to_address"?: Set<String>, "subject"?: String, "to"?: Set<String> } }
   };
   action "google/send_draft" in ["google/gmail.write"] appliesTo {
     principal: [Sieve::Token],
@@ -391,7 +391,7 @@ namespace Sieve {
   action "google/send_email" in ["google/gmail.write"] appliesTo {
     principal: [Sieve::Token],
     resource: [Sieve::Connection],
-    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "in_reply_to"?: String, "in_reply_to_message_id"?: String, "references"?: String, "reply_to"?: String, "subject"?: String, "thread_id"?: String, "to"?: Set<String> } }
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "in_reply_to"?: String, "in_reply_to_message_id"?: String, "references"?: String, "reply_to"?: String, "reply_to_address"?: Set<String>, "subject"?: String, "thread_id"?: String, "to"?: Set<String> } }
   };
   action "google/sheets.create_spreadsheet" in ["google/sheets.write"] appliesTo {
     principal: [Sieve::Token],
@@ -416,7 +416,7 @@ namespace Sieve {
   action "google/update_draft" in ["google/gmail.write"] appliesTo {
     principal: [Sieve::Token],
     resource: [Sieve::Connection],
-    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "draft_id"?: String, "in_reply_to"?: String, "in_reply_to_message_id"?: String, "references"?: String, "subject"?: String, "thread_id"?: String, "to"?: Set<String> } }
+    context: { "http_method"?: String, "recipient_domains"?: Set<String>, "estimated_cost"?: Long, "param"?: { "attachments"?: String, "bcc"?: Set<String>, "body"?: String, "cc"?: Set<String>, "draft_id"?: String, "in_reply_to"?: String, "in_reply_to_message_id"?: String, "references"?: String, "reply_to_address"?: Set<String>, "subject"?: String, "thread_id"?: String, "to"?: Set<String> } }
   };
   action "http_proxy/proxy_request" in ["http_proxy/write"] appliesTo {
     principal: [Sieve::Token],

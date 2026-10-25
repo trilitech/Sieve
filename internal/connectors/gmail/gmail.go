@@ -470,6 +470,7 @@ var operations = []connector.OperationDef{
 			"references":             {Type: "string", Description: "RFC5322 References chain (advanced)", Required: false},
 			"reply_to":               {Type: "string", Description: "DEPRECATED legacy alias; use in_reply_to_message_id", Required: false},
 			"attachments":            {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
+			"reply_to_address":       {Type: "[]string", Description: "Reply-To header: addresses replies should go to. Unrelated to the deprecated reply_to threading alias.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -488,6 +489,7 @@ var operations = []connector.OperationDef{
 			"in_reply_to":            {Type: "string", Description: "Parent RFC5322 Message-ID for the In-Reply-To header (advanced)", Required: false},
 			"references":             {Type: "string", Description: "RFC5322 References chain (advanced)", Required: false},
 			"attachments":            {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
+			"reply_to_address":       {Type: "[]string", Description: "Reply-To header: addresses replies should go to. Unrelated to the deprecated reply_to threading alias.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -506,6 +508,7 @@ var operations = []connector.OperationDef{
 			"references":             {Type: "string", Description: "RFC5322 References chain (advanced)", Required: false},
 			"reply_to":               {Type: "string", Description: "DEPRECATED legacy alias; use in_reply_to_message_id", Required: false},
 			"attachments":            {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
+			"reply_to_address":       {Type: "[]string", Description: "Reply-To header: addresses replies should go to. Unrelated to the deprecated reply_to threading alias.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -513,13 +516,14 @@ var operations = []connector.OperationDef{
 		Name:        "forward_draft",
 		Description: "Draft a forward of an existing message. Sieve looks up the source message and assembles a faithful forwarded copy — the original From/Date/Subject/To, the original body in BOTH plain text and HTML (so links survive), and the original attachments — beneath your own note. This is a separate privilege from create_draft: forwarding existing mail to new recipients is an exfiltration primitive and is granted independently of composing/replying.",
 		Params: map[string]connector.ParamDef{
-			"message_id":  {Type: "string", Description: "Gmail message id of the source message to forward", Required: true},
-			"to":          {Type: "[]string", Description: "Recipient email addresses", Required: false},
-			"cc":          {Type: "[]string", Description: "CC email addresses", Required: false},
-			"bcc":         {Type: "[]string", Description: "BCC email addresses", Required: false},
-			"subject":     {Type: "string", Description: "Subject (defaults to Fwd: <source subject>)", Required: false},
-			"body":        {Type: "string", Description: "Your note, placed above the forwarded content", Required: false},
-			"attachments": {Type: "[]object", Description: "Additional files to attach beyond the source's own attachments, each {filename, mime_type, content} (base64)", Required: false},
+			"message_id":       {Type: "string", Description: "Gmail message id of the source message to forward", Required: true},
+			"to":               {Type: "[]string", Description: "Recipient email addresses", Required: false},
+			"cc":               {Type: "[]string", Description: "CC email addresses", Required: false},
+			"bcc":              {Type: "[]string", Description: "BCC email addresses", Required: false},
+			"subject":          {Type: "string", Description: "Subject (defaults to Fwd: <source subject>)", Required: false},
+			"body":             {Type: "string", Description: "Your note, placed above the forwarded content", Required: false},
+			"attachments":      {Type: "[]object", Description: "Additional files to attach beyond the source's own attachments, each {filename, mime_type, content} (base64)", Required: false},
+			"reply_to_address": {Type: "[]string", Description: "Reply-To header: addresses replies should go to.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -527,13 +531,14 @@ var operations = []connector.OperationDef{
 		Name:        "forward_email",
 		Description: "Send a forward of an existing message directly. Identical assembly to forward_draft (real headers, text + HTML body, original attachments) but sends instead of drafting; gated separately from send_email.",
 		Params: map[string]connector.ParamDef{
-			"message_id":  {Type: "string", Description: "Gmail message id of the source message to forward", Required: true},
-			"to":          {Type: "[]string", Description: "Recipient email addresses", Required: false},
-			"cc":          {Type: "[]string", Description: "CC email addresses", Required: false},
-			"bcc":         {Type: "[]string", Description: "BCC email addresses", Required: false},
-			"subject":     {Type: "string", Description: "Subject (defaults to Fwd: <source subject>)", Required: false},
-			"body":        {Type: "string", Description: "Your note, placed above the forwarded content", Required: false},
-			"attachments": {Type: "[]object", Description: "Additional files to attach beyond the source's own attachments, each {filename, mime_type, content} (base64)", Required: false},
+			"message_id":       {Type: "string", Description: "Gmail message id of the source message to forward", Required: true},
+			"to":               {Type: "[]string", Description: "Recipient email addresses", Required: false},
+			"cc":               {Type: "[]string", Description: "CC email addresses", Required: false},
+			"bcc":              {Type: "[]string", Description: "BCC email addresses", Required: false},
+			"subject":          {Type: "string", Description: "Subject (defaults to Fwd: <source subject>)", Required: false},
+			"body":             {Type: "string", Description: "Your note, placed above the forwarded content", Required: false},
+			"attachments":      {Type: "[]object", Description: "Additional files to attach beyond the source's own attachments, each {filename, mime_type, content} (base64)", Required: false},
+			"reply_to_address": {Type: "[]string", Description: "Reply-To header: addresses replies should go to.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -565,13 +570,14 @@ var operations = []connector.OperationDef{
 		Name:        "reply",
 		Description: "Reply to an existing email",
 		Params: map[string]connector.ParamDef{
-			"message_id":  {Type: "string", Description: "The ID of the message to reply to", Required: true},
-			"to":          {Type: "[]string", Description: "Recipient email addresses (defaults to original sender)", Required: false},
-			"cc":          {Type: "[]string", Description: "CC email addresses", Required: false},
-			"bcc":         {Type: "[]string", Description: "BCC email addresses", Required: false},
-			"subject":     {Type: "string", Description: "Email subject (defaults to Re: original subject)", Required: false},
-			"body":        {Type: "string", Description: "Reply body text", Required: true},
-			"attachments": {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
+			"message_id":       {Type: "string", Description: "The ID of the message to reply to", Required: true},
+			"to":               {Type: "[]string", Description: "Recipient email addresses (defaults to original sender)", Required: false},
+			"cc":               {Type: "[]string", Description: "CC email addresses", Required: false},
+			"bcc":              {Type: "[]string", Description: "BCC email addresses", Required: false},
+			"subject":          {Type: "string", Description: "Email subject (defaults to Re: original subject)", Required: false},
+			"body":             {Type: "string", Description: "Reply body text", Required: true},
+			"attachments":      {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
+			"reply_to_address": {Type: "[]string", Description: "Reply-To header: addresses replies should go to. Unrelated to the deprecated reply_to threading alias.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -858,6 +864,11 @@ var operations = []connector.OperationDef{
 
 // Execute routes an operation to the appropriate gmail.Client method.
 func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[string]any) (any, error) {
+	// Guard the deprecated reply_to alias before dispatch, so the check applies
+	// identically on the REST, MCP and generic-ops surfaces.
+	if err := checkLegacyReplyTo(params); err != nil {
+		return nil, err
+	}
 	switch op {
 	case "list_emails":
 		query := gmailclient.SearchQuery{
@@ -892,12 +903,13 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 
 	case "create_draft":
 		req := gmailclient.DraftRequest{
-			To:      getStringSliceParam(params, "to"),
-			Cc:      getStringSliceParam(params, "cc"),
-			Bcc:     getStringSliceParam(params, "bcc"),
-			Subject: getStringParam(params, "subject"),
-			Body:    getStringParam(params, "body"),
-			ReplyTo: getStringParam(params, "reply_to"),
+			To:               getStringSliceParam(params, "to"),
+			Cc:               getStringSliceParam(params, "cc"),
+			Bcc:              getStringSliceParam(params, "bcc"),
+			Subject:          getStringParam(params, "subject"),
+			Body:             getStringParam(params, "body"),
+			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
+			ReplyTo:          getStringParam(params, "reply_to"),
 		}
 		atts, err := getAttachmentsParam(params)
 		if err != nil {
@@ -915,11 +927,12 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			return nil, err
 		}
 		req := gmailclient.DraftRequest{
-			To:      getStringSliceParam(params, "to"),
-			Cc:      getStringSliceParam(params, "cc"),
-			Bcc:     getStringSliceParam(params, "bcc"),
-			Subject: getStringParam(params, "subject"),
-			Body:    getStringParam(params, "body"),
+			To:               getStringSliceParam(params, "to"),
+			Cc:               getStringSliceParam(params, "cc"),
+			Bcc:              getStringSliceParam(params, "bcc"),
+			Subject:          getStringParam(params, "subject"),
+			Body:             getStringParam(params, "body"),
+			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
 		}
 		atts, err := getAttachmentsParam(params)
 		if err != nil {
@@ -933,12 +946,13 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 
 	case "send_email":
 		req := gmailclient.DraftRequest{
-			To:      getStringSliceParam(params, "to"),
-			Cc:      getStringSliceParam(params, "cc"),
-			Bcc:     getStringSliceParam(params, "bcc"),
-			Subject: getStringParam(params, "subject"),
-			Body:    getStringParam(params, "body"),
-			ReplyTo: getStringParam(params, "reply_to"),
+			To:               getStringSliceParam(params, "to"),
+			Cc:               getStringSliceParam(params, "cc"),
+			Bcc:              getStringSliceParam(params, "bcc"),
+			Subject:          getStringParam(params, "subject"),
+			Body:             getStringParam(params, "body"),
+			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
+			ReplyTo:          getStringParam(params, "reply_to"),
 		}
 		atts, err := getAttachmentsParam(params)
 		if err != nil {
@@ -956,11 +970,12 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			return nil, err
 		}
 		req := gmailclient.DraftRequest{
-			To:      getStringSliceParam(params, "to"),
-			Cc:      getStringSliceParam(params, "cc"),
-			Bcc:     getStringSliceParam(params, "bcc"),
-			Subject: getStringParam(params, "subject"),
-			Body:    getStringParam(params, "body"),
+			To:               getStringSliceParam(params, "to"),
+			Cc:               getStringSliceParam(params, "cc"),
+			Bcc:              getStringSliceParam(params, "bcc"),
+			Subject:          getStringParam(params, "subject"),
+			Body:             getStringParam(params, "body"),
+			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
 		}
 		extra, err := getAttachmentsParam(params)
 		if err != nil {
@@ -1029,11 +1044,12 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			return nil, err
 		}
 		req := gmailclient.DraftRequest{
-			To:      getStringSliceParam(params, "to"),
-			Cc:      getStringSliceParam(params, "cc"),
-			Bcc:     getStringSliceParam(params, "bcc"),
-			Subject: getStringParam(params, "subject"),
-			Body:    getStringParam(params, "body"),
+			To:               getStringSliceParam(params, "to"),
+			Cc:               getStringSliceParam(params, "cc"),
+			Bcc:              getStringSliceParam(params, "bcc"),
+			Subject:          getStringParam(params, "subject"),
+			Body:             getStringParam(params, "body"),
+			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
 		}
 		atts, err := getAttachmentsParam(params)
 		if err != nil {
@@ -1376,6 +1392,28 @@ func ensureFwdPrefix(subject string) string {
 		return subject
 	}
 	return "Fwd: " + subject
+}
+
+// checkLegacyReplyTo rejects a `reply_to` that is plainly an email address.
+//
+// `reply_to` is the DEPRECATED threading alias: a Gmail message id. Feeding it
+// an address does not set a Reply-To header — it is written into In-Reply-To /
+// References AND used as the Gmail threadId, so the draft silently carries a
+// fabricated threading header while the header the caller wanted is absent.
+// A 200 in that situation makes an agent report a Reply-To that isn't there,
+// so fail loudly and name both of the fields the caller might have meant.
+//
+// A value in angle brackets is left alone: that is a legacy RFC 5322
+// Message-ID, which legitimately contains "@".
+func checkLegacyReplyTo(params map[string]any) error {
+	v := strings.TrimSpace(getStringParam(params, "reply_to"))
+	if v == "" || !strings.Contains(v, "@") || strings.HasPrefix(v, "<") {
+		return nil
+	}
+	return fmt.Errorf("gmail connector: %q is the deprecated threading alias (a Gmail message id), "+
+		"not a Reply-To header, and %q looks like an email address. "+
+		"To set the Reply-To header use %q; to reply into a thread use %q",
+		"reply_to", v, "reply_to_address", "in_reply_to_message_id")
 }
 
 // getAttachmentsParam parses the "attachments" op param — an array of

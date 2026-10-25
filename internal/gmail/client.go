@@ -104,6 +104,12 @@ type DraftRequest struct {
 	// bytes) — this is the structured alternative to an opaque `raw` MIME blob.
 	Attachments []Attachment `json:"attachments,omitempty"`
 
+	// ReplyToAddresses populate the RFC 5322 Reply-To header: where replies to
+	// this message should be directed. This is a genuine address header and has
+	// nothing to do with the legacy ReplyTo threading field below — the two are
+	// unrelated despite the similar name.
+	ReplyToAddresses []string `json:"reply_to_address,omitempty"`
+
 	// ReplyTo is the LEGACY threading field: a Gmail message id that was
 	// (incorrectly) used both as the draft's threadId and as the In-Reply-To
 	// header. Retained for backward compatibility; new callers should use the
@@ -876,6 +882,9 @@ func buildMIMEMessage(req DraftRequest) ([]byte, error) {
 	}
 	if len(req.Bcc) > 0 {
 		buf.WriteString(fmt.Sprintf("Bcc: %s\r\n", encodeAddressList(req.Bcc)))
+	}
+	if len(req.ReplyToAddresses) > 0 {
+		buf.WriteString(fmt.Sprintf("Reply-To: %s\r\n", encodeAddressList(req.ReplyToAddresses)))
 	}
 	// RFC 2047-encode the Subject. A header is ASCII-only (RFC 5322); writing raw
 	// UTF-8 bytes makes downstream clients reinterpret them as latin1/cp1252 (the

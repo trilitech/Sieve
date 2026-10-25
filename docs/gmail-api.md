@@ -153,8 +153,8 @@ curl -X POST "http://localhost:19817/gmail/v1/users/me/drafts" \
   }'
 ```
 
-Accepted body fields: `to`, `cc`, `bcc`, `subject`, `body`, `attachments` (see
-below), the threading fields below, and `forward_message_id` (see [Forward a
+Accepted body fields: `to`, `cc`, `bcc`, `subject`, `body`, `attachments` and
+`reply_to_address` (see below), the threading fields below, and `forward_message_id` (see [Forward a
 message](#forward-a-message)). **Unknown fields are rejected with `400`** (they
 are never silently dropped), so a typo can't leave you thinking a field took
 effect when it didn't. An opaque `raw` MIME blob is **not** accepted — the
@@ -187,6 +187,23 @@ curl -X POST "http://localhost:19817/gmail/v1/users/me/drafts" \
 
 `attachments` works the same on `drafts`, `drafts` update, `messages/send`,
 `reply`, and the forward endpoints.
+
+#### Reply-To
+
+`reply_to_address` sets the RFC 5322 `Reply-To` header — where replies to your
+message should be directed:
+
+```json
+{ "to": ["recipient@example.com"], "body": "…",
+  "reply_to_address": ["replies@example.com"] }
+```
+
+> **Not to be confused with `reply_to`.** Despite the name, `reply_to` is a
+> deprecated *threading* alias holding a Gmail **message id**, not an address.
+> Passing an address to it is rejected with a `400` pointing at
+> `reply_to_address` (for the header) or `in_reply_to_message_id` (to thread a
+> reply), because it would otherwise emit a fabricated `In-Reply-To` and no
+> `Reply-To` at all.
 
 #### Draft (or send) a reply into an existing thread
 
@@ -253,6 +270,25 @@ curl "http://localhost:19817/gmail/v1/users/me/drafts?maxResults=50" \
 Returns lightweight stubs (draft id plus the message's id/thread_id/to/subject/
 snippet — no body), so you can find and verify drafts you created.
 
+### Update a draft
+
+```bash
+curl -X PUT "http://localhost:19817/gmail/v1/users/me/drafts/DRAFT_ID" \
+  -H "Authorization: Bearer sieve_tok_xxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": ["recipient@example.com"],
+    "subject": "Revised subject",
+    "body": "Revised body."
+  }'
+```
+
+Takes the same structured body as `POST /drafts`. As with Google's
+`drafts.update`, the draft is **replaced wholesale** — a field you omit is
+cleared, not left untouched. `PATCH` is accepted as an alias (same semantics).
+`forward_message_id` is rejected here with a `400`: a forward is assembled from
+its source at creation time, so create a new forward draft and delete this one.
+
 ### Delete a draft
 
 ```bash
@@ -297,6 +333,7 @@ carrying all listed labels) and `includeSpamTrash=true`, matching the Gmail
 | POST | `/gmail/v1/users/{userId}/messages/{id}/forward` | forward_email |
 | POST | `/gmail/v1/users/{userId}/drafts` | create_draft (or forward_draft when `forward_message_id` is set) |
 | GET | `/gmail/v1/users/{userId}/drafts` | list_drafts |
+| PUT / PATCH | `/gmail/v1/users/{userId}/drafts/{id}` | update_draft |
 | DELETE | `/gmail/v1/users/{userId}/drafts/{id}` | delete_draft |
 | GET | `/gmail/v1/users/{userId}/labels` | list_labels |
 | GET | `/gmail/v1/users/{userId}/messages/{messageId}/attachments/{attachmentId}` | get_attachment |

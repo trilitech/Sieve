@@ -147,3 +147,58 @@ func TestMailOpFor(t *testing.T) {
 		t.Errorf("send without forward id: got %q, want send_email", got)
 	}
 }
+
+// TestParseDraftBody_AcceptsReplyToAddress: the Reply-To header field must be
+// an accepted structured field, not a rejected unknown one.
+func TestParseDraftBody_AcceptsReplyToAddress(t *testing.T) {
+	for _, in := range []string{
+		`{"to":["x@y.com"],"reply_to_address":["replies@y.com"]}`,
+		`{"to":["x@y.com"],"replyToAddress":["replies@y.com"]}`,
+	} {
+		params, code, body := parseBody(t, in)
+		if code != 200 {
+			t.Fatalf("code = %d (%s) for %s", code, body, in)
+		}
+		if _, ok := params["reply_to_address"]; !ok {
+			t.Errorf("reply_to_address missing after parse of %s: %v", in, params)
+		}
+	}
+}
+
+// TestDraftUpdateRoute_Exists is the reported gap: PUT (and PATCH)
+// /gmail/v1/users/{u}/drafts/{id} returned 405, so update_draft was reachable
+// only via the generic ops surface. Asserted against the real mux so a
+// registration regression is caught.
+func TestDraftUpdateRoute_Exists(t *testing.T) {
+	// Assert against the bare mux: authMiddleware runs before routing, so a
+	// request through Handler() 401s whether or not the route exists.
+	mux := (&Router{}).mux()
+	for _, method := range []string{"PUT", "PATCH", "DELETE"} {
+		req := httptest.NewRequest(method, "/gmail/v1/users/me/drafts/d1", strings.NewReader(`{}`))
+		if _, pattern := mux.Handler(req); !strings.Contains(pattern, "/drafts/{id}") {
+			t.Errorf("%s /gmail/v1/users/{userId}/drafts/{id} is not registered (resolved %q)", method, pattern)
+		}
+	}
+	// Control: a method with genuinely no route resolves to the 405 fallback,
+	// proving the assertion above can actually fail.
+	req := httptest.NewRequest("TRACE", "/gmail/v1/users/me/drafts/d1", nil)
+	if _, pattern := mux.Handler(req); strings.Contains(pattern, "/drafts/{id}") {
+		t.Errorf("control: TRACE resolved to %q — the check above proves nothing", pattern)
+	}
+}
+
+// TestGmailUpdateDraft_RejectsForward: parseMailBody maps forward_message_id
+// to message_id, which update_draft has no parameter for — it would be
+// silently dropped, editing the draft without the forward.
+func TestGmailUpdateDraft_RejectsForward(t *testing.T) {
+	req := httptest.NewRequest("PUT", "/gmail/v1/users/me/drafts/d1",
+		strings.NewReader(`{"to":["x@y.com"],"forward_message_id":"src1"}`))
+	rec := httptest.NewRecorder()
+	(&Router{}).gmailUpdateDraft(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("code = %d, want 400 for forward_message_id on draft update", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "forward_message_id") {
+		t.Errorf("error should name the offending field; got %q", rec.Body.String())
+	}
+}
