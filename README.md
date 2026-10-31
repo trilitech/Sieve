@@ -194,7 +194,7 @@ Two install paths — see [`docs/connectors-slack.md`](docs/connectors-slack.md)
 2. **Add Connection** → **Slack** → **Use existing bot token** → paste and submit.
 3. Sieve calls `auth.test` against Slack; on success the connection lands `active`. The token is encrypted at rest — never written to a plaintext column or logged.
 
-Curated operations: `list_channels`, `list_users`, `read_user_profile`, `read_channel_history`, `read_thread`, `post_message`. (`search_messages` is exposed for policy bindings but disabled in v1 — it requires a user-token install which is on the roadmap.)
+Curated operations: `list_channels`, `list_users`, `read_user_profile`, `read_channel_history`, `read_thread`, `post_message`, `search_messages`. `search_messages` is grantable to any Slack connection but only runs on user-token connections (Slack's `search.messages` requires a user token); bot-token connections get an `operation_not_enabled` error instead. See `docs/connectors-slack.md` for setup details.
 
 Multi-workspace setups work — add a second Slack connection with a different alias and address each by name through the agent-facing API.
 
