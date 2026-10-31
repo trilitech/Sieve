@@ -20,6 +20,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -354,6 +356,18 @@ func (rt *Router) executeOperation(w http.ResponseWriter, r *http.Request) {
 	conn, err := rt.connections.GetConnector(connID)
 	if err != nil {
 		rt.writeConnectionError(w, http.StatusNotFound, fmt.Sprintf("connector not found: %v", err), connID, err)
+		return
+	}
+
+	// Reject parameters the operation does not declare. Previously an unknown
+	// key was handed to Execute and silently ignored, so a caller could set a
+	// field the op had no idea about (body_html, reply_to, bcc) and receive a
+	// 200 describing a message that never carried it. Runs AFTER the IAM
+	// decision so an unauthorized token learns nothing about which operations
+	// or parameters exist, and before any side effect.
+	if err := validateOperationParams(conn, operation, params); err != nil {
+		rt.logAudit(tok, connID, operation, params, "invalid_params", err.Error(), time.Since(start).Milliseconds())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1380,6 +1394,8 @@ var mailBodyFields = map[string]string{
 	"attachments":            "attachments",
 	"reply_to_address":       "reply_to_address",
 	"replyToAddress":         "reply_to_address",
+	"body_html":              "body_html",
+	"bodyHtml":               "body_html",
 	// Forwarding: presence of forward_message_id routes drafts/send to the
 	// dedicated forward_draft/forward_email ops (separately policy-gated) rather
 	// than composing a hand-typed imitation. Mapped to the ops' message_id param.
@@ -1414,13 +1430,13 @@ func (rt *Router) parseMailBody(w http.ResponseWriter, r *http.Request) (map[str
 	for k, v := range raw {
 		if k == "raw" {
 			writeError(w, http.StatusBadRequest,
-				"field \"raw\" is not supported: this endpoint takes structured fields (to, cc, bcc, subject, body, attachments) so policies can inspect the content. To reply into a thread, set in_reply_to_message_id; to forward a message, set forward_message_id.")
+				"field \"raw\" is not supported: this endpoint takes structured fields (to, cc, bcc, subject, body, body_html, attachments) so policies can inspect the content. To reply into a thread, set in_reply_to_message_id; to forward a message, set forward_message_id.")
 			return nil, false
 		}
 		param, allowed := mailBodyFields[k]
 		if !allowed {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf(
-				"unknown field %q. Accepted: to, cc, bcc, subject, body, attachments, reply_to_address, in_reply_to_message_id, forward_message_id, thread_id, in_reply_to, references.", k))
+				"unknown field %q. Accepted: to, cc, bcc, subject, body, body_html, attachments, reply_to_address, in_reply_to_message_id, forward_message_id, thread_id, in_reply_to, references.", k))
 			return nil, false
 		}
 		params[param] = v
@@ -1553,4 +1569,48 @@ func stringList(v any) []string {
 		}
 	}
 	return out
+}
+
+// validateOperationParams reports an error when params carries a key the
+// operation does not declare. The operation definition is read from the LIVE
+// connector so dynamically-derived catalogs (mcp_proxy) are respected; ops that
+// genuinely cannot enumerate their inputs set AllowUnknownParams and are
+// skipped. An operation this connector doesn't know is left alone so the
+// connector's own "unknown operation" error is what surfaces.
+func validateOperationParams(conn connector.Connector, operation string, params map[string]any) error {
+	if len(params) == 0 {
+		return nil
+	}
+	var def *connector.OperationDef
+	for _, op := range conn.Operations() {
+		if op.Name == operation {
+			d := op
+			def = &d
+			break
+		}
+	}
+	if def == nil || def.AllowUnknownParams {
+		return nil
+	}
+	var unknown []string
+	for k := range params {
+		if _, ok := def.Params[k]; !ok {
+			unknown = append(unknown, strconv.Quote(k))
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	accepted := make([]string, 0, len(def.Params))
+	for k := range def.Params {
+		accepted = append(accepted, k)
+	}
+	sort.Strings(accepted)
+	acceptedList := "none"
+	if len(accepted) > 0 {
+		acceptedList = strings.Join(accepted, ", ")
+	}
+	return fmt.Errorf("unknown parameter(s) %s for operation %q. Accepted: %s",
+		strings.Join(unknown, ", "), operation, acceptedList)
 }

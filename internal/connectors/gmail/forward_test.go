@@ -172,11 +172,11 @@ func TestForwardDraft_AssemblesFaithfulForward(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"please action before Monday",                 // the caller's note
-		"---------- Forwarded message ----------",     // the forwarded separator
-		"From: Sender <sender@example.com>",           // genuine From
-		"Subject: Capital call",                       // genuine Subject
-		"original text body",                          // the original text
+		"please action before Monday",             // the caller's note
+		"---------- Forwarded message ----------", // the forwarded separator
+		"From: Sender <sender@example.com>",       // genuine From
+		"Subject: Capital call",                   // genuine Subject
+		"original text body",                      // the original text
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text body missing %q\n--- text ---\n%s", want, text)

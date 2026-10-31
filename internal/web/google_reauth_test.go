@@ -143,7 +143,7 @@ func TestConnectionEditPage_ShowsOAuthClients(t *testing.T) {
 	for _, want := range []string{
 		"stale-project-client.apps.googleusercontent.com", // this connection's client
 		"server-client.apps.googleusercontent.com",        // the server's client
-		`value="server"`,                                  // the no-credentials migrate action
+		`value="server"`, // the no-credentials migrate action
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("edit page missing %q", want)

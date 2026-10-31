@@ -40,6 +40,10 @@ func New(connType string) *Mock {
 				"query":       {Type: "string", Required: false},
 				"max_results": {Type: "int", Required: false},
 				"page_token":  {Type: "string", Required: false},
+				// Numeric fixture for IAM context.param condition tests. Declared
+				// because params are a closed set: Cedar types context.param from
+				// these ParamDefs, and the API rejects undeclared parameters.
+				"ratio": {Type: "float", Required: false},
 			}},
 			{Name: "read_email", Description: "Read an email", ReadOnly: true, Params: map[string]connector.ParamDef{
 				"message_id": {Type: "string", Required: true},
@@ -70,6 +74,10 @@ func New(connType string) *Mock {
 				"body":     {Type: "string", Required: true},
 				"cc":       {Type: "[]string", Required: false},
 				"reply_to": {Type: "string", Required: false},
+				// Numeric fixture for IAM context.param condition tests (spend
+				// caps). Declared because params are a closed set — see the note
+				// on list_emails.ratio.
+				"amount": {Type: "int", Required: false},
 			}},
 			{Name: "send_draft", Description: "Send an existing draft", ReadOnly: false, Params: map[string]connector.ParamDef{
 				"draft_id": {Type: "string", Required: true},

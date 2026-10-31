@@ -16,6 +16,7 @@ This contract was last revised in May 2026 (PR #10). Prior versions used differe
 | `service_locked` | 503 | The Sieve keyring is unloaded — the operator hasn't supplied the passphrase yet. | **Transient.** Retrying after the operator unlocks WILL succeed. |
 | `rotation in progress` | 503 + `Retry-After` | A passphrase rotation is mid-flight. | **Transient.** Retry per the `Retry-After` header. |
 | `too many auth attempts, retry later` | 429 | Per-IP token-bucket exhausted by failed bearer-token validations. | **Transient.** Retry per the `Retry-After` header. |
+| `unknown parameter(s) …` | 400 | The request carried a parameter the operation does not declare. Parameters are a **closed set**: an operation accepts exactly what its catalog entry lists, and anything else is refused rather than accepted and discarded. The message names the offending keys and lists the accepted ones. | **Permanent** for that request. Fix the parameter name and retry; don't resend as-is. |
 
 ---
 
@@ -121,6 +122,32 @@ MCP does not use HTTP status codes for tool errors — it uses the tool-result `
 ### Keyring locked
 
 When the keyring is unloaded, the MCP layer returns a JSON-RPC transport error (not a tool result) — a single `Error` object with code `-32000` and `message: "service locked: passphrase required"`. Agent retries after unlock will succeed.
+
+---
+
+## Parameters are a closed set
+
+The generic ops route (`POST /api/v1/connections/{conn}/ops/{operation}`) used
+to pass every key in the request body through to the connector, which ignored
+the ones it didn't recognise. That made a whole class of silent failure
+possible: set a field the operation knows nothing about and you get `200 OK`
+describing a result that never included it.
+
+Unknown parameters are now rejected with `400`, naming both the offending keys
+and the accepted set:
+
+```json
+{ "error": "unknown parameter(s) \"body_html\" for operation \"create_draft\". Accepted: attachments, bcc, body, cc, in_reply_to, ..." }
+```
+
+The one exception is an operation whose accepted set genuinely cannot be
+enumerated in advance — today only `mcp_proxy`, whose parameters are a
+projection of an upstream tool's JSON Schema (which may allow additional
+properties, and may be unreachable). Those operations opt out explicitly and
+let the upstream tool do the rejecting.
+
+Note the Gmail-compatible REST surface (`/gmail/v1/...`) has always enforced its
+own allow-list and returns `unknown field "..."` in the same spirit.
 
 ---
 

@@ -471,6 +471,7 @@ var operations = []connector.OperationDef{
 			"reply_to":               {Type: "string", Description: "DEPRECATED legacy alias; use in_reply_to_message_id", Required: false},
 			"attachments":            {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
 			"reply_to_address":       {Type: "[]string", Description: "Reply-To header: addresses replies should go to. Unrelated to the deprecated reply_to threading alias.", Required: false},
+			"body_html":              {Type: "string", Description: "HTML body. When set, the message is sent as multipart/alternative (text/plain + text/html); `body` remains the plain-text alternative.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -490,6 +491,7 @@ var operations = []connector.OperationDef{
 			"references":             {Type: "string", Description: "RFC5322 References chain (advanced)", Required: false},
 			"attachments":            {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
 			"reply_to_address":       {Type: "[]string", Description: "Reply-To header: addresses replies should go to. Unrelated to the deprecated reply_to threading alias.", Required: false},
+			"body_html":              {Type: "string", Description: "HTML body. When set, the message is sent as multipart/alternative (text/plain + text/html); `body` remains the plain-text alternative.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -509,6 +511,7 @@ var operations = []connector.OperationDef{
 			"reply_to":               {Type: "string", Description: "DEPRECATED legacy alias; use in_reply_to_message_id", Required: false},
 			"attachments":            {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
 			"reply_to_address":       {Type: "[]string", Description: "Reply-To header: addresses replies should go to. Unrelated to the deprecated reply_to threading alias.", Required: false},
+			"body_html":              {Type: "string", Description: "HTML body. When set, the message is sent as multipart/alternative (text/plain + text/html); `body` remains the plain-text alternative.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -524,6 +527,7 @@ var operations = []connector.OperationDef{
 			"body":             {Type: "string", Description: "Your note, placed above the forwarded content", Required: false},
 			"attachments":      {Type: "[]object", Description: "Additional files to attach beyond the source's own attachments, each {filename, mime_type, content} (base64)", Required: false},
 			"reply_to_address": {Type: "[]string", Description: "Reply-To header: addresses replies should go to.", Required: false},
+			"body_html":        {Type: "string", Description: "HTML note above the forwarded content. When set, the forward is multipart/alternative.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -539,6 +543,7 @@ var operations = []connector.OperationDef{
 			"body":             {Type: "string", Description: "Your note, placed above the forwarded content", Required: false},
 			"attachments":      {Type: "[]object", Description: "Additional files to attach beyond the source's own attachments, each {filename, mime_type, content} (base64)", Required: false},
 			"reply_to_address": {Type: "[]string", Description: "Reply-To header: addresses replies should go to.", Required: false},
+			"body_html":        {Type: "string", Description: "HTML note above the forwarded content. When set, the forward is multipart/alternative.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -578,6 +583,7 @@ var operations = []connector.OperationDef{
 			"body":             {Type: "string", Description: "Reply body text", Required: true},
 			"attachments":      {Type: "[]object", Description: "Files to attach, each {filename, mime_type, content} where content is base64-encoded bytes", Required: false},
 			"reply_to_address": {Type: "[]string", Description: "Reply-To header: addresses replies should go to. Unrelated to the deprecated reply_to threading alias.", Required: false},
+			"body_html":        {Type: "string", Description: "HTML body. When set, the message is sent as multipart/alternative (text/plain + text/html); `body` remains the plain-text alternative.", Required: false},
 		},
 		ReadOnly: false,
 	},
@@ -909,6 +915,7 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			Subject:          getStringParam(params, "subject"),
 			Body:             getStringParam(params, "body"),
 			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
+			BodyHTML:         getStringParam(params, "body_html"),
 			ReplyTo:          getStringParam(params, "reply_to"),
 		}
 		atts, err := getAttachmentsParam(params)
@@ -933,6 +940,7 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			Subject:          getStringParam(params, "subject"),
 			Body:             getStringParam(params, "body"),
 			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
+			BodyHTML:         getStringParam(params, "body_html"),
 		}
 		atts, err := getAttachmentsParam(params)
 		if err != nil {
@@ -952,6 +960,7 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			Subject:          getStringParam(params, "subject"),
 			Body:             getStringParam(params, "body"),
 			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
+			BodyHTML:         getStringParam(params, "body_html"),
 			ReplyTo:          getStringParam(params, "reply_to"),
 		}
 		atts, err := getAttachmentsParam(params)
@@ -976,6 +985,7 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			Subject:          getStringParam(params, "subject"),
 			Body:             getStringParam(params, "body"),
 			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
+			BodyHTML:         getStringParam(params, "body_html"),
 		}
 		extra, err := getAttachmentsParam(params)
 		if err != nil {
@@ -1050,6 +1060,7 @@ func (g *GoogleConnector) Execute(ctx context.Context, op string, params map[str
 			Subject:          getStringParam(params, "subject"),
 			Body:             getStringParam(params, "body"),
 			ReplyToAddresses: getStringSliceParam(params, "reply_to_address"),
+			BodyHTML:         getStringParam(params, "body_html"),
 		}
 		atts, err := getAttachmentsParam(params)
 		if err != nil {
@@ -1487,10 +1498,14 @@ func (g *GoogleConnector) buildForward(ctx context.Context, sourceID string, req
 	if req.Subject == "" {
 		req.Subject = ensureFwdPrefix(src.Subject)
 	}
-	note := req.Body
+	note, noteHTML := req.Body, req.BodyHTML
 	req.Body = forwardTextBody(note, src)
-	if src.BodyHTML != "" {
-		req.BodyHTML = forwardHTMLBody(note, src)
+	// Produce an HTML alternative when EITHER side has one: the source had an
+	// HTML part worth preserving, or the caller wrote their note in HTML. Only
+	// skipping when neither does keeps a plain forward plain. (Without the
+	// noteHTML arm a caller's body_html was silently overwritten here.)
+	if src.BodyHTML != "" || noteHTML != "" {
+		req.BodyHTML = forwardHTMLBody(note, noteHTML, src)
 	}
 	atts := make([]gmailclient.Attachment, 0, len(src.Attachments)+len(extra))
 	for _, meta := range src.Attachments {
@@ -1535,9 +1550,16 @@ func forwardTextBody(note string, src *gmailclient.Email) string {
 // forwarded header lines are HTML-escaped (they are attacker-influenced text);
 // the source's HTML body is included verbatim so its links/markup — the whole
 // point of preserving HTML — survive intact.
-func forwardHTMLBody(note string, src *gmailclient.Email) string {
+func forwardHTMLBody(note, noteHTML string, src *gmailclient.Email) string {
 	var b strings.Builder
-	if note != "" {
+	switch {
+	case noteHTML != "":
+		// The caller authored the note as HTML: emit it verbatim, since markup
+		// is the point. It is the caller's own content, not attacker-supplied.
+		b.WriteString("<div>")
+		b.WriteString(noteHTML)
+		b.WriteString("</div><br>\n")
+	case note != "":
 		b.WriteString("<div>")
 		b.WriteString(strings.ReplaceAll(html.EscapeString(note), "\n", "<br>\n"))
 		b.WriteString("</div><br>\n")

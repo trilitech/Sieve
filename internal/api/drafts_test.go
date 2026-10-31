@@ -202,3 +202,20 @@ func TestGmailUpdateDraft_RejectsForward(t *testing.T) {
 		t.Errorf("error should name the offending field; got %q", rec.Body.String())
 	}
 }
+
+// TestParseDraftBody_AcceptsBodyHTML: the REST drafts routes must accept an
+// HTML body (it was rejected with 400 "unknown field").
+func TestParseDraftBody_AcceptsBodyHTML(t *testing.T) {
+	for _, in := range []string{
+		`{"to":["x@y.com"],"body":"plain","body_html":"<p>rich</p>"}`,
+		`{"to":["x@y.com"],"body":"plain","bodyHtml":"<p>rich</p>"}`,
+	} {
+		params, code, body := parseBody(t, in)
+		if code != 200 {
+			t.Fatalf("code = %d (%s) for %s", code, body, in)
+		}
+		if params["body_html"] != "<p>rich</p>" {
+			t.Errorf("body_html missing/not normalized for %s: %v", in, params)
+		}
+	}
+}

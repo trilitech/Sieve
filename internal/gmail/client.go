@@ -769,7 +769,6 @@ func extractBody(part *gmail.MessagePart, textBody, htmlBody *string) {
 	}
 }
 
-
 // collectAttachments recursively walks message parts to find attachments
 // and returns their metadata (ID, filename, MIME type, size).
 func collectAttachments(part *gmail.MessagePart) []AttachmentMeta {

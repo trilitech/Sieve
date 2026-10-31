@@ -337,6 +337,13 @@ func (m *MCPProxyConnector) Operations() []connector.OperationDef {
 			Name:        t.Name,
 			Description: t.Description,
 			Params:      params,
+			// These ParamDefs are a projection of an upstream tool's JSON
+			// Schema, which may declare additionalProperties (and which we
+			// cannot read at all when the upstream server is unreachable).
+			// Enumerating the accepted set is therefore not ours to do, so
+			// opt out of strict validation and let the upstream tool reject
+			// what it doesn't want.
+			AllowUnknownParams: true,
 		})
 	}
 

@@ -153,8 +153,8 @@ curl -X POST "http://localhost:19817/gmail/v1/users/me/drafts" \
   }'
 ```
 
-Accepted body fields: `to`, `cc`, `bcc`, `subject`, `body`, `attachments` and
-`reply_to_address` (see below), the threading fields below, and `forward_message_id` (see [Forward a
+Accepted body fields: `to`, `cc`, `bcc`, `subject`, `body`, `body_html`,
+`attachments` and `reply_to_address` (see below), the threading fields below, and `forward_message_id` (see [Forward a
 message](#forward-a-message)). **Unknown fields are rejected with `400`** (they
 are never silently dropped), so a typo can't leave you thinking a field took
 effect when it didn't. An opaque `raw` MIME blob is **not** accepted — the
@@ -187,6 +187,22 @@ curl -X POST "http://localhost:19817/gmail/v1/users/me/drafts" \
 
 `attachments` works the same on `drafts`, `drafts` update, `messages/send`,
 `reply`, and the forward endpoints.
+
+#### HTML body
+
+`body_html` sets an HTML alternative. When present the message is assembled as
+`multipart/alternative`, so `body` remains the plain-text version for clients
+that prefer or require it — always send both:
+
+```json
+{ "to": ["recipient@example.com"],
+  "subject": "Action items",
+  "body": "Kathleen: file the return. EA: book the call.",
+  "body_html": "<p><span style=\"background-color:#fff176\">Kathleen</span>: file the return.</p>" }
+```
+
+Works on `drafts`, `drafts` update, `messages/send`, `reply`, and the forward
+endpoints (where it is your note above the forwarded content).
 
 #### Reply-To
 

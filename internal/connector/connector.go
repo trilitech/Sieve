@@ -143,6 +143,18 @@ type OperationDef struct {
 	Params      map[string]ParamDef `json:"params"`
 	ReadOnly    bool                `json:"read_only"`
 
+	// AllowUnknownParams opts an operation OUT of strict parameter validation.
+	// By default the API rejects a request carrying a parameter the operation
+	// does not declare, so a caller can never be told "200 OK" for a field that
+	// was quietly discarded. Set this only where the accepted set genuinely
+	// cannot be enumerated ahead of time — e.g. mcp_proxy, whose ParamDefs are
+	// derived from an upstream tool schema that may permit additional
+	// properties or be temporarily unreachable. Escape-hatch ops
+	// (github_request et al.) do NOT need it: they nest free-form content under
+	// a declared key (`body`, `params`, `variables`), so their top-level
+	// parameter set is closed.
+	AllowUnknownParams bool `json:"allow_unknown_params,omitempty"`
+
 	// Disabled marks an operation that exists in the contract but is NOT usable
 	// in this build (e.g. Slack search_messages needs a user-token install). The
 	// rule/guardrail builders render it greyed-out and unselectable so an operator
