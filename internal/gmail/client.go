@@ -582,16 +582,38 @@ func (c *Client) ListLabels(ctx context.Context) ([]Label, error) {
 	return labels, nil
 }
 
-// GetAttachment retrieves an attachment by message and attachment ID.
-func (c *Client) GetAttachment(ctx context.Context, messageID, attachmentID string) (*Attachment, error) {
+// GetAttachmentData fetches ONLY an attachment's bytes (and its size), in a
+// single API call.
+//
+// Prefer this over GetAttachment whenever the caller already holds the part's
+// metadata from the message it read. GetAttachment has to re-fetch the message
+// to recover the filename and MIME type, and Gmail does not guarantee that the
+// attachmentId in a fresh messages.get matches the one you are holding: the id
+// you have keeps working for attachments.get, but the walk looking for it in
+// the new payload can come up empty. The bytes then arrive while the metadata
+// silently does not — which is how forwarded attachments turned into unnamed
+// application/octet-stream blobs.
+func (c *Client) GetAttachmentData(ctx context.Context, messageID, attachmentID string) ([]byte, int64, error) {
 	att, err := c.service.Users.Messages.Attachments.Get("me", messageID, attachmentID).Context(ctx).Do()
 	if err != nil {
-		return nil, fmt.Errorf("gmail: getting attachment %s from message %s: %w", attachmentID, messageID, err)
+		return nil, 0, fmt.Errorf("gmail: getting attachment %s from message %s: %w", attachmentID, messageID, err)
 	}
-
 	data, err := base64.URLEncoding.DecodeString(att.Data)
 	if err != nil {
-		return nil, fmt.Errorf("gmail: decoding attachment data: %w", err)
+		return nil, 0, fmt.Errorf("gmail: decoding attachment data: %w", err)
+	}
+	return data, att.Size, nil
+}
+
+// GetAttachment retrieves an attachment by message and attachment ID, including
+// its filename and MIME type. Recovering that metadata costs a second API call
+// (a full messages.get) and is best-effort for the reason described on
+// GetAttachmentData — callers that already know the metadata should use that
+// instead and keep what they have.
+func (c *Client) GetAttachment(ctx context.Context, messageID, attachmentID string) (*Attachment, error) {
+	data, size, err := c.GetAttachmentData(ctx, messageID, attachmentID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Look up the message to get filename and mime type for this attachment.
@@ -602,7 +624,7 @@ func (c *Client) GetAttachment(ctx context.Context, messageID, attachmentID stri
 
 	result := &Attachment{
 		ID:   attachmentID,
-		Size: att.Size,
+		Size: size,
 		Data: data,
 	}
 
@@ -996,13 +1018,22 @@ func writeAttachmentPart(mw *multipart.Writer, att Attachment) error {
 		ct = "application/octet-stream"
 	}
 	h := textproto.MIMEHeader{}
-	if v := mime.FormatMediaType(ct, map[string]string{"name": att.Filename}); v != "" {
+	// Only carry a name/filename parameter when there is one: an explicit
+	// name="" is worse than its absence (mail clients render it as a nameless
+	// blob rather than falling back to their own heuristics).
+	ctParams := map[string]string{}
+	dispParams := map[string]string{}
+	if att.Filename != "" {
+		ctParams["name"] = att.Filename
+		dispParams["filename"] = att.Filename
+	}
+	if v := mime.FormatMediaType(ct, ctParams); v != "" {
 		h.Set("Content-Type", v)
 	} else {
 		h.Set("Content-Type", ct)
 	}
 	h.Set("Content-Transfer-Encoding", "base64")
-	if v := mime.FormatMediaType("attachment", map[string]string{"filename": att.Filename}); v != "" {
+	if v := mime.FormatMediaType("attachment", dispParams); v != "" {
 		h.Set("Content-Disposition", v)
 	} else {
 		h.Set("Content-Disposition", "attachment")

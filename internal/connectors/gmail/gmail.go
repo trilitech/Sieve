@@ -1509,11 +1509,26 @@ func (g *GoogleConnector) buildForward(ctx context.Context, sourceID string, req
 	}
 	atts := make([]gmailclient.Attachment, 0, len(src.Attachments)+len(extra))
 	for _, meta := range src.Attachments {
-		full, err := g.client.GetAttachment(ctx, sourceID, meta.ID)
+		// Fetch ONLY the bytes and keep the filename / MIME type we already
+		// have from the same message read that produced meta.ID. Asking
+		// GetAttachment to rediscover them costs a second messages.get whose
+		// attachmentIds Gmail may have regenerated — the bytes still arrive
+		// but the lookup misses, which turned every forwarded attachment into
+		// an unnamed application/octet-stream.
+		data, size, err := g.client.GetAttachmentData(ctx, sourceID, meta.ID)
 		if err != nil {
 			return fmt.Errorf("gmail connector: fetching attachment %q to forward: %w", meta.Filename, err)
 		}
-		atts = append(atts, *full)
+		if size == 0 {
+			size = meta.Size
+		}
+		atts = append(atts, gmailclient.Attachment{
+			ID:       meta.ID,
+			Filename: meta.Filename,
+			MimeType: meta.MimeType,
+			Size:     size,
+			Data:     data,
+		})
 	}
 	atts = append(atts, extra...)
 	req.Attachments = atts
