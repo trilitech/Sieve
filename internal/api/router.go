@@ -1339,7 +1339,11 @@ func (rt *Router) gmailSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	// A forward_message_id in the body (normalized to message_id) selects the
 	// dedicated, separately-gated forward op instead of a plain send.
-	rt.gmailExecute(w, r, mailOpFor(body, "send_email", "forward_email"), body)
+	op := mailOpFor(body, "send_email", "forward_email")
+	if op == "forward_email" && !rejectForwardIncompatible(w, body) {
+		return
+	}
+	rt.gmailExecute(w, r, op, body)
 }
 
 // mailOpFor picks the op for a drafts/send request: the forward variant when a
@@ -1411,7 +1415,11 @@ func (rt *Router) gmailCreateDraft(w http.ResponseWriter, r *http.Request) {
 	// A forward_message_id in the body (normalized to message_id) drafts a
 	// faithful, server-assembled forward via the separately-gated forward_draft
 	// op — rather than the caller composing a hand-typed imitation.
-	rt.gmailExecute(w, r, mailOpFor(body, "create_draft", "forward_draft"), body)
+	op := mailOpFor(body, "create_draft", "forward_draft")
+	if op == "forward_draft" && !rejectForwardIncompatible(w, body) {
+		return
+	}
+	rt.gmailExecute(w, r, op, body)
 }
 
 // parseMailBody decodes and validates an outgoing-message request body (drafts
@@ -1613,4 +1621,33 @@ func validateOperationParams(conn connector.Connector, operation string, params 
 	}
 	return fmt.Errorf("unknown parameter(s) %s for operation %q. Accepted: %s",
 		strings.Join(unknown, ", "), operation, acceptedList)
+}
+
+// forwardIncompatibleFields are reply-threading parameters that a forward op
+// has no parameter for. A forward starts a NEW thread, so these are never
+// meaningful alongside forward_message_id — and because the drafts/send
+// allow-list accepts them for ordinary composes, they would otherwise reach
+// the forward path and be dropped on the floor, telling the caller 200 for
+// threading that never happened.
+var forwardIncompatibleFields = []string{
+	"thread_id", "in_reply_to", "references", "reply_to", "in_reply_to_message_id",
+}
+
+// rejectForwardIncompatible writes a 400 and returns false when a forward
+// request carries reply-threading fields.
+func rejectForwardIncompatible(w http.ResponseWriter, body map[string]any) bool {
+	var present []string
+	for _, k := range forwardIncompatibleFields {
+		if _, ok := body[k]; ok {
+			present = append(present, strconv.Quote(k))
+		}
+	}
+	if len(present) == 0 {
+		return true
+	}
+	sort.Strings(present)
+	writeError(w, http.StatusBadRequest, fmt.Sprintf(
+		"%s cannot be combined with forward_message_id: a forward starts a new thread, so reply-threading fields do not apply and would be ignored. Drop them, or omit forward_message_id to compose a threaded reply instead.",
+		strings.Join(present, ", ")))
+	return false
 }

@@ -270,6 +270,11 @@ curl -X POST "http://localhost:19817/gmail/v1/users/me/drafts" \
 There is additionally a path-style route: `POST /messages/{id}/forward`, where
 `{id}` is the source message and the body carries the recipients and note.
 
+Don't pass `thread_id`, `in_reply_to`, `references`, `reply_to` or
+`in_reply_to_message_id` alongside `forward_message_id` — a forward starts a new
+thread, so those reply-threading fields don't apply and are rejected with a
+`400` rather than being accepted and ignored.
+
 Forwarding is a **separately-grantable** operation (`forward_draft` /
 `forward_email`), distinct from `create_draft`/`send_email` — because forwarding
 existing mail to new recipients is an exfiltration primitive, a role can grant

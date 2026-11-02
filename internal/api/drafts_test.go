@@ -219,3 +219,39 @@ func TestParseDraftBody_AcceptsBodyHTML(t *testing.T) {
 		}
 	}
 }
+
+// TestForward_RejectsThreadingFields: a forward starts a new thread, so
+// reply-threading fields have no parameter on the forward ops and would be
+// silently ignored — the caller would be told 200 for threading that never
+// happened. They must fail loudly instead.
+func TestForward_RejectsThreadingFields(t *testing.T) {
+	for _, field := range []string{"thread_id", "in_reply_to", "references", "reply_to", "in_reply_to_message_id"} {
+		body := `{"to":["x@y.com"],"forward_message_id":"src1","` + field + `":"v"}`
+		req := httptest.NewRequest("POST", "/gmail/v1/users/me/drafts", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		(&Router{}).gmailCreateDraft(rec, req)
+		if rec.Code != 400 {
+			t.Errorf("%s with forward_message_id: code = %d, want 400", field, rec.Code)
+			continue
+		}
+		if !strings.Contains(rec.Body.String(), field) {
+			t.Errorf("%s: error should name the offending field; got %q", field, rec.Body.String())
+		}
+	}
+	// A forward WITHOUT threading fields must still be dispatched, not rejected.
+	req := httptest.NewRequest("POST", "/gmail/v1/users/me/drafts",
+		strings.NewReader(`{"to":["x@y.com"],"forward_message_id":"src1","body":"note"}`))
+	rec := httptest.NewRecorder()
+	(&Router{}).gmailCreateDraft(rec, req)
+	if rec.Code == 400 {
+		t.Errorf("a clean forward must not be rejected; got %q", rec.Body.String())
+	}
+	// And an ordinary threaded reply (no forward) must still be allowed.
+	req2 := httptest.NewRequest("POST", "/gmail/v1/users/me/drafts",
+		strings.NewReader(`{"to":["x@y.com"],"in_reply_to_message_id":"m1"}`))
+	rec2 := httptest.NewRecorder()
+	(&Router{}).gmailCreateDraft(rec2, req2)
+	if rec2.Code == 400 {
+		t.Errorf("a normal threaded reply must not be rejected; got %q", rec2.Body.String())
+	}
+}
