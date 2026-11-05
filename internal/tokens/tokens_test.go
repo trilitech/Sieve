@@ -1,6 +1,7 @@
 package tokens_test
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -275,32 +276,24 @@ func TestValidateFlippedByte(t *testing.T) {
 	}
 }
 
+// TestCreateTokenEmptyName previously asserted the opposite — that a nameless
+// token "should still work (no name validation)". That was characterising an
+// absence, not a requirement, and the absence was a bug: the name column is
+// UNIQUE, so the FIRST nameless token succeeded and the SECOND failed with a
+// raw UNIQUE-constraint error surfaced as HTTP 500. A nameless token is also
+// an unidentifiable actor in the token list and in every audit row it writes.
+// Create now rejects it up front, which the web form already implied by
+// marking the field required.
 func TestCreateTokenEmptyName(t *testing.T) {
 	tokenSvc, roleSvc := setup(t)
 	role, _ := roleSvc.Create("test-role", nil)
 
-	// Creating a token with an empty name should still work (no name validation).
-	result, err := tokenSvc.Create(&tokens.CreateRequest{
+	_, err := tokenSvc.Create(&tokens.CreateRequest{
 		Name:   "",
 		RoleID: role.ID,
 	})
-	if err != nil {
-		t.Fatalf("create token with empty name: %v", err)
-	}
-	if result.Token.Name != "" {
-		t.Fatalf("expected empty name, got %q", result.Token.Name)
-	}
-	if !strings.HasPrefix(result.PlaintextToken, "sieve_tok_") {
-		t.Fatalf("expected sieve_tok_ prefix, got %q", result.PlaintextToken)
-	}
-
-	// Validate it works.
-	validated, err := tokenSvc.Validate(result.PlaintextToken)
-	if err != nil {
-		t.Fatalf("validate token with empty name: %v", err)
-	}
-	if validated.ID != result.Token.ID {
-		t.Fatalf("expected token ID %q, got %q", result.Token.ID, validated.ID)
+	if !errors.Is(err, tokens.ErrEmptyName) {
+		t.Fatalf("create token with empty name: err = %v, want ErrEmptyName", err)
 	}
 }
 

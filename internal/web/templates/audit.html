@@ -67,7 +67,15 @@
           {{range .Entries}}
           <tr class="border-b border-slate-700/50 hover:bg-slate-700/30">
             <td class="px-4 py-3 text-sm text-slate-300">{{timeAgo .Timestamp}}</td>
-            <td class="px-4 py-3 text-sm text-slate-300">{{truncate 20 .TokenName}}</td>
+            <td class="px-4 py-3 text-sm text-slate-300">
+              <div>{{truncate 20 .TokenName}}</div>
+              {{/* Token names are reusable once a token is dead, so the name
+                   alone no longer identifies which token acted — the id does.
+                   "operator" and "system" are sentinel actors, not token ids. */}}
+              {{if and (ne .TokenID "operator") (ne .TokenID "system")}}
+              <div class="text-xs font-mono text-slate-500">{{.TokenID}}</div>
+              {{end}}
+            </td>
             <td class="px-4 py-3 text-sm text-slate-300">{{.ConnectionID}}</td>
             <td class="px-4 py-3">
               <span class="text-sm font-mono text-blue-400">{{.Operation}}</span>

@@ -1660,6 +1660,39 @@ func (s *Server) tokenCaps(toks []tokens.Token) map[string][]string {
 	return caps
 }
 
+// renderTokensError re-renders the tokens page with an inline banner and the
+// given status, instead of replacing the page with a bare error. The operator
+// keeps the create form and the token list in front of them, which matters for
+// a name collision: the clashing token is visible in the list right below.
+func (s *Server) renderTokensError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	toks, err := s.tokens.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	rolesList, err := s.roles.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	roleNames := make(map[string]string, len(rolesList))
+	for _, role := range rolesList {
+		roleNames[role.ID] = role.Name
+	}
+	// Both must precede render's own writes: once WriteHeader has fired, the
+	// Content-Type it sets would be dropped.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	s.render(w, r, "tokens", map[string]any{
+		"Active":    "tokens",
+		"Tokens":    toks,
+		"Roles":     rolesList,
+		"RoleNames": roleNames,
+		"Caps":      s.tokenCaps(toks),
+		"Error":     msg,
+	})
+}
+
 // parseExpiry parses a token-expiry duration. It accepts standard Go durations
 // (e.g. "12h", "720h") plus "Nd" for N days, which Go's ParseDuration rejects.
 func parseExpiry(s string) (time.Duration, error) {
@@ -1725,7 +1758,20 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request) {
 		ExpiresIn: expiresIn,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		switch {
+		case errors.Is(err, tokens.ErrEmptyName):
+			http.Error(w, "token name is required", http.StatusBadRequest)
+		case errors.Is(err, tokens.ErrDuplicateName):
+			// Only a LIVE token blocks the name; a revoked or expired one is
+			// retired out of the way by tokens.Create so the name can be reused.
+			s.renderTokensError(w, r, http.StatusConflict, fmt.Sprintf(
+				"A token named %q is already active, so the name is taken. Revoke it "+
+					"(or wait for it to expire) and create the new one again — the name "+
+					"is then reused and the old token is kept, under a retired name, so "+
+					"its audit history stays intact.", strings.TrimSpace(name)))
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	// Audit producer. Plaintext token redacted by

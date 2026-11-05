@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	"github.com/trilitech/Sieve/internal/database"
 )
 
@@ -56,6 +57,19 @@ func NewService(db *database.DB) *Service {
 // references a reserved system row (e.g., `oauth_app__slack`). Reserved
 // rows hold per-deployment state and MUST NOT be agent-addressable.
 var ErrReservedConnectionID = errors.New("role binding references a reserved system connection id")
+
+// ErrDuplicateName is returned by Create / Update when the role name collides
+// with an existing one (the name column is UNIQUE). Handlers map it to HTTP 409
+// rather than surfacing the raw constraint failure as a 500. Unlike a token, a
+// role has no expiry or revocation, so there is no dead holder to retire — the
+// name is simply taken.
+var ErrDuplicateName = errors.New("a role with that name already exists")
+
+// isUniqueViolation reports whether err is a SQLite UNIQUE-constraint failure.
+func isUniqueViolation(err error) bool {
+	var se sqlite3.Error
+	return errors.As(err, &se) && se.ExtendedCode == sqlite3.ErrConstraintUnique
+}
 
 // isReservedConnectionID mirrors connections.IsReservedConnectionID
 // without importing the package (avoids a cycle: roles ← connections
@@ -94,6 +108,9 @@ func (s *Service) Create(name string, bindings []Binding) (*Role, error) {
 		id, name, string(bindingsJSON), now,
 	)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("%w: %q", ErrDuplicateName, name)
+		}
 		return nil, fmt.Errorf("insert role: %w", err)
 	}
 
@@ -161,6 +178,9 @@ func (s *Service) Update(id, name string, bindings []Binding) error {
 		name, string(bindingsJSON), id,
 	)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: %q", ErrDuplicateName, name)
+		}
 		return fmt.Errorf("update role: %w", err)
 	}
 	n, _ := res.RowsAffected()

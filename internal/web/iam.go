@@ -663,6 +663,10 @@ func (s *Server) handleIAMRoleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	role, err := s.roles.Create(name, nil)
 	if err != nil {
+		if errors.Is(err, roles.ErrDuplicateName) {
+			s.renderIAMError(w, r, "A role named "+name+" already exists — choose a different name.")
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1065,6 +1069,10 @@ func (s *Server) handleIAMRoleRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.roles.Update(id, name, role.Bindings); err != nil {
+		if errors.Is(err, roles.ErrDuplicateName) {
+			s.renderIAMError(w, r, "A role named "+name+" already exists — choose a different name.")
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

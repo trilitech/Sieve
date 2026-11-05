@@ -39,6 +39,13 @@
       </div>
       {{end}}
 
+      <!-- Error banner (e.g. the name is held by a live token) -->
+      {{if .Error}}
+      <div class="bg-red-500/10 border border-red-500/30 rounded-xl p-4 mb-8">
+        <p class="text-sm text-red-300">{{.Error}}</p>
+      </div>
+      {{end}}
+
       <!-- Create Token -->
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 mb-8">
         <h2 class="text-lg font-semibold text-white mb-4">Create Token</h2>

@@ -152,7 +152,7 @@ Manage roles via the CLI (`sieve role create`, `sieve role list`, `sieve role de
 A token is **what the agent actually holds**. It is a bearer credential that references exactly one role.
 
 Each token has:
-- **A name** (e.g., `project-x-agent`, `ci-pipeline`).
+- **A name** (e.g., `project-x-agent`, `ci-pipeline`). Names identify a *job*, not a specific secret, so they are reusable across rotations -- see [Rotating a token](#rotating-a-token).
 - **A plaintext string** (`sieve_tok_...`) shown once at creation. This is the only time the full token is visible.
 - **A role reference** that determines what the token can access.
 - **An optional expiry** (e.g., 24 hours, 7 days). Expired tokens are rejected.
@@ -174,6 +174,27 @@ This works for both the MCP endpoint (`POST /mcp`) and the HTTP proxy (`GET/POST
 2. **Use** -- Agent includes the token in every request. Sieve validates it, resolves the role, evaluates policies.
 3. **Expire** -- If an expiry was set, the token stops working after that time.
 4. **Revoke** -- Admin can revoke a token at any time. Revocation is instant; the agent's next request will fail.
+
+### Rotating a token
+
+A token name is a handle for the job the agent does, and rotation is that job's
+normal lifecycle, so a dead token does not hold its name hostage. Creating a
+token with the name of one that is **revoked or past its expiry** succeeds: the
+new token takes the name, and the old one is kept under a retired name
+(`taxes-agent (retired 3f9a1c22)`) rather than deleted.
+
+Two **live** tokens cannot share a name -- that would be ambiguous when you go
+to revoke one -- so the attempt is refused with HTTP 409 and a banner naming the
+token in the way.
+
+Reuse is safe because the name is never load-bearing. Authorization is keyed on
+the token id (the Cedar principal is `Sieve::Token::"<id>"`, scoped through
+roles), and every audit row stores the token id alongside the name it had at the
+time, so history stays attributable to the exact token that produced it even
+after the name moves on. The audit view shows that id under each token name.
+
+The retired row is what preserves the old token's history; revoking a token
+never deletes it.
 
 Multiple tokens can share the same role. This means you can give 10 agents the same permissions by creating 10 tokens pointing to one role, rather than configuring each one individually.
 
