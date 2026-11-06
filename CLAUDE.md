@@ -9,9 +9,9 @@ A credential gateway between AI agents and real services (Gmail, AWS, LLM APIs, 
 ## Build, run, test
 
 ```bash
-# Build (NOTE: README/Dockerfile reference ./cmd/sieve, but no cmd/sieve/main.go
-# currently exists in the repo — the only main package is e2e/testserver/.
-# If `go build ./cmd/sieve` fails, that's expected, not a regression you need to fix.)
+# Build
+go build ./cmd/sieve
+# Produces a `sieve` binary in the repo root; it's gitignored (see .gitignore).
 
 # Run all Go tests
 go test ./...
