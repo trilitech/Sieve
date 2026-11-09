@@ -36,7 +36,8 @@ func SearchPlainText(md string) string {
 	// Inline code: `code` → code
 	s = reInlineCode.ReplaceAllString(s, "$1")
 	// Bold/italic markers: **bold**, *italic*, __bold__, _italic_
-	s = reEmphasis.ReplaceAllString(s, "$1")
+	s = reEmphasisStar.ReplaceAllString(s, "$1")
+	s = stripUnderscoreEmphasis(s)
 	// Heading markers at line start: ## foo → foo
 	s = reHeadingMarker.ReplaceAllString(s, "$1")
 	// List bullets / blockquote markers at line start.
@@ -49,15 +50,46 @@ func SearchPlainText(md string) string {
 }
 
 var (
-	reImage         = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
-	reLink          = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
-	reInlineCode    = regexp.MustCompile("`([^`]+)`")
-	reEmphasis      = regexp.MustCompile(`(?:\*\*|__|\*|_)([^*_\n]+)(?:\*\*|__|\*|_)`)
-	reHeadingMarker = regexp.MustCompile(`(?m)^#{1,6}\s+(.*)$`)
-	reListBullet    = regexp.MustCompile(`(?m)^[ \t]*(?:[-*+]|\d+\.)\s+(.*)$`)
-	reBlockQuote    = regexp.MustCompile(`(?m)^[ \t]*>\s?(.*)$`)
-	reWhitespace    = regexp.MustCompile(`\s+`)
+	reImage      = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
+	reLink       = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	reInlineCode = regexp.MustCompile("`([^`]+)`")
+
+	// Emphasis is stripped in two passes because `*` and `_` are not
+	// interchangeable here. Asterisks never occur inside identifiers, so a
+	// plain pairwise match is safe. Underscores do: Sieve's operation names are
+	// snake_case (calendar.update_event, list_emails), and a single pattern
+	// treating `_` as a delimiter pairs the underscore of one identifier with
+	// the underscore of the NEXT one on the line and deletes both — indexing
+	// "calendar.update_event and calendar.create_event" as
+	// "calendar.updateevent and calendar.createevent", which no search for the
+	// real operation name can match.
+	reEmphasisStar = regexp.MustCompile(`(?:\*\*|\*)([^*\n]+)(?:\*\*|\*)`)
+	// CommonMark solves this with the intraword rule: `_` does not open or
+	// close emphasis inside a word. RE2 has no lookaround, so the boundary
+	// characters are captured and written straight back out.
+	reEmphasisUnderscore = regexp.MustCompile(`(^|[^\pL\pN_])(?:__|_)([^_\n]+)(?:__|_)([^\pL\pN_]|$)`)
+	reHeadingMarker      = regexp.MustCompile(`(?m)^#{1,6}\s+(.*)$`)
+	reListBullet         = regexp.MustCompile(`(?m)^[ \t]*(?:[-*+]|\d+\.)\s+(.*)$`)
+	reBlockQuote         = regexp.MustCompile(`(?m)^[ \t]*>\s?(.*)$`)
+	reWhitespace         = regexp.MustCompile(`\s+`)
 )
+
+// stripUnderscoreEmphasis removes _italic_ / __bold__ markers whose delimiters
+// sit at a word boundary, leaving snake_case identifiers intact.
+//
+// It loops because the pattern has to consume the boundary character on each
+// side, so two emphasised runs separated by a single space ("_a_ _b_") cannot
+// both match in one pass — the first match eats the space the second needs.
+// Each pass removes at least one pair of underscores, so this terminates.
+func stripUnderscoreEmphasis(s string) string {
+	for {
+		next := reEmphasisUnderscore.ReplaceAllString(s, "$1$2$3")
+		if next == s {
+			return s
+		}
+		s = next
+	}
+}
 
 // SearchSection is one entry in the search corpus per heading.
 type SearchSection struct {
