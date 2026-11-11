@@ -1,7 +1,7 @@
 {
-  "name": "gmail_ai_proxy",
-  "version": "1.0.0",
-  "description": "**A credential gateway for AI agents.**",
+  "name": "sieve",
+  "version": "0.0.1",
+  "description": "A credential gateway for AI agents",
   "main": "index.js",
   "directories": {
     "doc": "docs"
@@ -15,7 +15,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "bugs": {
     "url": "https://github.com/trilitech/Sieve/issues"
   },
